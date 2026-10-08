@@ -42,7 +42,21 @@
 ## 开发文档与本地工具
 
 - PROJECT、AGENTS、ADR、正式规格、构建配方和依赖锁应入 Git；真实目标、密钥、数据库、证据、缓存和个人 Agent 配置不入仓库。
-- `.agents/` 与 `.agent/` 只用于本地开发工具，不提交 Git，也不打入生产 LangGraph harness 或安全测试工具镜像。
+- `.agents/` 保存仓库共享的开发技能并提交 Git，但不得打入生产 LangGraph harness 或安全测试工具镜像。
 - 产品行为、安全约束和接口事实以 PROJECT、ADR、正式规格与代码为准；本地工具提示词不能扩展产品权限。
+
+## Agent skills
+
+### Issue tracker
+
+开发任务使用 GitHub Issues 跟踪。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+本地任务使用标准的五类状态标签。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+使用单上下文领域文档：根目录 `GLOSSARY.md` 与 `docs/adr/`。详见 `docs/agents/domain.md`。
 
 当前交付顺序为 P0 运行骨架/契约/隔离靶场验证、P1 Kali 执行/选择性保留/透明控制台、P2 完整 Agent MVP。下一轮直接使用 [P0 规格](./docs/specs/0001-foundation.md)，全局验收以总纲第 14 节为准；[ADR 索引](./docs/adr/README.md) 标明历史决定，不将早期默认 root、SQLite 或单容器要求带回实现。

@@ -18,8 +18,6 @@
 /backups/
 
 # Local dependencies and generated outputs
-.agents/
-.agent/
 __pycache__/
 *.py[cod]
 .venv/
@@ -32,8 +30,7 @@ node_modules/
 .coverage
 
 # Personal scratch files; curated specifications live under docs/
-/.scratch/
 .DS_Store
 Thumbs.db
 
-# PROJECT.md, AGENTS.md, docs/ and lockfiles are tracked; local agent tooling is not.
+# PROJECT.md, AGENTS.md, .agents/, docs/ and lockfiles are tracked.
