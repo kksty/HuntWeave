@@ -4,7 +4,7 @@
 
 ## 项目方向
 
-- 项目名称为 HuntWeave，中文名称为界巡，代码/包标识统一使用 `huntweave`；命名依据见 `docs/adr/0001-project-name.md`。
+- 项目名称统一为 HuntWeave，代码/包标识统一使用 `huntweave`；命名依据见 `docs/adr/0001-project-name.md`。
 - 本项目开发的是面向已授权目标的 Agent 安全测试平台。
 - 保持 `Collector → Worker × N → Reviewer → 人工复审`，LLM 负责有证据反馈的研究决策。
 - 目标由手动粘贴 IP 导入，不引入 SRC 归属、FOFA 或其他空间资产测绘业务。

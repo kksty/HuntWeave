@@ -4,7 +4,7 @@
 
 | ADR | 状态 | 仍然有效的部分 | 已被替代的部分 |
 | --- | --- | --- | --- |
-| [0001 项目名称](./0001-project-name.md) | 有效 | HuntWeave / 界巡 / huntweave；名称初查有时间和范围限制 | 无 |
+| [0001 项目名称](./0001-project-name.md) | 有效 | HuntWeave / huntweave；名称初查有时间和范围限制 | 无 |
 | [0002 自主执行与访问](./0002-autonomous-runtime-and-access.md) | 部分历史 | 自主联网获取工具、通用工具优先、全局密钥入口 | 默认 root；按 0004/0005 和当前总纲执行 |
 | [0003 单机技术栈与工具](./0003-single-host-stack-and-tool-design.md) | 部分历史 | 单机优先；协议适配器可选；研究方法由 Agent 选择 | SQLite、两个常驻容器、默认 root |
 | [0004 工具生命周期与运行底座](./0004-tool-lifecycle-runtime-and-observability.md) | 部分历史 | PostgreSQL、LangGraph、普通用户/有限提权、透明执行与恢复 | 严格单容器、统一 Debian、动态环境普遍长期保存 |

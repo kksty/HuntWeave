@@ -4,6 +4,8 @@
 
 状态：当前开发基线；可由后续明确的产品命名决定修订。
 
+2026-10-08 后续用户命名决定：项目品牌与仓库文档统一使用 HuntWeave，代码标识保持 `huntweave`。
+
 ## 原因
 
 原开发名称 ScopeHunter 与现有安全工具同名。该工具用于寻找漏洞赏金项目范围内的目标，与本项目同属安全领域，容易混淆，因此弃用该名称。[现有 ScopeHunter 项目](https://github.com/blackhatethicalhacking/ScopeHunter)
@@ -12,13 +14,12 @@
 
 ## 决定
 
-- 英文名称：**HuntWeave**。
-- 中文名称：**界巡**。
+- 项目名称：**HuntWeave**。
 - 仓库建议名、Python 包名、配置前缀基名：`huntweave`；环境变量前缀使用 `HUNTWEAVE_`。
 - 英文说明：`Agentic Security Validation Platform`。
 - 中文说明：面向已授权目标的多 Agent 安全测试平台。
 
-Hunt 对应发现线索、提出假设与验证问题；Weave 对应 Collector、Worker、Reviewer 和人工复审之间的协作，以及证据的关联。中文名沿用界巡，不要求逐字翻译英文名。
+Hunt 对应发现线索、提出假设与验证问题；Weave 对应 Collector、Worker、Reviewer 和人工复审之间的协作，以及证据的关联。
 
 ## 公开名称初查
 
@@ -44,4 +45,4 @@ Hunt 对应发现线索、提出假设与验证问题；Weave 对应 Collector�
 
 更新根目录 `PROJECT.md`、`README.md`、`AGENTS.md` 的当前名称及规划中的源码包目录。旧名称仅在本决策的历史原因中保留。
 
-本次更名不改变产品范围、四角色工作流、技术栈或授权边界。当前尚无应用源码、已发布包或数据库，因此无需实施兼容迁移。
+名称统一不改变产品范围、四角色工作流、技术栈或授权边界。英文名称与代码标识保持一致，本次调整无需源码或数据库兼容迁移。

@@ -1,4 +1,4 @@
-# HuntWeave（界巡）项目总纲
+# HuntWeave 项目总纲
 
 版本：0.7.1 · 更新日期：2026-10-08 · 状态：P0-A 工程启动已验证，完整 P0 尚未完成
 
@@ -14,9 +14,9 @@
 
 ## 1. 项目名称与定位
 
-**开发名称：HuntWeave；中文名称：界巡；代码标识：`huntweave`。**
+**项目名称：HuntWeave；代码标识：`huntweave`。**
 
-Hunt 表示 Agent 围绕漏洞持续提出假设、选择工具和验证问题；Weave 表示 Collector、多个 Worker、Reviewer 与人工复审共同连接研究过程和证据。中文名称“界巡”保留授权范围内开展测试的含义。
+Hunt 表示 Agent 围绕漏洞持续提出假设、选择工具和验证问题；Weave 表示 Collector、多个 Worker、Reviewer 与人工复审共同连接研究过程和证据。
 
 2026-10-08 完成公开名称初查：GitHub 仓库名称查询未返回 `HuntWeave`，常见分隔符变体未发现规范化后同名的结果，PyPI 与 npm 的 `huntweave` 包端点均返回 404。此结论仅描述查询时的公开结果，不保证全球唯一、包名可注册、商标或域名可用。更名原因、候选筛选和查询依据见 [命名决策 ADR-0001](./docs/adr/0001-project-name.md)。
 
