@@ -34,12 +34,12 @@ docker info --format '{{.OSType}}'
 
 ### 1. 获取源码
 
-当前可运行代码位于 [PR #7](https://github.com/kksty/HuntWeave/pull/7) 的 `codex/p0-startup` 分支，尚未合并到 `main`。暂时按以下命令获取；合并后可改为获取 `main`。
+从 `main` 分支获取当前代码。当前实现范围见本 README 开头的阶段说明。
 
 ```powershell
 New-Item -ItemType Directory -Force D:\apps | Out-Null
 Set-Location D:\apps
-git clone --branch codex/p0-startup --single-branch https://github.com/kksty/HuntWeave.git
+git clone --branch main --single-branch https://github.com/kksty/HuntWeave.git
 Set-Location HuntWeave
 ```
 
