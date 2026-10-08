@@ -1,0 +1,25 @@
+services:
+  checks:
+    image: huntweave-checks:p0
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: checks
+    profiles: [verify]
+    command: [python, -m, pytest, -p, "no:cacheprovider", -m, integration, tests]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    environment:
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      HUNTWEAVE_DATABASE_URL: postgresql+psycopg://postgres/huntweave
+      HUNTWEAVE_APP_DB_PASSWORD_FILE: /run/secrets/app_db_password
+      HUNTWEAVE_CHECKPOINT_DB_PASSWORD_FILE: /run/secrets/checkpoint_db_password
+      HUNTWEAVE_MIGRATOR_DB_PASSWORD_FILE: /run/secrets/migrator_db_password
+      HUNTWEAVE_RUNNER_TOKEN_FILE: /run/secrets/runner_token
+      HUNTWEAVE_RUNNER_URL: http://runner:8001
+      HUNTWEAVE_APP_URL: http://app:8000
+    secrets: [app_db_password, checkpoint_db_password, migrator_db_password, runner_token]
+    networks: [control, database]

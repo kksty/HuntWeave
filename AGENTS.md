@@ -53,7 +53,7 @@
 
 ### Triage labels
 
-本地任务使用标准的五类状态标签。详见 `docs/agents/triage-labels.md`。
+GitHub Issues 使用标准的五类标签。详见 `docs/agents/triage-labels.md`。
 
 ### Domain docs
 

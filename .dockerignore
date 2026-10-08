@@ -1,0 +1,10 @@
+**
+!backend/
+!backend/src/
+!backend/src/**
+!backend/migrations/
+!backend/migrations/**
+!backend/tests/
+!backend/tests/**
+!backend/pyproject.toml
+!backend/uv.lock
