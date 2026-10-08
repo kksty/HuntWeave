@@ -1,0 +1,10 @@
+{
+  "profile_version": 1,
+  "profile_id": "linux-docker-engine-gateway-v1",
+  "status": "native_host_validation_pending",
+  "product_execution_enabled": false,
+  "reference": "windows11-wsl2-docker-desktop-gateway-v1",
+  "network_implementation": "shared container network namespace and exact IPv4 TCP OUTPUT allowlist",
+  "verification_entry": "deploy/verify_isolation.py",
+  "deployment_status": "theoretically_deployable_with_shared_compose"
+}

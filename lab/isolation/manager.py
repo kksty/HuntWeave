@@ -19,7 +19,10 @@ import docker
 from huntweave.execution.network_policy import Endpoint, NetworkPolicy, ScopeDenied
 
 LABEL = "com.huntweave.isolation_run"
-PROFILE = "windows11-wsl2-docker-desktop-gateway-v1"
+PROFILES = {
+    "windows": "windows11-wsl2-docker-desktop-gateway-v1",
+    "linux": "linux-docker-engine-gateway-v1",
+}
 
 
 class Lab:
@@ -29,7 +32,7 @@ class Lab:
         self.prefix = f"huntweave-lab-{self.run_id[:12]}"
         self.labels = {LABEL: self.run_id}
         self.report = {
-            "profile": PROFILE,
+            "profile": PROFILES[os.environ["HUNTWEAVE_HOST_PLATFORM"]],
             "run_id": self.run_id,
             "passed": False,
             "started_at": datetime.now(UTC).isoformat(),
@@ -185,13 +188,19 @@ class Lab:
             "kernel": info["KernelVersion"],
             "cgroup_version": info.get("CgroupVersion"),
         }
-        self.check(
-            "windows_wsl2_nat_profile",
-            os.environ.get("HUNTWEAVE_HOST_PLATFORM") == "windows"
-            and os.environ.get("HUNTWEAVE_WSL_NETWORKING") == "nat"
-            and "microsoft-standard-WSL2" in info["KernelVersion"]
-            and "Docker Desktop" in info["OperatingSystem"],
-        )
+        host = os.environ["HUNTWEAVE_HOST_PLATFORM"]
+        if host == "windows":
+            self.check(
+                "windows_wsl2_nat_profile",
+                os.environ["HUNTWEAVE_WSL_NETWORKING"] == "nat"
+                and "microsoft-standard-WSL2" in info["KernelVersion"]
+                and "Docker Desktop" in info["OperatingSystem"],
+            )
+        else:
+            self.check(
+                "linux_engine_profile",
+                info["OSType"] == "linux" and "Docker Desktop" not in info["OperatingSystem"],
+            )
         policy_path = Path("/opt/huntweave/src/huntweave/execution/network_policy.py")
         self.report["policy_sha256"] = hashlib.sha256(policy_path.read_bytes()).hexdigest()
         session = self.network("session")

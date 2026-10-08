@@ -6,7 +6,7 @@
 
 Windows 11 x86_64，Docker Desktop 4.94.0、Engine 29.8.2、WSL 3.0.1.0 / NAT、内核 `6.18.40.1-microsoft-standard-WSL2`、cgroup v2，防火墙为 iptables 1.8.9 / nf_tables。探针镜像为固定 digest 的 Python 3.12 / Debian bookworm，固定安装 iptables 1.8.9-2 和 iproute2 6.1.0-3；Kali WSL 未参与测试。
 
-仓库根目录执行 `./deploy/Verify-Isolation.ps1`。仅本次可信管理容器挂 Docker socket，用于创建和回收带本轮唯一标签的靶场资源；网关只获 NET_ADMIN。工具容器为 UID 10001、cap_drop=ALL、no-new-privileges、只读根文件系统，使用独立 PID 与文件系统，共享本会话网关的网络命名空间。目标是两个自行创建的固定 TCP 回显容器，另有控制网络模拟容器；只有本地授权端点可通过白名单。
+当前入口为 `python deploy/verify_isolation.py`（先安装 deploy/verification-requirements.txt）；原始结果使用替换前的 Windows 包装入口，网络逻辑不变。仅本次可信管理容器挂 Docker socket，用于创建和回收带本轮唯一标签的靶场资源；网关只获 NET_ADMIN。工具容器为 UID 10001、cap_drop=ALL、no-new-privileges、只读根文件系统，使用独立 PID 与文件系统，共享本会话网关的网络命名空间。目标是两个自行创建的固定 TCP 回显容器，另有控制网络模拟容器；只有本地授权端点可通过白名单。
 
 目标 bridge 带 NAT 默认出口，session/control bridge 为 internal + isolated。网关在工具启动前安装默认拒绝规则；IPv6 明确禁用。所有规则在本轮容器网络命名空间中应用，未执行 Windows 防火墙命令或修改 Docker VM 的全局策略。原始报告包含实际命令、参数、输出、事件时间、镜像 ID、策略 hash 与回收结果，位于被 Git 忽略的 `runtime/isolation/<run>/report.json`。
 

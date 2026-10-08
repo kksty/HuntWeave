@@ -241,7 +241,7 @@ app↔PostgreSQL 与 app↔Runner 使用内部控制网络，动态工具/准备
 
 目标出口限制由工具容器外的管理/网络层配置，执行前默认拒绝，按票据放开 IP/传输协议/端口。工具用户和准备容器 root 均不能修改外部规则。时间、CPU/内存/PID/磁盘/输出预算和全部子进程回收由 Runner 控制；停止整个会话容器用于回收脱离进程组的子进程。
 
-容器数量增加和默认非 root 都不自动构成安全保证。P1 需要实测挂载、网络、共享缓存、IPC、capabilities 与取消。宿主不支持必需隔离时，标记 `environment_unsupported` 并说明缺失条件，不静默开放无限制网络。当前首个部署入口是 Windows 11 + Docker Desktop WSL2 后端；真实执行的网络隔离 profile 按实际环境验收。Linux 宿主暂不纳入本轮部署承诺。
+容器数量增加和默认非 root 都不自动构成安全保证。P1 需要实测挂载、网络、共享缓存、IPC、capabilities 与取消。宿主不支持必需隔离时，标记 `environment_unsupported` 并说明缺失条件，不静默开放无限制网络。Windows + Docker Desktop 和 Linux + Docker Engine 共用 Compose 与 Python 部署入口；当前 Windows 已实测，Linux 达到理论可部署即可。真实执行的网络隔离 profile 仍按实际宿主分别验收，Linux 原生记录待完成。
 
 第一条实现路线是在 Windows 工作区直接开发，经 Docker Desktop 的 WSL2 后端运行 Linux 容器；Docker Desktop 自己的 `docker-desktop` 环境承载运行时，独立的 Kali WSL 发行版不属于项目依赖或隔离边界。首个候选隔离 profile 使用 WSL2 NAT。P0 在自建隔离靶场验证容器外出口规则、规则先于进程启动、既有连接撤销以及进程回收，并记录 Docker/内核/防火墙后端和所需管理权限；P1 接入产品后复验。仅设置 `internal` 网络、Docker socket 或 Compose 服务名不算完成目标范围控制。未经完整验证的 profile 返回 `environment_unsupported`，只支持演示；其他宿主以后通过独立 profile 与验证加入。测试只作用于本项目专用网络，需要额外宿主配置的步骤由部署预检列出。决定见 ADR-0006。
 

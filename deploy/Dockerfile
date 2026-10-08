@@ -20,6 +20,7 @@ FROM control AS checks
 USER root
 RUN uv sync --locked --no-managed-python
 COPY backend/tests ./tests
+COPY deploy/*.py /opt/huntweave/deploy/
 USER 10001:10001
 ENV PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-m", "not integration", "tests"]

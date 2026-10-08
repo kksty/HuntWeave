@@ -33,7 +33,7 @@
     "host_network": false,
     "host_pid": false
   },
-  "verification_entry": "deploy/Verify-Isolation.ps1",
+  "verification_entry": "deploy/verify_isolation.py",
   "validation_record": "docs/validation/0002-windows-isolation.md",
   "policy_sha256": "b71b0cd61ca8f0617c163f0e04c3b175a0d2b16fadc6287a90cf3f08968c5f53"
 }

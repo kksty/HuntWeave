@@ -12,7 +12,7 @@ P0 不实现动态安装/工具保留、真实模型/联网研究、完整 Findi
 
 ## 2. 固定实施选择
 
-- 当前开发与首个受支持部署 profile 为 Windows 11 工作区 + Docker Desktop WSL2 后端，源码直接位于 Windows 文件系统。Docker Desktop 自己的 `docker-desktop` WSL 发行版承载 Linux 容器运行时；单独安装的 Kali WSL 发行版不属于项目依赖、运行时或隔离边界。Linux 宿主暂不纳入本轮部署承诺，未来通过新的宿主 profile 和独立验证加入。
+- 当前在 Windows 工作区直接开发。Win/Desktop 与 Linux/Engine 共用 Compose 和 Python 入口，Linux 当前仅要求理论可部署；原生 Linux 的真实隔离验收待完成。Docker Desktop 自己的 `docker-desktop` 环境承载 Linux 容器运行时；Kali WSL 不属于项目依赖或隔离边界。部署范围补充见 ADR-0008。
 - 一个 Compose 项目，app/postgres/runner 三个常驻服务。app 的 API 与 agentd 是独立受监控进程；Runner 通过认证的内部接口工作，只有 Web 入口发布端口。
 - PostgreSQL 分开保存业务 schema 与 LangGraph checkpoint schema；迁移职责分开，在启动接收任务前完成。首版只有一个活动调度进程，内部可并发处理会话。
 - 真实 LangGraph + 确定性模型 Adapter + 假执行 Adapter。根据不同假输出产生不同下一步，保留 Collector/Worker/Reviewer 角色和独立上下文；不发起供应商模型请求。

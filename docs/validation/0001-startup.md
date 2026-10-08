@@ -13,15 +13,15 @@
 
 ## 已验证入口
 
-在仓库根目录的 PowerShell 7 中执行：
+原始验证使用当时的 Windows 入口；2026-10-09 将辅助入口替换为共用 Python。当前在仓库根目录执行以下等效命令，Linux 将 python 改为 python3：
 
 ```powershell
-./deploy/Initialize-Development.ps1
+python deploy/initialize.py
 docker compose -f deploy/compose.yaml up -d --build --wait --wait-timeout 150
 docker compose -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify build checks
 docker compose -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify run --rm --no-deps checks
 docker run --rm huntweave-checks:p0
-./deploy/Verify-Startup.ps1
+python deploy/verify_startup.py
 ```
 
 `checks` 是验证时按需运行的容器，基础 Compose 仍只有 app/postgres/runner 三个常驻服务。运行验证前应先启动基础栈。

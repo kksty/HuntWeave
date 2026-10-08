@@ -11,5 +11,6 @@
 | [0005 Compose、Kali 与选择性保留](./0005-compose-kali-tool-retention-and-development.md) | 有效 | 三常驻服务、Kali 工具环境、临时/缓存/选择性工具库、下游自行构建 | 无 |
 | [0006 Windows Docker 开发入口](./0006-windows-docker-development.md) | 有效 | Windows 工作区、Docker Desktop WSL2 后端；Kali WSL 非依赖；隔离 profile 独立验收 | 总纲早期的原生 Linux 优先路线 |
 | [0007 会话网络命名空间](./0007-session-network-namespace.md) | 本机技术验证通过 | 每会话网关、普通工具共享网络栈、独立 PID/文件系统、精确 IPv4/TCP 许可；P1 接入后复验 | 无 |
+| [0008 跨平台部署入口](./0008-portable-deployment-helpers.md) | 有效 | Win/Desktop 与 Linux/Engine 共用 Compose 和 Python 入口；Linux 理论可部署、原生验收待完成 | 0006 中仅 Windows 纳入部署目标的阶段范围 |
 
 0.7 是当前选型的实施契约整理：六个代码 Module、状态归属、事件顺序、执行收尾与 P0 验收写入总纲，不新增一套部署架构。后续若变更核心选型，新增 ADR 并同步此索引和总纲；普通实现细节与验证结果放对应功能规格。

@@ -10,3 +10,5 @@
 !backend/uv.lock
 !lab/
 !lab/**
+!deploy/
+!deploy/*.py
