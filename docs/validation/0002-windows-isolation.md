@@ -32,6 +32,8 @@ Windows 11 x86_64，Docker Desktop 4.94.0、Engine 29.8.2、WSL 3.0.1.0 / NAT、
 
 管理脚本 SHA-256：`81b5a31ed7a1f1c5372d459fc06b07a86388006dca2bd55dd194db7c65d540aa`。测试时源码树存在未提交实现，报告已记录 source_tree_dirty=true；使用实际脚本与镜像 hash 标识测试制品。
 
+2026-10-09 00:30:00–00:30:32（Asia/Shanghai）使用统一 Python 包装入口复验，39 项仍全部通过，连接撤销检测为 1.356 秒，cleanup_errors 为空。该报告 SHA-256 为 `5393f2a42c0b005eff3c407dd594d85fbd261e9e06fa86bad7025c6b83182a6b`，管理脚本 hash 为 `c9cfff826a0eba9c2611a7cf54b58bdb4d543bb5212cacab512823dd39cb6a1c`；网络策略 hash 不变。统一 Python 启动故障探针通过，18 项 Linux 容器回归测试通过（含初始化幂等与文件权限）。这些结果不等同于原生 Linux 宿主隔离已验收。
+
 ## 已处理的失败与边界
 
 早期使用跨 bridge 路由转发的探针未到达网关 FORWARD 链，授权端点不可达，该轮报告为失败且资源已回收。最终采用每会话独立网络命名空间，在共享命名空间的 OUTPUT/INPUT 直接限制工具流量；未改变宿主全局转发设置。另一次 UDP 探针把内核 EPERM 当作脚本失败，随后修正探针并结合真实丢包计数验证。
