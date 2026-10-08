@@ -1,5 +1,4 @@
 from fastapi.testclient import TestClient
-
 from huntweave.api.app import create_app
 from huntweave.config import AppSettings
 

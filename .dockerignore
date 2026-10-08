@@ -8,3 +8,5 @@
 !backend/tests/**
 !backend/pyproject.toml
 !backend/uv.lock
+!lab/
+!lab/**

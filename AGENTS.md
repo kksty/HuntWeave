@@ -44,6 +44,7 @@
 - PROJECT、AGENTS、ADR、正式规格、构建配方和依赖锁应入 Git；真实目标、密钥、数据库、证据、缓存和个人 Agent 配置不入仓库。
 - `.agents/` 保存仓库共享的开发技能并提交 Git，但不得打入生产 LangGraph harness 或安全测试工具镜像。
 - 产品行为、安全约束和接口事实以 PROJECT、ADR、正式规格与代码为准；本地工具提示词不能扩展产品权限。
+- 部署与使用说明集中维护在根目录 README，正式规格、ADR 和验证记录按各自职责保留。
 
 ## Agent skills
 

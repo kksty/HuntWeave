@@ -828,6 +828,6 @@ PROJECT.md 保存当前全局要求，ADR 记录决定及替代关系，`docs/sp
 
 ## 16. 项目状态与使用方式
 
-P0-A 三服务启动、访问门槛、独立数据库迁移与必需进程监督已实施并验证，结果见 docs/validation/0001-startup.md。登录、Run、研究图与隔离 profile 等后续切片仍待实施；没有执行任何真实目标测试。README 仅提供当前已验证的启动和检查入口。
+P0-A 三服务启动、访问门槛、独立数据库迁移与必需进程监督已实施并验证，结果见 docs/validation/0001-startup.md。Windows Docker Desktop 的每会话网络命名空间方案已通过本机隔离靶场技术验证，见 ADR-0007、profiles/windows11-wsl2-docker-desktop-gateway-v1.json 和 docs/validation/0002-windows-isolation.md；P1 产品接入后复验。登录、Run、研究图等后续切片仍待实施；没有执行任何真实目标测试。README 提供当前已验证的部署入口。
 
 开始下一轮开发时阅读本文件、`AGENTS.md` 与 P0 规格，按规格切片推进。先交付可登录、可启动假 Run、可观察、可中断和可恢复的路径，再接入经过隔离验收的真实执行。当前 Windows 开发栈的已验证启动命令见 README；完整 P0 与真实隔离能力按对应切片分别验收。

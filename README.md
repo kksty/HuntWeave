@@ -135,7 +135,7 @@ Invoke-RestMethod http://127.0.0.1:8080/health/live
 | app 为 `unhealthy` | 查看 app/postgres/runner 日志；启动前迁移失败、数据库或 Runner 不可用、agentd 退出、缺密钥都会影响就绪状态 |
 | 8000 端口已被占用 | 按上文通过 `.env` 调整端口，并用新端口检查存活接口 |
 | 主页返回 401 | 当前登录 UI 尚未实现，基础部署状态通过 `ps` 和 `/health/live` 检查 |
-| 执行能力显示 `environment_unsupported` | 宿主真实隔离 profile 尚未通过验收，当前工程栈只报告能力状态 |
+| 执行能力显示 `environment_unsupported` | 本机隔离技术验证已通过，但默认演示 Runner 尚未接入真实执行；当前只报告能力状态 |
 
 ## 项目资料与进度
 
@@ -145,8 +145,9 @@ Invoke-RestMethod http://127.0.0.1:8080/health/live
 - [开发 Agent 约定](./AGENTS.md)、[ADR 索引](./docs/adr/README.md)、[P0 规格](./docs/specs/0001-foundation.md)：工程约束与验收。
 - [GitHub Issues](https://github.com/kksty/HuntWeave/issues)：实现任务与进度。
 - [P0-A 启动验证](./docs/validation/0001-startup.md)：已验证命令、结果及当前限制。
+- [Windows 隔离技术验证](./docs/validation/0002-windows-isolation.md)：通过的本机 profile 与实际探针结果；验证入口为 `./deploy/Verify-Isolation.ps1`。
 
-P0 剩余工作为宿主隔离探针、登录与授权 Run、确定性 Agent/假动作、时间线、暂停取消和恢复。P1 接入真实工具执行，P2 完成完整 Agent MVP；后续功能在实现并验证后更新本 README 的部署和使用说明。
+P0 剩余工作为登录与授权 Run、确定性 Agent/假动作、时间线、暂停取消和恢复。P1 接入真实工具执行，P2 完成完整 Agent MVP；后续功能在实现并验证后更新本 README 的部署和使用说明。
 
 ## 许可证
 
