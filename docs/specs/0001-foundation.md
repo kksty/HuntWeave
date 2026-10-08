@@ -1,6 +1,6 @@
 # P0：工程骨架与运行契约
 
-状态：待实现。日期：2026-10-08。依据：[PROJECT.md 0.7](../../PROJECT.md)、[开发约定](../../AGENTS.md)。本文定义第一项可验收功能，不表示 Compose、接口或测试命令已经存在。
+状态：部分实施，P0-A 三服务工程启动已验证，其余切片待实现。日期：2026-10-08。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)。当前成果与限制见 [启动验证记录](../validation/0001-startup.md)；下文完整闭环仍属于验收要求。
 
 ## 1. 交付目标与范围
 
@@ -12,6 +12,7 @@ P0 不实现动态安装/工具保留、真实模型/联网研究、完整 Findi
 
 ## 2. 固定实施选择
 
+- 当前开发与首个受支持部署 profile 为 Windows 11 工作区 + Docker Desktop WSL2 后端，源码直接位于 Windows 文件系统。Docker Desktop 自己的 `docker-desktop` WSL 发行版承载 Linux 容器运行时；单独安装的 Kali WSL 发行版不属于项目依赖、运行时或隔离边界。Linux 宿主暂不纳入本轮部署承诺，未来通过新的宿主 profile 和独立验证加入。
 - 一个 Compose 项目，app/postgres/runner 三个常驻服务。app 的 API 与 agentd 是独立受监控进程；Runner 通过认证的内部接口工作，只有 Web 入口发布端口。
 - PostgreSQL 分开保存业务 schema 与 LangGraph checkpoint schema；迁移职责分开，在启动接收任务前完成。首版只有一个活动调度进程，内部可并发处理会话。
 - 真实 LangGraph + 确定性模型 Adapter + 假执行 Adapter。根据不同假输出产生不同下一步，保留 Collector/Worker/Reviewer 角色和独立上下文；不发起供应商模型请求。
@@ -79,7 +80,7 @@ Runner 写入完整输出文件/证据，app 只读归档。先完成文件归�
 | P0-C 假动作与玻璃鱼缸 | 真实 LangGraph、固定模型/执行 Adapter、outbox、证据与 SSE | 同初始条件遇不同结果产生不同下一步；来源/命令标签真实；并发预算和事件补拉 |
 | P0-D 故障与人工控制 | 暂停、取消、恢复预览、进程重启与结束演示 | 重放不重复执行/扣费；未知调用不盲目重试；旧租约拒绝；重启后证据与 UI 一致 |
 
-P0-A 的受支持宿主验证至少使用两个自行创建的目标容器，分别模拟授权/未授权 IP 与端口。验证无规则时不能发包、只允许配置目的地址、不能访问控制网络/宿主管理/元数据、已有连接可被撤销、子进程可全部回收；IPv6 若未通过即禁用。只在专用测试网络施加规则，不修改无关网络或测试外部目标。
+P0-A 的首个候选宿主 profile 为 Windows 11 + WSL2 NAT + Docker Desktop Linux containers。受支持宿主验证至少使用两个自行创建的目标容器，分别模拟授权/未授权 IP 与端口。验证无规则时不能发包、只允许配置目的地址、不能访问控制网络/宿主管理/元数据、已有连接可被撤销、子进程可全部回收；IPv6 若未通过即禁用。只在 Runner 管理的专用测试网络施加规则，不修改 Windows 全局防火墙、无关 Docker 网络或测试外部目标。探针全部通过前该 profile 保持候选状态，真实执行返回 `environment_unsupported`。
 
 验证记录保存执行日期、宿主/内核/Docker/防火墙后端、必要权限、命令或测试入口、结果与限制，纳入 `docs/validation/`；不保存秘密或真实资产。普通 CI 的假执行通过不替代该记录。不支持的部署必须显示 environment_unsupported，仍可查看已有数据及演示，不能开放真实执行。
 

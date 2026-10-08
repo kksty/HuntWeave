@@ -1,0 +1,93 @@
+name: huntweave
+
+x-control: &control
+  image: huntweave-control:p0
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    target: control
+  restart: unless-stopped
+  read_only: true
+  init: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: 1.0
+
+services:
+  postgres:
+    image: postgres:17-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: huntweave
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password, app_db_password, checkpoint_db_password, migrator_db_password]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sh:/docker-entrypoint-initdb.d/00-huntweave.sh:ro
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d huntweave"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  runner:
+    <<: *control
+    command: [python, -m, uvicorn, "huntweave.execution.server:create_runner", --factory, --host, 0.0.0.0, --port, "8001", --no-access-log]
+    environment:
+      HUNTWEAVE_RUNNER_TOKEN_FILE: /run/secrets/runner_token
+    secrets: [runner_token]
+    volumes: ["evidence:/evidence"]
+    networks: [control]
+    healthcheck:
+      test: [CMD, python, -m, huntweave.execution.healthcheck]
+      interval: 5s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+
+  app:
+    <<: *control
+    depends_on:
+      postgres: {condition: service_healthy}
+      runner: {condition: service_healthy}
+    environment:
+      HUNTWEAVE_DATABASE_URL: postgresql+psycopg://postgres/huntweave
+      HUNTWEAVE_APP_DB_PASSWORD_FILE: /run/secrets/app_db_password
+      HUNTWEAVE_CHECKPOINT_DB_PASSWORD_FILE: /run/secrets/checkpoint_db_password
+      HUNTWEAVE_MIGRATOR_DB_PASSWORD_FILE: /run/secrets/migrator_db_password
+      HUNTWEAVE_ACCESS_KEY_FILE: /run/secrets/access_key
+      HUNTWEAVE_RUNNER_TOKEN_FILE: /run/secrets/runner_token
+      HUNTWEAVE_RUNNER_URL: http://runner:8001
+    secrets: [access_key, app_db_password, checkpoint_db_password, migrator_db_password, runner_token]
+    volumes: ["evidence:/evidence:ro"]
+    networks: [web, control, database]
+    ports: ["127.0.0.1:${HUNTWEAVE_WEB_PORT:-8000}:8000"]
+    stop_grace_period: 20s
+    healthcheck:
+      test: [CMD, python, -m, huntweave.api.healthcheck]
+      interval: 5s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+networks:
+  web: {}
+  control: {internal: true}
+  database: {internal: true}
+
+volumes:
+  postgres_data: {}
+  evidence: {}
+
+secrets:
+  access_key: {file: ../runtime/secrets/access_key}
+  runner_token: {file: ../runtime/secrets/runner_token}
+  postgres_password: {file: ../runtime/secrets/postgres_password}
+  app_db_password: {file: ../runtime/secrets/app_db_password}
+  checkpoint_db_password: {file: ../runtime/secrets/checkpoint_db_password}
+  migrator_db_password: {file: ../runtime/secrets/migrator_db_password}
