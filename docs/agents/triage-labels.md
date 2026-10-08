@@ -1,6 +1,6 @@
 # 任务状态标签
 
-| 标准角色 | 本地状态 |
+| 标准角色 | GitHub 标签 |
 | --- | --- |
 | needs-triage | needs-triage |
 | needs-info | needs-info |
