@@ -1,0 +1,43 @@
+# Opt-in Compose Watch workflow. Base deployment remains immutable.
+x-development: &development
+  image: huntweave-control:dev
+  build:
+    target: development
+  read_only: false
+
+services:
+  app:
+    <<: *development
+    develop:
+      watch:
+        - path: ../backend/src
+          target: /opt/huntweave/backend/src
+          action: sync+restart
+          initial_sync: true
+          ignore: ["**/__pycache__/**", "**/*.pyc"]
+        - path: ../backend/migrations
+          target: /opt/huntweave/backend/migrations
+          action: sync+restart
+          initial_sync: true
+        - path: ../backend/pyproject.toml
+          action: rebuild
+        - path: ../backend/uv.lock
+          action: rebuild
+        - path: ./Dockerfile
+          action: rebuild
+
+  runner:
+    <<: *development
+    develop:
+      watch:
+        - path: ../backend/src
+          target: /opt/huntweave/backend/src
+          action: sync+restart
+          initial_sync: true
+          ignore: ["**/__pycache__/**", "**/*.pyc"]
+        - path: ../backend/pyproject.toml
+          action: rebuild
+        - path: ../backend/uv.lock
+          action: rebuild
+        - path: ./Dockerfile
+          action: rebuild

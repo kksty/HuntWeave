@@ -12,3 +12,4 @@
 !lab/**
 !deploy/
 !deploy/*.py
+!deploy/Dockerfile

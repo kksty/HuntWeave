@@ -16,6 +16,11 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin huntweave \
 USER 10001:10001
 CMD ["python", "-m", "huntweave.api.supervisor"]
 
+FROM control AS development
+USER root
+RUN chown -R huntweave:huntweave /opt/huntweave/backend/src /opt/huntweave/backend/migrations
+USER 10001:10001
+
 FROM control AS checks
 USER root
 RUN uv sync --locked --no-managed-python

@@ -88,6 +88,20 @@ docker compose --env-file .env -f deploy/compose.yaml up -d --build --wait --wai
 
 ## 运行维护
 
+### 开发模式
+
+开发时使用 [Compose Watch](https://docs.docker.com/compose/how-tos/file-watch/)（Compose 2.32+）：
+
+```sh
+docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up --build --watch
+```
+
+源码变化同步至 app/runner 并重启服务，覆盖 API 和 agentd；迁移变化同步并重启 app，在启动阶段应用迁移。`pyproject.toml`、`uv.lock` 和 Dockerfile 变化触发镜像重建。`initial_sync` 在监测开始时核对已有容器中的源码。
+
+开发构建阶段为非 root 用户提供可写源码目录，开发覆盖配置开放容器根文件系统写入；secret、证据挂载及服务权限沿用基础配置。该模式仅用于本地开发，服务重启会中断正在处理的请求和研究进程。
+
+### 部署模式
+
 ```sh
 # 状态与日志
 docker compose -f deploy/compose.yaml ps
@@ -101,7 +115,7 @@ git pull --ff-only
 docker compose -f deploy/compose.yaml up -d --build --wait --wait-timeout 150
 ```
 
-容器不实时挂载源码，源码变更通过重建生效。数据库主版本和 secrets 不随更新自动轮换；已有数据库密码需通过独立迁移流程变更。
+基础部署不启用 Watch，源码变更通过重建生效。数据库主版本和 secrets 不随更新自动轮换；已有数据库密码需通过独立迁移流程变更。
 
 | 持久内容 | 位置 |
 | --- | --- |
