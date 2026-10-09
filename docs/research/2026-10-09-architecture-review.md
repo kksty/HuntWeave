@@ -2,7 +2,7 @@
 
 日期：2026-10-09。范围：产品边界、当前源码、P0/P1 规格、恢复/证据/调度契约及 GitHub Issues #9–#21。方法：静态核对文档与代码、只读查看 Issues、核实相关官方语义；本次未运行容器或外部目标，也未验证所引其他项目的源码。用户提供的设计摘录作为待评价思路，不作为已经验证的实现事实。
 
-本文记录问题与取舍，不充当第三份实现规格。已采纳要求落在 [PROJECT](../../PROJECT.md)、[ADR-0011](../adr/0011-planning-authority-and-evidence-revisions.md)、[P1 规格](../specs/0002-real-execution.md) 和 [P2 规格](../specs/0003-agent-research.md)；当前状态只在 [STATUS](../STATUS.md) 维护。
+本文记录问题与取舍，不充当第三份实现规格。已采纳要求落在 [PROJECT](../../PROJECT.md)、[ADR-0011](../adr/0011-planning-authority-and-evidence-revisions.md)、[P1 规格](../specs/0002-real-execution.md) 和 [P2 规格](../specs/0003-agent-research.md)；当前状态只在 [STATUS](../STATUS.md) 维护。文中的 Issue 状态是**撰文当时的观察**：此后 #9、#12、#14、#15 已关闭，①档只剩 #10、#11、#13，实施切片为 #16–#21。
 
 后续用户明确要求由 [ADR-0012](../adr/0012-minimal-proof-and-target-data.md) 固定默认最小 RCE 实证与目标数据边界，由 [ADR-0013](../adr/0013-severity-and-finding-admission.md) 和 [评分/入库规格](../specs/0004-finding-admission.md) 固定结果筛选；这些决定补充本文，不能继续沿用总纲旧版的 RCE 类别额外许可要求。
 
