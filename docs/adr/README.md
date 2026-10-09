@@ -1,6 +1,6 @@
 # 架构决策索引
 
-当前架构基线为 [PROJECT.md](../../PROJECT.md)。ADR 解释取舍与历史，不要求将不同版本的结论同时实现。当前阶段、已交付能力与下一实施项见 [当前状态](../STATUS.md)；实施规格见 [P0](../specs/0001-foundation.md)、[P1](../specs/0002-real-execution.md)、[P2](../specs/0003-agent-research.md)。
+当前架构基线为 [PROJECT.md](../../PROJECT.md)。ADR 解释取舍与历史，不要求将不同版本的结论同时实现。当前阶段、已交付能力与下一实施项见 [当前状态](../STATUS.md)；实施规格见 [P0](../specs/0001-foundation.md)、[P1](../specs/0002-real-execution.md)、[P2](../specs/0003-agent-research.md)；实际验证证据见 [验证记录索引](../validation/README.md)。
 
 | ADR | 状态 | 仍然有效的部分 | 已被替代的部分 |
 | --- | --- | --- | --- |

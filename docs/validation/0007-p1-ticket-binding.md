@@ -43,6 +43,8 @@
 
 ## 待人工确认
 
+以下取舍随 Issue [#9](https://github.com/kksty/HuntWeave/issues/9) 关闭结案（2026-10-09，依据见该 Issue 的关闭评论）：第 1 项的端到端复核归 [#17](https://github.com/kksty/HuntWeave/issues/17)（复用同一校验点），第 3 项的前端文案映射归 [#19](https://github.com/kksty/HuntWeave/issues/19)。后续切片若改变这些语义，在本记录追加更正，不改写上文结论。
+
 - [ ] 未命名目标的轮转规则（按调用序号在授权端点集内取值）作为确定性 Adapter 期的暂定行为是否可接受，或应改为由计划显式命名。
 - [ ] 越界计划的处置（Run 转 `waiting` + `scope_denied` 中断 + 任务 `blocked`）是否符合 `PROJECT.md` §8.2 的拒绝语义。
 - [ ] 新原因码 `scope_denied`（沿用 `PROJECT.md` §12.2 原因码表的既有约定）与前端文案映射的衔接是否随 #12 一并确认。

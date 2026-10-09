@@ -65,4 +65,4 @@ GitHub Issues 使用标准的五类标签。详见 `docs/agents/triage-labels.md
 
 使用单上下文领域文档：根目录 `GLOSSARY.md` 与 `docs/adr/`。详见 `docs/agents/domain.md`。
 
-当前阶段、已交付能力与下一实施项见 [当前状态](./docs/STATUS.md)，不要凭本文推断。交付顺序为 P0 运行骨架/契约/隔离靶场验证、P1 Kali 执行/选择性保留/透明控制台、P2 完整 Agent MVP；办理当前阶段时使用 [docs/specs/](./docs/specs/) 中对应的正式规格，全局验收以总纲第 14 节为准；[ADR 索引](./docs/adr/README.md) 标明历史决定，不将早期默认 root、SQLite 或单容器要求带回实现。
+当前阶段、已交付能力与下一实施项见 [当前状态](./docs/STATUS.md)，不要凭本文推断。交付顺序为 P0 运行骨架/契约/隔离靶场验证、P1 Kali 执行/选择性保留/透明控制台、P2 完整 Agent MVP；办理当前阶段时使用 [docs/specs/](./docs/specs/) 中对应的正式规格，全局验收以总纲第 14 节为准；[ADR 索引](./docs/adr/README.md) 标明历史决定，不将早期默认 root、SQLite 或单容器要求带回实现。切片的实际验证证据写入 `docs/validation/`（索引见 [验证记录索引](./docs/validation/README.md)），不要在 STATUS 或 README 里复述计数与验收结论。

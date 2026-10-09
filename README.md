@@ -2,7 +2,7 @@
 
 面向已授权目标的 Agent 安全测试平台。以 LLM 驱动研究决策，通过受控执行、原始证据、独立复审与人工确认形成可追溯结论。
 
-> 当前阶段、已交付能力、下一实施项与已知限制统一记录在 [docs/STATUS.md](./docs/STATUS.md)。请先核对能力状态再使用执行入口。
+> 当前阶段、已交付能力、下一实施项与已知限制统一记录在 [docs/STATUS.md](./docs/STATUS.md)。请先核对能力状态再使用执行入口；本文件只说明安装、部署、开发与验证入口，不复述阶段状态。
 
 ## 架构
 
@@ -46,11 +46,11 @@ flowchart LR
 | Windows 11 x86_64 | Docker Desktop，WSL2 后端，Linux containers | 已完成本机启动及隔离技术验证 |
 | Linux x86_64 | Docker Engine + Compose 插件 | 共用部署入口，理论可部署；原生宿主验收待完成 |
 
-宿主依赖：Git、Python 3.10+ 和可访问的 Docker CLI。Python 仅用于部署辅助入口，业务运行依赖由容器提供。独立的 Kali WSL 发行版不是项目依赖。
+宿主依赖：Git、Python 3.10+（仅部署辅助入口）和可访问的 Docker CLI；业务运行依赖全部由容器提供。前端开发与浏览器验证另需 Node 22+。独立的 Kali WSL 发行版不是项目依赖。
 
 安装参考：[Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)、[WSL2](https://learn.microsoft.com/windows/wsl/install)、[Docker Engine](https://docs.docker.com/engine/install/)、[Python](https://www.python.org/downloads/)。
 
-本轮已验证 Engine 29.7.2、Compose 5.4.0；此前宿主隔离验证版本见对应验证记录。Python 依赖与前端依赖分别固定在 `backend/uv.lock`、`frontend/package-lock.json`，基础镜像及 Node 构建镜像固定 digest。
+已验证宿主版本以各验证记录的实测值为准：启动与隔离验证为 Docker Desktop 4.94.0 / Engine 29.8.2 / Compose 5.5.1（见 [0001](./docs/validation/0001-startup.md)、[0002](./docs/validation/0002-windows-isolation.md)），P0-B 切片记录为 Engine 29.7.2 / Compose 5.4.0（见 [0004](./docs/validation/0004-identity-runs.md)）。Python 依赖与前端依赖分别固定在 `backend/uv.lock`、`frontend/package-lock.json`，基础镜像及 Node 构建镜像固定 digest。
 
 ## 部署
 
@@ -74,7 +74,7 @@ docker compose -f deploy/compose.yaml ps
 
 app/runner 共用控制镜像，因此先单独 `build app`，再启动三个服务。本轮 Windows 中文路径下，同时构建两服务触发了 Docker 构建会话错误；以上分步入口已实际验证。
 
-登录后创建项目 → 粘贴并预览 IP → 展开 TCP 端口 → 填写有效期、授权说明和预算 → 保存授权快照 → 选择假输出场景 → 创建假 Run → 加入队列。唯一的调度进程会领取 queued Run，按 Collector → Worker → Reviewer 依次派发固定假动作，逐次把决策摘要、实际调用参数、输出、耗时、证据哈希与事件游标写入持久记录，并在“玻璃鱼缸”页面通过 SSE 展示；自动阶段结束后进入 `awaiting_human`，可查看恢复预览、结束演示或取消。记录在刷新或服务重启后读取一致。非法行必须修正或移除；重复 IP 合并；未启用 IPv6 隔离，因此 IPv6 目标可以预览但不能提交任务。页面始终标注“开发演示 / 假执行”，其输出来自固定假动作，不连接授权 IP，也不形成真实漏洞结论。
+登录后创建项目 → 粘贴并预览 IP → 展开 TCP 端口 → 填写有效期、授权说明和预算 → 保存授权快照 → 选择假输出场景 → 创建假 Run → 加入队列。唯一的调度进程会领取 queued Run，按 Collector → Worker → Reviewer 依次派发固定假动作，逐次把决策摘要、实际调用参数、输出、耗时、证据哈希与事件游标写入持久记录，并在“玻璃鱼缸”页面通过 SSE 展示；自动阶段结束后进入 `awaiting_human`，可查看恢复预览、结束演示或取消。记录在刷新或服务重启后读取一致。单 Run 导入上限为 **100 个 IP**（`PROJECT.md` §12 的保守开发默认值；实现仍在收紧到该值，见 [#13](https://github.com/kksty/HuntWeave/issues/13)）。非法行必须修正或移除；重复 IP 合并；未启用 IPv6 隔离，因此 IPv6 目标可以预览但不能提交任务。页面始终标注“开发演示 / 假执行”，其输出来自固定假动作，不连接授权 IP，也不形成真实漏洞结论。
 
 ### 配置
 
@@ -144,6 +144,8 @@ docker compose -f deploy/compose.yaml up -d --no-build --wait --wait-timeout 150
 
 ## 验证
 
+各切片的实际覆盖、检查计数、失败边界与未达成项见 [验证记录索引](./docs/validation/README.md)，阶段与能力状态见 [STATUS](./docs/STATUS.md)；本节只给出可复现的入口，不复述验收结论。
+
 回归检查通过按需容器执行：
 
 ```sh
@@ -192,8 +194,6 @@ cd ../frontend && npm run build
 
 CI（`.github/workflows/checks.yml`）运行同一组纯检查与前端构建，另有 `uv sync --frozen` 校验依赖锁。集成检查、启动/恢复故障探针和浏览器流程需要 Docker 与一次性栈，仍按上文手工执行。
 
-本轮 P0-C/D 验收结果：一次性栈内 77 项后端检查连续两次全部通过；5 项启动故障探针、6 项恢复故障探针、4 项 Playwright 浏览器流程通过；本地 Ruff、严格 mypy、51 项纯单元检查与前端类型/生产构建通过。细节与限制见 P0-C/D 验证记录。
-
 日常本机开发只保留 `huntweave` 一组服务。浏览器检查默认访问 localhost:8000，追加假项目和 Run，不清空数据库；无需保留验收项目。完整故障验收的独立项目仅临时使用，结束后立即删除其容器/测试卷。
 
 启动故障与隔离探针入口：
@@ -204,18 +204,30 @@ python -m pip install --require-hashes -r deploy/verification-requirements.txt
 python deploy/verify_isolation.py
 ```
 
-故障探针会短暂停止本项目服务；隔离探针创建独立靶场资源，只有可信管理容器获得 Docker API。结果保存在 `runtime/isolation/`。当前 Windows 记录为 40 项探针全部通过；Linux 容器测试不替代原生 Linux 宿主验收。
+故障探针会短暂停止本项目服务；隔离探针创建独立靶场资源，只有可信管理容器获得 Docker API。结果保存在 `runtime/isolation/`，Windows 当前的探针计数、实际宿主版本与报告 hash 见[隔离验证记录](./docs/validation/0002-windows-isolation.md)；Linux 容器测试不替代原生 Linux 宿主验收。
 
 ## 项目资料
 
-- [项目总纲](./PROJECT.md) · [P0 规格](./docs/specs/0001-foundation.md) · [P1 规格](./docs/specs/0002-real-execution.md) · [P2 规格](./docs/specs/0003-agent-research.md)
-- [架构决策](./docs/adr/README.md) · [Agent 开发约定](./AGENTS.md)
-- [启动验证记录](./docs/validation/0001-startup.md) · [隔离验证记录](./docs/validation/0002-windows-isolation.md)
-- [身份与 Run 验证记录](./docs/validation/0004-identity-runs.md) · [P0-C/D 执行与恢复验证记录](./docs/validation/0005-p0-execution-and-recovery.md)
-- [架构评估与后续方向](./docs/research/2026-10-09-architecture-review.md) · [自主规划与持续执行决定](./docs/adr/0009-adaptive-research-and-continuous-execution.md) · [计划与证据版本决定](./docs/adr/0011-planning-authority-and-evidence-revisions.md)
-- [GitHub Issues](https://github.com/kksty/HuntWeave/issues)
+状态与规格
 
-阶段交付和未开放能力只以 [STATUS](./docs/STATUS.md) 为入口；各项验证记录说明实际覆盖与限制。原生 Linux 宿主验收按 ADR-0010 另立切片，不作为 P1 前置。使用和部署说明保留在本文件，产品规则与正式验收分别见总纲和各阶段规格。
+- [当前状态](./docs/STATUS.md)：阶段、已交付能力与下一实施项的**唯一状态源**
+- [项目总纲](./PROJECT.md) · [P0 规格](./docs/specs/0001-foundation.md) · [P1 规格](./docs/specs/0002-real-execution.md) · [P2 规格](./docs/specs/0003-agent-research.md) · [漏洞库准入规格](./docs/specs/0004-finding-admission.md)
+
+决策记录
+
+- [ADR 索引](./docs/adr/README.md) · [真实执行边界与门槛](./docs/adr/0010-real-execution-boundary-and-gate.md) · [计划与证据版本](./docs/adr/0011-planning-authority-and-evidence-revisions.md) · [最小实证与目标数据](./docs/adr/0012-minimal-proof-and-target-data.md) · [严重性与准入](./docs/adr/0013-severity-and-finding-admission.md)
+- [架构评估与后续方向](./docs/research/2026-10-09-architecture-review.md) · [架构改进研究](./docs/research/2026-10-09-architecture-improvement.md)
+
+验证记录
+
+- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定
+
+开发协作
+
+- [Agent 开发约定](./AGENTS.md) · [领域文档与术语](./docs/agents/domain.md) · [Issue 跟踪](./docs/agents/issue-tracker.md) · [Triage 标签](./docs/agents/triage-labels.md)
+- [术语表](./GLOSSARY.md) · [GitHub Issues](https://github.com/kksty/HuntWeave/issues)
+
+阶段交付和未开放能力只以 STATUS 为入口；各项验证记录说明实际覆盖与限制。原生 Linux 宿主验收按 ADR-0010 另立切片，不作为 P1 前置。使用和部署说明保留在本文件，产品规则与正式验收分别见总纲和各阶段规格。
 
 ## 许可证
 

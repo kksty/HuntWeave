@@ -72,6 +72,8 @@ $env:HUNTWEAVE_E2E_RECONCILE_RUN_ID = "<CONSOLE_RECONCILIATION_RUN>"; npm run te
 
 ## 待人工确认
 
+以下取舍随 Issue [#15](https://github.com/kksty/HuntWeave/issues/15) 关闭结案（2026-10-09）：真实执行端等价的观测与停止确认归 [#16](https://github.com/kksty/HuntWeave/issues/16)/[#18](https://github.com/kksty/HuntWeave/issues/18)，控制动作在 `version_conflict` 后的静默重发归 [#11](https://github.com/kksty/HuntWeave/issues/11)，原因码文案映射归 [#19](https://github.com/kksty/HuntWeave/issues/19)。后续切片若改变这些语义，在本记录追加更正，不改写上文结论。
+
 - [ ] 三种裁定、受限结束与 `incomplete` 终态的语义与 `GLOSSARY.md`、`PROJECT.md` §8.2 一致。
 - [ ] 新增原因码 `result_incomplete`、`reconciliation_*`、`execution_stop_unconfirmed` 的命名与映射可接受。
 - [ ] 缺陷 1–3 的修正范围合理（缺陷 2、3 属既有调度/恢复健壮性问题，随本条一并修）。

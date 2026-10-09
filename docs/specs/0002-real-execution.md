@@ -1,6 +1,6 @@
 # P1：真实执行接入、透明控制台与选择性保留
 
-状态：待实施（初稿已评审，随 tracer 实施修订）。更新日期：2026-10-09。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)、[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md)、[当前状态](../STATUS.md)。相关决定另见 [ADR-0006](../adr/0006-windows-docker-development.md)（Windows 开发宿主）、[ADR-0007](../adr/0007-session-network-namespace.md)（每会话网络命名空间）、[ADR-0009](../adr/0009-adaptive-research-and-continuous-execution.md)（P2 持续自主执行）、[ADR-0005](../adr/0005-compose-kali-tool-retention-and-development.md)（工具保留与开发）。
+状态：已评审并采纳，随 tracer 切片实施中（`#15`、`#9` 已交付，其余见第 5 节；`#14` 规格 Issue 已关闭）。更新日期：2026-10-09。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)、[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md)、[当前状态](../STATUS.md)。相关决定另见 [ADR-0006](../adr/0006-windows-docker-development.md)（Windows 开发宿主）、[ADR-0007](../adr/0007-session-network-namespace.md)（每会话网络命名空间）、[ADR-0009](../adr/0009-adaptive-research-and-continuous-execution.md)（P2 持续自主执行）、[ADR-0005](../adr/0005-compose-kali-tool-retention-and-development.md)（工具保留与开发）。
 
 本规格只描述 P1 的行为、失败分支与完成证据，不提前实现 P2 的真实模型、联网研究与 Run 内规划。2026-10-09 架构复核按 [ADR-0011](../adr/0011-planning-authority-and-evidence-revisions.md) 修正核对、回退、实时就绪和切片依赖；这些是待实现要求，不表示相关 Issues 已修复。真实执行的开放由部署配置与宿主 profile 决定，不由模型、提示词或单次请求决定。
 
