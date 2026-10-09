@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { messages, useWorkspace, type Preview, type Project, type Run, type Scope } from './workspace';
+import RunConsole from './RunConsole.vue';
 
 const workspace = useWorkspace();
 const route = useRoute();
@@ -13,10 +14,12 @@ const shanghaiInput = (date: Date) => new Date(date.getTime() + 8 * 3600000).toI
 const starts = ref(shanghaiInput(new Date(Date.now() - 60000))), expires = ref(shanghaiInput(new Date(Date.now() + 3600000)));
 const authorization = ref(''), calls = ref(50), tokens = ref(100000), seconds = ref(3600), outputMiB = ref(32), concurrency = ref(4);
 const scope = ref<Scope | null>(null), selected = ref<Run | null>(null);
+const scenario = ref('positive');
 let idempotencyKey = crypto.randomUUID();
 const valid = computed(() => !!projectId.value && !!preview.value?.valid && !!ports.value?.length && !!authorization.value.trim());
 const formatTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
-const statusText = (run: Run) => run.status === 'draft' ? '草稿' : '已排队 · 尚未执行';
+const statuses: Record<string, string> = { draft: '草稿', queued: '已排队', running: '自动执行中', waiting: '等待条件', recovering: '正在恢复', pausing: '正在暂停', paused: '已暂停', cancelling: '正在取消', cancelled: '已取消', closed: '演示已结束', failed: '失败' };
+const statusText = (run: Run) => run.status === 'waiting' && run.phase === 'awaiting_human' ? '自动阶段结束 · 待人工复审' : statuses[run.status] || run.status;
 async function perform(action: () => Promise<void>) {
   pending.value++; error.value = '';
   try { await action(); } catch (e) { error.value = e instanceof Error ? e.message : '暂时无法完成操作。'; }
@@ -43,10 +46,12 @@ function saveScope() { return perform(async () => {
 }); }
 function createRun() { return perform(async () => {
   if (!scope.value) return;
-  const run = await workspace.api<Run>('/api/v1/runs', { scope_id: scope.value.id, scope_version: scope.value.version }, { 'Idempotency-Key': idempotencyKey });
+  const run = await workspace.api<Run>('/api/v1/runs', { scope_id: scope.value.id, scope_version: scope.value.version, demonstration_scenario: scenario.value }, { 'Idempotency-Key': idempotencyKey });
   if (!workspace.runs.some(item => item.id === run.id)) workspace.runs.unshift(run);
   await router.push(`/runs/${run.id}`); selected.value = run;
 }); }
+watch(scenario, () => { idempotencyKey = crypto.randomUUID(); });
+function updateRun(run: Run) { selected.value = run; workspace.runs = workspace.runs.map(item => item.id === run.id ? run : item); }
 function startRun() { return perform(async () => {
   if (!selected.value) return;
   const run = await workspace.api<Run>(`/api/v1/runs/${selected.value.id}/start`, { version: selected.value.version });
@@ -75,12 +80,13 @@ function startRun() { return perform(async () => {
           <label>授权说明<textarea v-model="authorization" rows="2" maxlength="2000" placeholder="说明此范围的授权依据与用途" required></textarea></label>
           <details><summary>预算上限</summary><div class="pair"><label>工具调用次数<input v-model.number="calls" type="number" min="1" max="1000"></label><label>模型 token<input v-model.number="tokens" type="number" min="1" max="1000000"></label><label>运行时长（秒）<input v-model.number="seconds" type="number" min="1" max="86400"></label><label>输出大小（MiB）<input v-model.number="outputMiB" type="number" min="1" max="1024"></label><label>并发上限<input v-model.number="concurrency" type="number" min="1" max="32"></label></div></details>
           <button :disabled="!valid" @click="saveScope">保存授权快照</button>
-          <div v-if="scope" class="preview"><p>授权快照已保存 · {{ scope.snapshot.targets.length }} 个 IP / {{ scope.snapshot.ports.length }} 个端口</p><p>修改配置将需要重新保存。创建请求重试会复用同一 Run。</p><button @click="createRun">创建假 Run</button></div>
+          <div v-if="scope" class="preview"><p>授权快照已保存 · {{ scope.snapshot.targets.length }} 个 IP / {{ scope.snapshot.ports.length }} 个端口</p><p>修改配置将需要重新保存。创建请求重试会复用同一 Run。</p><label>假输出场景<select v-model="scenario"><option value="positive">正例 · 需要独立补证</option><option value="negative">反例 · 不支持假设</option><option value="failure">失败 · 工具错误</option></select></label><button @click="createRun">创建假 Run</button></div>
         </fieldset>
       </section>
       <div class="right-column">
         <section class="panel"><h2>02 / 演示记录</h2><p v-if="!workspace.runs.length" class="muted">尚无 Run。保存左侧授权快照后创建。</p><ul class="run-list"><li v-for="run in workspace.runs" :key="run.id"><RouterLink :to="`/runs/${run.id}`"><strong>{{ workspace.projects.find(p => p.id === run.project_id)?.name || '项目' }}</strong><span>{{ statusText(run) }}</span><small>{{ formatTime(run.created_at) }} · {{ run.scope_snapshot.targets.length }} 个 IP</small></RouterLink></li></ul></section>
-        <section v-if="selected" class="panel" aria-label="Run 详情"><div class="section-heading"><h2>授权快照</h2><span class="badge">{{ statusText(selected) }}</span></div><p class="muted">{{ selected.id }} · 状态版本 {{ selected.version }}</p><dl><dt>目标</dt><dd>{{ selected.scope_snapshot.targets.join(', ') }}</dd><dt>端口（TCP）</dt><dd class="port-list">{{ selected.scope_snapshot.ports.join(', ') }}</dd><dt>有效期（上海时间）</dt><dd>{{ formatTime(selected.scope_snapshot.starts_at) }} → {{ formatTime(selected.scope_snapshot.expires_at) }}</dd><dt>授权说明</dt><dd>{{ selected.scope_snapshot.authorization }}</dd><dt>执行配置</dt><dd>开发演示 / 假执行 · {{ selected.scope_snapshot.execution_profile }} · {{ selected.scope_snapshot.config_version }}</dd><dt>预算</dt><dd>{{ selected.scope_snapshot.budget.max_tool_calls }} 次工具调用 / {{ selected.scope_snapshot.budget.max_tokens }} token / {{ selected.scope_snapshot.budget.max_wall_seconds }} 秒 / {{ selected.scope_snapshot.budget.max_output_bytes }} 字节 / 并发 {{ selected.scope_snapshot.budget.max_concurrency }}</dd></dl><button v-if="selected.status === 'draft'" :disabled="busy" @click="startRun">将假 Run 加入队列</button><p class="notice">假执行器与研究时间线将在下一切片交付。已排队表示记录已持久化，尚未执行任何动作。</p><button class="quiet" :disabled="busy" @click="perform(refreshSelected)">刷新状态</button></section>
+        <section v-if="selected" class="panel" aria-label="Run 详情"><div class="section-heading"><h2>授权快照</h2><span class="badge">{{ statusText(selected) }}</span></div><p class="muted">{{ selected.id }} · 状态版本 {{ selected.version }}</p><dl><dt>目标</dt><dd>{{ selected.scope_snapshot.targets.join(', ') }}</dd><dt>端口（TCP）</dt><dd class="port-list">{{ selected.scope_snapshot.ports.join(', ') }}</dd><dt>有效期（上海时间）</dt><dd>{{ formatTime(selected.scope_snapshot.starts_at) }} → {{ formatTime(selected.scope_snapshot.expires_at) }}</dd><dt>授权说明</dt><dd>{{ selected.scope_snapshot.authorization }}</dd><dt>执行配置</dt><dd>开发演示 / 假执行 · {{ selected.scope_snapshot.execution_profile }} · {{ selected.scope_snapshot.config_version }}</dd><dt>预算</dt><dd>{{ selected.scope_snapshot.budget.max_tool_calls }} 次工具调用 / {{ selected.scope_snapshot.budget.max_tokens }} token / {{ selected.scope_snapshot.budget.max_wall_seconds }} 秒 / {{ selected.scope_snapshot.budget.max_output_bytes }} 字节 / 并发 {{ selected.scope_snapshot.budget.max_concurrency }}</dd></dl><button v-if="selected.status === 'draft'" :disabled="busy" @click="startRun">将假 Run 加入队列</button><p class="notice">固定假动作仅验证决策、证据与恢复契约；自动阶段结束后等待人工结束演示。</p><button class="quiet" :disabled="busy" @click="perform(refreshSelected)">刷新状态</button></section>
+        <RunConsole v-if="selected" :key="selected.id" :run="selected" @updated="updateRun" />
       </div>
     </div>
   </main>
