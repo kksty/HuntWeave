@@ -2,7 +2,7 @@
 
 面向已授权目标的 Agent 安全测试平台。以 LLM 驱动研究决策，通过受控执行、原始证据、独立复审与人工确认形成可追溯结论。
 
-> **开发阶段：P0 已验收，真实执行未开放。** 当前阶段、已交付能力、下一实施项与未开放能力统一记录在 [docs/STATUS.md](./docs/STATUS.md)。当前版本不能发起真实安全测试。
+> 当前阶段、已交付能力、下一实施项与已知限制统一记录在 [docs/STATUS.md](./docs/STATUS.md)。请先核对能力状态再使用执行入口。
 
 ## 架构
 
@@ -33,9 +33,11 @@ flowchart LR
 
 目标工作流：`Collector → Worker × N → Reviewer → 人工复审`。技术栈为 Python、FastAPI、SQLAlchemy / Alembic、PostgreSQL、LangGraph OSS、Vue 3 / TypeScript 和 Docker Compose。
 
-后续架构采用证据驱动的任务规划：服务事实与研究依赖分别记录，Worker 可自主选择工具、联网研究 Web 与非 Web 方法，Run 内规划步骤按新观察调整任务。24×7 指一次发布后，同一 Run 在有效授权和预算内持续自主推进，完成后停止；服务重启后先对账，再接续原 Run。这些均为待实现规划；[架构改进研究](./docs/research/2026-10-09-architecture-improvement.md)说明问题、取舍与验收方式，[ADR-0009](./docs/adr/0009-adaptive-research-and-continuous-execution.md)记录架构决定。
+后续架构采用证据驱动的任务规划：服务事实与研究依赖分别记录，Run 内规划按有效事件提出零到多项建议，`runs` 统一提交任务，Worker 保留任务内方法选择；证据显式绑定，复审与报告按输入版本保存。24×7 指一次发布后，同一 Run 在有效授权和预算内持续推进，完成后停止，重启先对账再接续。设计取舍见[架构评估](./docs/research/2026-10-09-architecture-review.md)和 [ADR-0011](./docs/adr/0011-planning-authority-and-evidence-revisions.md)，待实现行为见 [P2 规格](./docs/specs/0003-agent-research.md)。
 
 正常交付顺序为 **自主渗透并留证 → AI 复审及有限补证 → 自动执行结束、释放执行资源 → 人工复审**。人工未处理结论时，证据继续按策略保留，自动执行已经停止；AI 复审无法完成等例外会明确记录原因和未决项。
+
+目标验证规则包含默认 RCE 最小只读留证后退出、禁止破坏或删改目标已有数据、必要新增测试数据及遗留披露，见 [PROJECT 第 9.1 节](./PROJECT.md)。规划中的正式漏洞库采用 [CVSS v4.0 与独立准入门槛](./docs/specs/0004-finding-admission.md)，低危/无害信息和未证实版本命中保留研究记录；当前实现状态以 STATUS 为准。
 
 ## 环境要求
 
@@ -204,14 +206,14 @@ python deploy/verify_isolation.py
 
 ## 项目资料
 
-- [项目总纲](./PROJECT.md) · [P0 规格](./docs/specs/0001-foundation.md)
+- [项目总纲](./PROJECT.md) · [P0 规格](./docs/specs/0001-foundation.md) · [P1 规格](./docs/specs/0002-real-execution.md) · [P2 规格](./docs/specs/0003-agent-research.md)
 - [架构决策](./docs/adr/README.md) · [Agent 开发约定](./AGENTS.md)
 - [启动验证记录](./docs/validation/0001-startup.md) · [隔离验证记录](./docs/validation/0002-windows-isolation.md)
 - [身份与 Run 验证记录](./docs/validation/0004-identity-runs.md) · [P0-C/D 执行与恢复验证记录](./docs/validation/0005-p0-execution-and-recovery.md)
-- [架构改进研究](./docs/research/2026-10-09-architecture-improvement.md) · [自主规划与持续执行决定](./docs/adr/0009-adaptive-research-and-continuous-execution.md)
+- [架构评估与后续方向](./docs/research/2026-10-09-architecture-review.md) · [自主规划与持续执行决定](./docs/adr/0009-adaptive-research-and-continuous-execution.md) · [计划与证据版本决定](./docs/adr/0011-planning-authority-and-evidence-revisions.md)
 - [GitHub Issues](https://github.com/kksty/HuntWeave/issues)
 
-P0 的假执行闭环、玻璃鱼缸时间线、故障矩阵与人工控制已交付并验证（见上述验证记录）。产品仍处于假执行阶段：真实执行返回 `environment_unsupported`，未确认调用的操作员核对入口与原生 Linux 宿主验收是 P1 的前置项。P1 接入真实执行，P2 形成含增量规划与单次任务持续自主执行的完整 Agent MVP，P4 验证并优化长时间运行的可靠性。
+阶段交付和未开放能力只以 [STATUS](./docs/STATUS.md) 为入口；各项验证记录说明实际覆盖与限制。原生 Linux 宿主验收按 ADR-0010 另立切片，不作为 P1 前置。使用和部署说明保留在本文件，产品规则与正式验收分别见总纲和各阶段规格。
 
 ## 许可证
 
