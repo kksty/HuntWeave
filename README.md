@@ -223,7 +223,7 @@ python deploy/verify_isolation.py
 
 验证记录
 
-- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限
+- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突
 
 开发协作
 

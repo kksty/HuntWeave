@@ -15,8 +15,10 @@ from sqlalchemy.orm import Session
 from huntweave.access.service import AccessService, digest
 from huntweave.api.app import create_app
 from huntweave.config import AppSettings
+from huntweave.contracts.capabilities import Capabilities
 from huntweave.contracts.errors import ServiceError
 from huntweave.contracts.runs import ProjectCreate, RunCreate, ScopeCreate
+from huntweave.execution.capabilities import evaluate
 from huntweave.runs.service import RunService
 from huntweave.storage.database import connect_engine
 from huntweave.storage.models import (
@@ -89,8 +91,20 @@ def engine() -> Iterator[Engine]:
 
 @pytest.fixture
 def client(engine: Engine) -> Iterator[TestClient]:
-    with TestClient(create_app(AppSettings(access_key=KEY), engine), base_url=ORIGIN) as result:
+    with TestClient(
+        create_app(AppSettings(access_key=KEY), engine, capability_reader=ready_capabilities),
+        base_url=ORIGIN,
+    ) as result:
         yield result
+
+
+def ready_capabilities() -> Capabilities:
+    """The execution side's answer while the fixed fake chain works and real execution stays shut.
+
+    The capability source is injected because these checks run without a Runner process; the
+    observation itself is covered by the Runner boundary and startup stack checks.
+    """
+    return evaluate(fake_execution_ready=True, now=datetime.now(UTC))
 
 
 def login(client: TestClient) -> dict[str, str]:
@@ -231,7 +245,11 @@ def test_login_limits_are_durable_and_ignore_untrusted_forwarded_ip(
             headers={"Origin": ORIGIN, "X-Forwarded-For": f"192.0.2.{attempt}"},
         )
         assert response.status_code == 401
-    restarted = TestClient(create_app(AppSettings(access_key=KEY), engine), base_url=ORIGIN)
+    restarted = TestClient(
+        create_app(AppSettings(access_key=KEY), engine, capability_reader=ready_capabilities),
+        base_url=ORIGIN,
+    )
+    restarted.cookies.update(client.cookies)
     response = restarted.post("/auth/login", json={"access_key": KEY}, headers={"Origin": ORIGIN})
     assert response.status_code == 429 and int(response.headers["retry-after"]) > 0
     with Session(engine) as session, session.begin():
@@ -343,7 +361,10 @@ def test_create_scope_run_replay_conflicts_and_immutable_snapshot(
     )
     # P0-C schedules a queued Run immediately, so a later read may already show progress;
     # a second app instance must still serve the same durable Run and Scope records.
-    restarted = TestClient(create_app(AppSettings(access_key=KEY), engine), base_url=ORIGIN)
+    restarted = TestClient(
+        create_app(AppSettings(access_key=KEY), engine, capability_reader=ready_capabilities),
+        base_url=ORIGIN,
+    )
     restarted.cookies.update(client.cookies)
     reread = restarted.get(f"/api/v1/runs/{run['id']}").json()
     assert reread["id"] == run["id"] and reread["scope_snapshot"] == run["scope_snapshot"]
@@ -361,6 +382,46 @@ def test_create_scope_run_replay_conflicts_and_immutable_snapshot(
         "closed",
     }
     assert restarted.get(f"/api/v1/scopes/{scope['id']}").json() == scope
+
+
+def test_run_readiness_follows_the_execution_side(engine: Engine) -> None:
+    with TestClient(
+        create_app(AppSettings(access_key=KEY), engine, capability_reader=ready_capabilities),
+        base_url=ORIGIN,
+    ) as client:
+        headers = login(client)
+        project = client.post("/api/v1/projects", json={"name": "就绪"}, headers=headers).json()
+        scope = client.post(
+            "/api/v1/scopes", json=scope_request(project["id"]), headers=headers
+        ).json()
+        run = client.post(
+            "/api/v1/runs",
+            json={"scope_id": scope["id"], "scope_version": 1},
+            headers={**headers, "Idempotency-Key": "readiness"},
+        ).json()
+        assert run["execution_ready"] is True
+        # An execution side that cannot be reached is reported as not ready, never as assumed
+        # ready, and the capability answer says which observation is missing.
+        unavailable = TestClient(
+            create_app(
+                AppSettings(access_key=KEY),
+                engine,
+                capability_reader=lambda: Capabilities.unobserved("runner_unavailable"),
+            ),
+            base_url=ORIGIN,
+        )
+        unavailable.cookies.update(client.cookies)
+        detail = unavailable.get(f"/api/v1/runs/{run['id']}").json()
+        assert detail["execution_ready"] is False
+        snapshot = unavailable.get(f"/api/v1/runs/{run['id']}/snapshot").json()
+        assert snapshot["run"]["execution_ready"] is False
+        listed = unavailable.get("/api/v1/runs").json()
+        assert [item["execution_ready"] for item in listed] == [False]
+        capability = unavailable.get("/api/v1/system/capabilities").json()
+        assert capability["reason_code"] == "runner_unavailable"
+        assert capability["observed_at"] is None
+        assert capability["real_execution_ready"] is False
+        assert capability["mode"] == "demonstration"
 
 
 @pytest.mark.parametrize(

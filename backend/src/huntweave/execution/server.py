@@ -3,6 +3,7 @@ import os
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from huntweave.contracts.execution import (
     ExecutionRequest,
     LeaseRenewal,
 )
+from huntweave.execution.capabilities import evaluate
 from huntweave.execution.fake import FakeRunner, RunnerRejected
 
 
@@ -72,7 +74,14 @@ def create_runner(
 
     @app.get("/v1/capabilities")
     def capabilities() -> Capabilities:
-        return Capabilities(fake_execution_ready=True)
+        # Readiness is observed here, not declared: the endpoint still answers when the ledger
+        # cannot be opened, and says which chain is unusable instead of reporting healthy.
+        try:
+            execution()
+            fake_ready = True
+        except (OSError, RunnerRejected):
+            fake_ready = False
+        return evaluate(fake_execution_ready=fake_ready, now=datetime.now(UTC))
 
     @app.post("/v1/calls")
     def submit(request: ExecutionRequest) -> ExecutionRecord:

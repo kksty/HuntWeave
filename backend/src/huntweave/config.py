@@ -7,6 +7,10 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.engine import URL, make_url
 
+# Where the control image ships the console build (deploy/Dockerfile). The app serves it, and the
+# execution side reads the served bundle to decide the console-consumption readiness gate.
+CONSOLE_BUILD = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+
 
 def read_secret(name: str, *, required: bool = True) -> str | None:
     filename = os.environ.get(name)

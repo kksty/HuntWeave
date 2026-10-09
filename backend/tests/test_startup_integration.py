@@ -62,3 +62,13 @@ def test_runner_reports_environment_unsupported_through_real_interface() -> None
     assert capability.fake_execution_ready is True
     assert capability.real_execution_ready is False
     assert capability.reason_code == "environment_unsupported"
+    assert capability.observed_at is not None
+    # Gate 3 is read from the console build this image serves, so this fails when the image was
+    # built without a console that consumes the capability answer.
+    console = [gate for gate in capability.gates if gate.gate == "console_consumption"][0]
+    assert console.ready is True
+    assert [gate.gate for gate in capability.gates if not gate.ready] == [
+        "profile_revalidation",
+        "deployment_revert",
+    ]
+    assert all(gate.reason_code for gate in capability.gates if not gate.ready)

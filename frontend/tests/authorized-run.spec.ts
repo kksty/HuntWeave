@@ -174,3 +174,87 @@ test('cancel waits for Runner acknowledgement and prevents later dispatch', asyn
   expect(second.budget).toEqual(first.budget);
   await expect(page.getByRole('button', { name: '按预览恢复' })).toHaveCount(0);
 });
+
+test('the console reports the execution mode and readiness from the capability answer', async ({ page }) => {
+  await login(page);
+  const capability = await (await page.request.get('/api/v1/system/capabilities')).json();
+  expect(capability.real_execution_ready).toBe(false);
+  expect(capability.mode).toBe('demonstration');
+  expect(capability.reason_code).toBe('environment_unsupported');
+  const readiness = page.getByTestId('execution-readiness');
+  await expect(readiness).toContainText('当前执行模式：开发演示 / 假执行');
+  // The reason on the page is this deployment's own blocking condition, not another copy of it.
+  await expect(readiness).toContainText('当前宿主环境未通过真实执行的隔离与 profile 验收。');
+  await expect(page.locator('header .badge')).toHaveText('开发演示 / 假执行');
+  // Every ADR-0010 gate the answer carries is rendered, with as many unmet as the answer has.
+  const gates = page.getByTestId('execution-gates').locator('li');
+  const unmet = capability.gates.filter((gate: { ready: boolean }) => !gate.ready);
+  await expect(gates).toHaveCount(capability.gates.length);
+  await expect(gates.filter({ hasText: '已满足' })).toHaveCount(capability.gates.length - unmet.length);
+  await page.screenshot({ path: '../runtime/validation/p1-capability-honesty.png', fullPage: true });
+});
+
+test('a capability answer that is not ready is never rendered as ready', async ({ page }) => {
+  await login(page);
+  await createDemo(page, 'positive');
+  // The execution side is unreachable: the platform must show the gap and no ready state.
+  await page.route('**/api/v1/system/capabilities', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({
+      protocol_version: '1', mode: 'demonstration', execution_profile: 'fake-p0-v1',
+      fake_execution_ready: false, real_execution_ready: false,
+      reason_code: 'runner_unavailable', observed_at: null, gates: [],
+    }),
+  }));
+  await page.reload();
+  const readiness = page.getByTestId('execution-readiness');
+  await expect(readiness).toContainText('执行端不可达，无法确认当前执行力。');
+  await expect(readiness).toContainText('真实执行未开放');
+  await expect(readiness).toContainText('执行端不可用：固定假动作链路当前无法推进。');
+  await expect(page.locator('header .badge')).toHaveText('开发演示 / 假执行');
+  await expect(page.getByTestId('execution-gates').locator('li')).toHaveCount(0);
+  await expect(page.getByTestId('console-execution-mode')).toContainText('真实执行未开放');
+  await expect(page.getByTestId('execution-unavailable')).toBeVisible();
+  await page.screenshot({ path: '../runtime/validation/p1-capability-unavailable.png', fullPage: true });
+});
+
+test('a version conflict is shown and re-sent only when the operator confirms', async ({ page }) => {
+  await login(page);
+  await createDemo(page, 'positive');
+  const snapshotPath = `/api/v1${new URL(page.url()).pathname}/snapshot`;
+  // Freeze the state the console renders, so the operator keeps looking at the version they were
+  // shown while the scheduler really advances the Run behind them.
+  const frozen = JSON.stringify(await (await page.request.get(snapshotPath)).json());
+  await page.route('**/api/v1/runs/*/snapshot', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: frozen }));
+  const start = await (await page.request.get(snapshotPath)).json();
+  await expect.poll(async () => (await (await page.request.get(snapshotPath)).json()).run.version, { timeout: 30000 }).toBeGreaterThan(start.run.version);
+  let attempts = 0;
+  await page.route('**/api/v1/runs/*/cancel', async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      // The first decision is the one built from the state the operator saw; the server refuses
+      // it, and the console stops being frozen so the panel can show what is current now.
+      await page.unroute('**/api/v1/runs/*/snapshot');
+    }
+    await route.continue();
+  });
+  await page.getByRole('button', { name: '取消 Run', exact: true }).click();
+  const conflict = page.getByTestId('version-conflict');
+  await expect(conflict).toBeVisible();
+  await expect(conflict).toContainText('状态已变化，操作未执行');
+  await expect(conflict).toContainText('不会替你重发这次取消');
+  // Nothing was re-sent from the state the operator never saw.
+  expect(attempts).toBe(1);
+  const panel = await conflict.innerText();
+  const seen = Number(/你点击时的状态版本是 (\d+)/.exec(panel)?.[1]);
+  const now = Number(/（版本 (\d+)）/.exec(panel)?.[1]);
+  expect(now).toBeGreaterThan(seen);
+  await page.screenshot({ path: '../runtime/validation/p1-version-conflict.png', fullPage: true });
+  // Only the operator's confirmation sends it again, and it carries the version on screen.
+  for (let round = 0; round < 4 && await conflict.isVisible(); round += 1) {
+    await conflict.getByRole('button', { name: /按新状态确认取消/ }).click();
+    await page.waitForTimeout(300);
+  }
+  expect(attempts).toBeGreaterThanOrEqual(2);
+  await expect(page.getByText('已取消', { exact: true }).first()).toBeVisible({ timeout: 30000 });
+});

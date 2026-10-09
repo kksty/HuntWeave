@@ -23,7 +23,8 @@ from starlette.staticfiles import StaticFiles
 
 from huntweave.access.body_limit import BodyLimitMiddleware
 from huntweave.access.service import AccessService, BrowserSession
-from huntweave.config import AppSettings
+from huntweave.api.readiness import CapabilityProbe
+from huntweave.config import CONSOLE_BUILD, AppSettings
 from huntweave.contracts.capabilities import Capabilities
 from huntweave.contracts.errors import ServiceError
 from huntweave.contracts.execution import ExecutionObservation
@@ -56,7 +57,7 @@ from huntweave.runs.service import RunService
 from huntweave.storage.database import connect_engine
 
 PUBLIC = Path(__file__).resolve().parents[1] / "access" / "public"
-FRONTEND = Path(__file__).resolve().parents[4] / "frontend" / "dist"
+FRONTEND = CONSOLE_BUILD
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
@@ -80,10 +81,12 @@ def create_app(
     settings: AppSettings | None = None,
     engine: Engine | None = None,
     observation_reader: Callable[[UUID], ExecutionObservation | None] | None = None,
+    capability_reader: Callable[[], Capabilities] | None = None,
 ) -> FastAPI:
     settings = settings or AppSettings.from_env()
     app = FastAPI(title="HuntWeave", docs_url=None, redoc_url=None, openapi_url=None)
     engine_lock = Lock()
+    capabilities_probe = CapabilityProbe(capability_reader or get_capabilities)
 
     def database() -> Engine:
         nonlocal engine
@@ -98,6 +101,16 @@ def create_app(
         return read_observation(RunnerClient(), call_id)
 
     observation_source = observation_reader or ledger_observation
+
+    def observed(view: RunView) -> RunView:
+        """Report the execution chain this Run would use as it is now, never as assumed.
+
+        `execution_ready` describes the fixed fake execution path (P0 spec section 1); it follows
+        the execution side's own answer, so an unreachable Runner turns it false instead of
+        leaving the console showing a ready platform.
+        """
+        ready = capabilities_probe.current().fake_execution_ready
+        return view.model_copy(update={"execution_ready": ready})
 
     access = AccessService(database, settings)
     runs = RunService(database)
@@ -241,25 +254,26 @@ def create_app(
 
     @app.get("/api/v1/runs")
     def list_runs() -> list[RunView]:
-        return runs.runs()
+        return [observed(item) for item in runs.runs()]
 
     @app.post("/api/v1/runs", status_code=201)
     def create_run(
         payload: RunCreate, idempotency_key: str = Header(alias="Idempotency-Key")
     ) -> RunView:
-        return runs.create_run(payload, idempotency_key)
+        return observed(runs.create_run(payload, idempotency_key))
 
     @app.get("/api/v1/runs/{run_id}")
     def run(run_id: UUID) -> RunView:
-        return runs.run(run_id)
+        return observed(runs.run(run_id))
 
     @app.post("/api/v1/runs/{run_id}/start")
     def start_run(run_id: UUID, payload: VersionRequest) -> RunView:
-        return runs.start(run_id, payload.version)
+        return observed(runs.start(run_id, payload.version))
 
     @app.get("/api/v1/runs/{run_id}/snapshot")
     def run_snapshot(run_id: UUID) -> RunSnapshot:
-        return RunSnapshot.model_validate(orchestration.snapshot(run_id))
+        snapshot = RunSnapshot.model_validate(orchestration.snapshot(run_id))
+        return snapshot.model_copy(update={"run": observed(snapshot.run)})
 
     @app.get("/api/v1/runs/{run_id}/event-history")
     def event_history(
@@ -275,19 +289,27 @@ def create_app(
 
     @app.post("/api/v1/runs/{run_id}/pause")
     def pause_run(run_id: UUID, payload: VersionRequest) -> RunView:
-        return RunView.model_validate(orchestration.control(run_id, "pause", payload.version))
+        return observed(
+            RunView.model_validate(orchestration.control(run_id, "pause", payload.version))
+        )
 
     @app.post("/api/v1/runs/{run_id}/resume")
     def resume_run(run_id: UUID, payload: VersionRequest) -> RunView:
-        return RunView.model_validate(orchestration.control(run_id, "resume", payload.version))
+        return observed(
+            RunView.model_validate(orchestration.control(run_id, "resume", payload.version))
+        )
 
     @app.post("/api/v1/runs/{run_id}/cancel")
     def cancel_run(run_id: UUID, payload: VersionRequest) -> RunView:
-        return RunView.model_validate(orchestration.control(run_id, "cancel", payload.version))
+        return observed(
+            RunView.model_validate(orchestration.control(run_id, "cancel", payload.version))
+        )
 
     @app.post("/api/v1/runs/{run_id}/close")
     def close_run(run_id: UUID, payload: VersionRequest) -> RunView:
-        return RunView.model_validate(orchestration.control(run_id, "close", payload.version))
+        return observed(
+            RunView.model_validate(orchestration.control(run_id, "close", payload.version))
+        )
 
     @app.post("/api/v1/runs/{run_id}/calls/{call_id}/reconciliation")
     def reconcile_call(
@@ -296,11 +318,12 @@ def create_app(
         browser: BrowserSession = request.state.browser
         # The ledger is read before, and outside, the business transaction that records the
         # verdict: the operator's decision is never the evidence for its own outcome.
-        return ReconciliationResult.model_validate(
+        result = ReconciliationResult.model_validate(
             orchestration.reconcile(
                 run_id, call_id, payload, browser.id, observation_source(call_id)
             )
         )
+        return result.model_copy(update={"run": observed(result.run)})
 
     @app.get("/api/v1/evidence/{evidence_id}")
     def evidence(
@@ -339,7 +362,10 @@ def create_app(
                         data = json.dumps(event, ensure_ascii=False)
                         yield f"id: {cursor}\nevent: audit\ndata: {data}\n\n"
                     if time.monotonic() >= next_heartbeat:
-                        yield 'event: heartbeat\ndata: {"demonstration":true}\n\n'
+                        # The stream heartbeat carries the mode the platform is really in, not a
+                        # fixed demonstration claim; the observation is read off the event loop.
+                        mode = (await run_in_threadpool(capabilities_probe.current)).mode
+                        yield f'event: heartbeat\ndata: {{"mode":"{mode}"}}\n\n'
                         next_heartbeat = time.monotonic() + 5
                 except ServiceError:
                     yield "event: session_expired\ndata: {}\n\n"
@@ -355,7 +381,9 @@ def create_app(
 
     @app.get("/api/v1/system/capabilities")
     def capabilities() -> Capabilities:
-        return get_capabilities()
+        # The execution side's own answer, or an explicit observation gap: never a ready state
+        # invented by the control side.
+        return capabilities_probe.current()
 
     @app.get("/openapi.json", include_in_schema=False)
     def schema() -> dict[str, object]:

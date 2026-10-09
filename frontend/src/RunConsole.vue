@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { useWorkspace, ApiFailure, type Run } from './workspace';
+import { useWorkspace, ApiFailure, statusText, type Run } from './workspace';
 
 interface AuditEvent { cursor: number; type: string; payload: Record<string, unknown>; created_at: string }
 interface Observation { started: boolean; process_active: boolean | null; connection_open: boolean | null; lease_active: boolean | null; observed_at: string; stop_confirmed: boolean }
@@ -29,6 +29,14 @@ const phase = computed(() => detail.value?.run.phase || props.run.phase);
 const canPause = computed(() => ['queued', 'running'].includes(status.value));
 const canCancel = computed(() => ['draft', 'queued', 'running', 'waiting', 'recovering', 'pausing', 'paused'].includes(status.value));
 const showResume = computed(() => status.value === 'paused' || (status.value === 'waiting' && phase.value !== 'awaiting_human'));
+// The execution mode and its blocking reason come from the capability answer; the per-Run
+// readiness comes from this Run's own view, so a lost execution side shows up within one poll.
+const executionNotice = computed(() => {
+  if (workspace.realExecutionReady) return '这是真实执行：动作、输出与证据来自实际执行端，仍受本次授权与预算约束。';
+  const reason = workspace.readinessReason;
+  return `这是开发演示：参数与输出来自固定假动作，不连接授权 IP，不形成真实漏洞结论。真实执行未开放${reason ? `，原因：${reason}` : '。'}决策摘要仅记录依据、预期与停止条件。`;
+});
+const executionUnavailable = computed(() => !!detail.value && (!detail.value.run.execution_ready || !workspace.fakeExecutionReady));
 async function refresh(epoch = generation) {
   try {
     const result = await workspace.api<Detail>(`/api/v1/runs/${props.run.id}/snapshot`);
@@ -66,23 +74,33 @@ watch(() => props.run.id, async () => {
   } catch (e) { error.value = e instanceof Error ? e.message : '时间线读取失败。'; }
 }, { immediate: true });
 onBeforeUnmount(() => { generation++; stop(); });
+// A control request the server refused because the Run moved on. The operator's decision must
+// land on the state they actually saw, so the console shows what changed and waits for them
+// instead of re-sending the action from a version it read behind their back.
+const conflict = ref<{ action: string; seenVersion: number; current: Run } | null>(null);
+const actionLabels: Record<string, string> = { pause: '暂停', cancel: '取消', close: '结束演示', resume: '恢复' };
+const actionLabel = (action: string) => actionLabels[action] || action;
 async function control(action: string) {
   busy.value = true; error.value = '';
-  const send = async () => {
-    const run = await workspace.api<Run>(`/api/v1/runs/${props.run.id}/${action}`, { version: detail.value?.run.version || props.run.version });
-    emit('updated', run); preview.value = null; await refresh();
-  };
   try {
-    try { await send(); }
-    catch (failure) {
-      if (!(failure instanceof ApiFailure) || failure.reasonCode !== 'version_conflict') throw failure;
-      // The scheduler advances a Run between two renders, so a deliberate control request
-      // is re-sent once from a freshly read version instead of being silently dropped.
+    const run = await workspace.api<Run>(`/api/v1/runs/${props.run.id}/${action}`, { version: detail.value?.run.version || props.run.version });
+    conflict.value = null; emit('updated', run); preview.value = null; await refresh();
+  } catch (failure) {
+    if (failure instanceof ApiFailure && failure.reasonCode === 'version_conflict') {
+      const seenVersion = detail.value?.run.version || props.run.version;
       await refresh();
-      await send();
+      conflict.value = { action, seenVersion, current: detail.value?.run || props.run };
+    } else {
+      error.value = failure instanceof Error ? failure.message : '操作失败。';
+      await refresh();
     }
-  } catch (e) { error.value = e instanceof Error ? e.message : '操作失败。'; await refresh(); }
-  finally { busy.value = false; }
+  } finally { busy.value = false; }
+}
+async function confirmConflict() {
+  const pending = conflict.value;
+  if (!pending) return;
+  conflict.value = null;
+  await control(pending.action);
 }
 async function resumePreview() {
   busy.value = true;
@@ -123,10 +141,20 @@ async function reconcile(call: Call, outcome: string) {
 
 <template>
   <section class="panel execution-console" aria-label="玻璃鱼缸执行台">
-    <div class="section-heading"><h2>03 / 玻璃鱼缸</h2><span class="badge">固定假动作</span></div>
+    <div class="section-heading"><h2>03 / 玻璃鱼缸</h2><span class="badge">{{ workspace.realExecutionReady ? '真实执行' : '固定假动作' }}</span></div>
     <p class="muted">{{ connection }} · 执行心跳 {{ time(detail?.heartbeat_at || null) }} · 流心跳 {{ time(lastHeartbeat) }}</p>
-    <p class="notice">这是开发演示：参数与输出来自固定假动作，不连接授权 IP，不形成真实漏洞结论。决策摘要仅记录依据、预期与停止条件。</p>
+    <p class="notice" data-testid="console-execution-mode">{{ executionNotice }}</p>
+    <p v-if="executionUnavailable" class="error" role="alert" data-testid="execution-unavailable">执行端未就绪：当前 Run 的固定假动作链路不可用，状态可能不会推进。</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
+    <div v-if="conflict" class="notice" role="alert" data-testid="version-conflict">
+      <strong>状态已变化，操作未执行</strong>
+      <p>你点击时的状态版本是 {{ conflict.seenVersion }}；现在为 {{ statusText(conflict.current) }}（版本 {{ conflict.current.version }}）{{ conflict.current.phase ? ` · 阶段 ${conflict.current.phase}` : '' }}。</p>
+      <p>控制台已读取新状态，但不会替你重发这次{{ actionLabel(conflict.action) }}。</p>
+      <div class="control-actions">
+        <button :disabled="busy" @click="confirmConflict">按新状态确认{{ actionLabel(conflict.action) }}（版本 {{ conflict.current.version }}）</button>
+        <button class="secondary" :disabled="busy" @click="conflict = null">放弃</button>
+      </div>
+    </div>
     <div class="control-actions">
       <button v-if="canPause" :disabled="busy" @click="control('pause')">暂停 Run</button>
       <button v-if="canCancel" class="secondary" :disabled="busy" @click="control('cancel')">取消 Run</button>

@@ -134,7 +134,9 @@ class RunView(Contract):
     version: int
     created_at: datetime
     demonstration: Literal[True] = True
-    execution_ready: bool = True
+    # Observed per response, never assumed: a view that has not asked the execution side must not
+    # claim its chain is ready.
+    execution_ready: bool = False
     demonstration_scenario: Literal["positive", "negative", "failure"] = "positive"
     started_at: datetime | None = None
     reason_code: str | None = None

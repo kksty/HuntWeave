@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { messages, useWorkspace, type Preview, type Project, type Run, type Scope } from './workspace';
+import { gateLabels, messages, reasonText, statusText, useWorkspace, type Preview, type Project, type Run, type Scope } from './workspace';
 import RunConsole from './RunConsole.vue';
 
 const workspace = useWorkspace();
 const route = useRoute();
 const router = useRouter();
 const pending = ref(0), busy = computed(() => pending.value > 0), error = ref(''), projectId = ref(''), name = ref(''), description = ref('');
+// Execution readiness is rendered from the execution side's own answer, so the page never
+// claims a mode the platform is not in.
+const capabilities = computed(() => workspace.capabilities);
+let capabilityTimer: ReturnType<typeof setInterval> | null = null;
 const targets = ref(''), preview = ref<Preview | null>(null);
 const portProfile = ref('common-tcp-v1'), customPorts = ref(''), ports = ref<number[] | null>(null);
 const shanghaiInput = (date: Date) => new Date(date.getTime() + 8 * 3600000).toISOString().slice(0, 16);
@@ -18,8 +22,6 @@ const scenario = ref('positive');
 let idempotencyKey = crypto.randomUUID();
 const valid = computed(() => !!projectId.value && !!preview.value?.valid && !!ports.value?.length && !!authorization.value.trim());
 const formatTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
-const statuses: Record<string, string> = { draft: '草稿', queued: '已排队', running: '自动执行中', waiting: '等待条件', recovering: '正在恢复', pausing: '正在暂停', paused: '已暂停', cancelling: '正在取消', cancelled: '已取消', closed: '演示已结束', failed: '失败' };
-const statusText = (run: Run) => run.status === 'waiting' && run.phase === 'awaiting_human' ? '自动阶段结束 · 待人工复审' : statuses[run.status] || run.status;
 async function perform(action: () => Promise<void>) {
   pending.value++; error.value = '';
   try { await action(); } catch (e) { error.value = e instanceof Error ? e.message : '暂时无法完成操作。'; }
@@ -33,7 +35,12 @@ async function refreshSelected() {
   selected.value = typeof id === 'string' ? await workspace.api<Run>(`/api/v1/runs/${encodeURIComponent(id)}`) : null;
 }
 watch(() => route.params.id, () => perform(refreshSelected));
-onMounted(() => perform(async () => { await workspace.load(); projectId.value = workspace.projects[0]?.id || ''; await refreshSelected(); }));
+onMounted(() => perform(async () => {
+  await workspace.load(); projectId.value = workspace.projects[0]?.id || ''; await refreshSelected();
+  // The mode can change under the operator (execution side lost or restored), so it is re-read.
+  capabilityTimer = setInterval(() => { void workspace.loadCapabilities().catch(() => undefined); }, 10000);
+}));
+onUnmounted(() => { if (capabilityTimer) clearInterval(capabilityTimer); capabilityTimer = null; });
 function createProject() { return perform(async () => {
   const project = await workspace.api<Project>('/api/v1/projects', { name: name.value, description: description.value });
   workspace.projects.unshift(project); projectId.value = project.id; name.value = ''; description.value = '';
@@ -60,9 +67,17 @@ function startRun() { return perform(async () => {
 </script>
 
 <template>
-  <header><RouterLink to="/" class="brand">HUNTWEAVE</RouterLink><span class="badge">开发演示 / 假执行</span><button class="quiet" :disabled="busy" @click="perform(workspace.logout)">退出登录</button></header>
+  <header><RouterLink to="/" class="brand">HUNTWEAVE</RouterLink><span class="badge">{{ workspace.executionMode }}</span><button class="quiet" :disabled="busy" @click="perform(workspace.logout)">退出登录</button></header>
   <main>
     <div class="intro"><p class="eyebrow">研究工作台 · P0</p><h1>先确定范围，再开始研究。</h1><p>保存授权范围与预算，创建可恢复的演示记录。当前版本不连接目标，不执行扫描。</p></div>
+    <p class="notice" role="status" data-testid="execution-readiness">
+      当前执行模式：{{ workspace.executionMode }}。
+      <template v-if="!capabilities">尚未取得执行端的能力结论，不能据此认为平台就绪。</template>
+      <template v-else-if="!workspace.realExecutionReady">真实执行未开放：{{ workspace.readinessReason || '未取得执行端的能力结论。' }}</template>
+      <template v-if="capabilities && !workspace.fakeExecutionReady">执行端不可用：固定假动作链路当前无法推进。</template>
+      <template v-if="capabilities?.observed_at">能力观测于 {{ formatTime(capabilities.observed_at) }}。</template>
+    </p>
+    <details v-if="capabilities && !workspace.realExecutionReady && capabilities.gates.length" class="notice" data-testid="execution-gates"><summary>真实执行就绪门槛（逐项）</summary><ul><li v-for="gate in capabilities.gates" :key="gate.gate">{{ gateLabels[gate.gate] || gate.gate }}：{{ gate.ready ? '已满足' : reasonText(gate.reason_code) }}</li></ul></details>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <div class="columns">
       <section class="panel configuration"><h2>01 / 项目与授权</h2>

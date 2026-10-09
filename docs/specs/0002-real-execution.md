@@ -1,6 +1,6 @@
 # P1：真实执行接入、透明控制台与选择性保留
 
-状态：已评审并采纳，随 tracer 切片实施中（`#15`、`#9` 已交付，其余见第 5 节；`#14` 规格 Issue 已关闭）。更新日期：2026-10-09。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)、[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md)、[当前状态](../STATUS.md)。相关决定另见 [ADR-0006](../adr/0006-windows-docker-development.md)（Windows 开发宿主）、[ADR-0007](../adr/0007-session-network-namespace.md)（每会话网络命名空间）、[ADR-0009](../adr/0009-adaptive-research-and-continuous-execution.md)（P2 持续自主执行）、[ADR-0005](../adr/0005-compose-kali-tool-retention-and-development.md)（工具保留与开发）。
+状态：已评审并采纳，随 tracer 切片实施中（`#15`、`#9`、`#13`、`#10`、`#11` 已交付，其余见第 5 节；`#14` 规格 Issue 已关闭）。更新日期：2026-10-10。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)、[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md)、[当前状态](../STATUS.md)。相关决定另见 [ADR-0006](../adr/0006-windows-docker-development.md)（Windows 开发宿主）、[ADR-0007](../adr/0007-session-network-namespace.md)（每会话网络命名空间）、[ADR-0009](../adr/0009-adaptive-research-and-continuous-execution.md)（P2 持续自主执行）、[ADR-0005](../adr/0005-compose-kali-tool-retention-and-development.md)（工具保留与开发）。
 
 本规格只描述 P1 的行为、失败分支与完成证据，不提前实现 P2 的真实模型、联网研究与 Run 内规划。[2026-10-09 架构评估](../research/2026-10-09-architecture-assessment.md)按 [ADR-0011](../adr/0011-planning-authority-and-evidence-revisions.md) 修正核对、回退、实时就绪和切片依赖；这些是待实现要求，不表示相关 Issues 已修复。真实执行的开放由部署配置与宿主 profile 决定，不由模型、提示词或单次请求决定。
 
@@ -220,8 +220,8 @@ P0 验收关闭后的两轴代码审查发现三类问题。它们必须先解�
 ### ①档 必修，作为独立 Issue 先完成并阻塞首批 tracer
 
 - **issue #9 执行票据写死目标绑定**（**已交付并关闭** `656ab22`，证据 `docs/validation/0007-p1-ticket-binding.md`）：票据的目标 IP 与端口取自授权清单首项，而不是即将执行的真实目标；策略版本是字面量却参与 Run 级 fencing 比较。在假执行下这只是记录不准；在真实执行下它同时是**证据归属错误**与逐目标范围校验的缺失。修复后必须有多目标多端口回归：不同目标产生不同绑定的票据，越界目标被拒绝。
-- **issue #10 能力就绪状态只在 API 层**（待交付）：能力接口存在但前端不消费，执行就绪字段默认恒为真且从不被置否。修复后界面按真实条件标注执行模式与未就绪原因。
-- **issue #11 控制台在版本冲突后静默重发操作员控制动作**（待交付）：版本校验的目的正是防止操作员的决定被执行在他没看到的状态上；静默重发把防线变成自动重试。修复后冲突先展示新状态，再由操作员显式确认。
+- **issue #10 能力就绪状态只在 API 层**（**已交付并关闭**，证据 `docs/validation/0010-p1-capability-and-control-conflict.md`）：能力接口存在但前端不消费，执行就绪字段默认恒为真且从不被置否。修复后能力契约可表达未就绪且原因码可空，`real_execution_ready` 按 ADR-0010 四项门槛逐项计算并随响应返回，界面消费能力接口后按真实条件标注执行模式与未就绪原因，`execution_ready` 随执行端观测变化、执行端不可达时为 false。
+- **issue #11 控制台在版本冲突后静默重发操作员控制动作**（**已交付并关闭**，证据 `docs/validation/0010-p1-capability-and-control-conflict.md`）：版本校验的目的正是防止操作员的决定被执行在他没看到的状态上；静默重发把防线变成自动重试。修复后冲突先展示新状态（状态、阶段与版本），再由操作员显式确认后才重新发送，未确认前不再发出第二个请求。
 - **issue #13 单 Run 目标上限文档与实现不一致**（**已交付并关闭**，提交 `c1a4ec2`，证据 `docs/validation/0008-p1-target-limit.md`，且是 #16 的原生阻塞边）：`PROJECT.md` §12 的保守默认值是单 Run 100 个 IP，代码却强制 5000。已按产品基线收紧到 100（模块常量 `TARGET_LIMIT`），越界输入仍返回结构化原因码 `target_limit_exceeded`，并补了按上限的边界检查（100 通过、101 拒绝）。上限计去重后的不同目标，本轮不引入配置项；验证记录的 6 项待确认按结案条款处置（2 项顺延 #19、1 项记入 STATUS 已知限制）。
 
 ### ②档 随对应 tracer 的验收项
@@ -233,11 +233,11 @@ P0 验收关闭后的两轴代码审查发现三类问题。它们必须先解�
 
 ### ③档 文档已更正，Issue 已确认关闭
 
-文档更正已经落地：P0-C/D 验证记录加入「本记录的更正」一节。[#12](https://github.com/kksty/HuntWeave/issues/12) 已于 2026-10-09 人工复核并关闭（复核结论见该 Issue，末次更正提交 `e774e81`）。本节自此结案，仍不得把 #10 的待修缺陷写成已修复。
+文档更正已经落地：P0-C/D 验证记录加入「本记录的更正」一节。[#12](https://github.com/kksty/HuntWeave/issues/12) 已于 2026-10-09 人工复核并关闭（复核结论见该 Issue，末次更正提交 `e774e81`）。本节自此结案。该节最初记下的「#10 的待修缺陷不得写成已修复」在 #10 交付并关闭（2026-10-10，证据 `docs/validation/0010-p1-capability-and-control-conflict.md`）后不再适用：能力诚实性现由能力契约、控制台标注与逐项门槛检查共同支撑，而不是当时的文案声明。
 
 ## 5. tracer 顺序与完成证据
 
-每个切片按下表演示，Issue 编号不代表安全依赖顺序。前置缺陷为 #9、#10、#11、#13：其中 [#9](https://github.com/kksty/HuntWeave/issues/9) 已交付并关闭（提交 `656ab22`，证据 `docs/validation/0007-p1-ticket-binding.md`），[#13](https://github.com/kksty/HuntWeave/issues/13) 已交付并关闭（提交 `c1a4ec2`，证据 `docs/validation/0008-p1-target-limit.md`），#10、#11 仍开放；#12 记录更正已人工确认关闭。真实集成路径明确为 **#16 容器生命周期 → #18 出口/取消 → #17 真实动作闭环 → #19 控制台 → #20 保留 → #21 压力验收**；#15 的核对契约必须在允许真实调用恢复之前完成。#17 的纯契约/假执行开发可提前，任何靶场目标动作必须等 #16/#18 的隔离与回收验证，不以功能切片尚未合并为由暂时开放出口。
+每个切片按下表演示，Issue 编号不代表安全依赖顺序。前置缺陷为 #9、#10、#11、#13：其中 [#9](https://github.com/kksty/HuntWeave/issues/9) 已交付并关闭（提交 `656ab22`，证据 `docs/validation/0007-p1-ticket-binding.md`），[#13](https://github.com/kksty/HuntWeave/issues/13) 已交付并关闭（提交 `c1a4ec2`，证据 `docs/validation/0008-p1-target-limit.md`），[#10](https://github.com/kksty/HuntWeave/issues/10)、[#11](https://github.com/kksty/HuntWeave/issues/11) 亦已交付并关闭（2026-10-10，证据 `docs/validation/0010-p1-capability-and-control-conflict.md`），四项①档前置至此全部关闭；#12 记录更正已人工确认关闭。真实集成路径明确为 **#16 容器生命周期 → #18 出口/取消 → #17 真实动作闭环 → #19 控制台 → #20 保留 → #21 压力验收**；#15 的核对契约必须在允许真实调用恢复之前完成。#17 的纯契约/假执行开发可提前，任何靶场目标动作必须等 #16/#18 的隔离与回收验证，不以功能切片尚未合并为由暂时开放出口。
 
 #16 单独验收仅运行无目标网络的固定生命周期检查；真实 Runner 集成测试使用显式隔离测试配置，不能为运行测试把产品就绪门槛改成 true。#21 的基础多 Run 公平/取消检查应随 #17/#18 前移，最终压力与容量校准仍在 #21。
 
