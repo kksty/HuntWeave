@@ -1,8 +1,14 @@
-"""Exercise P0 recovery through a disposable local Compose stack and public APIs.
+"""Exercise recovery and reconciliation faults on a disposable Compose stack.
 
-This script intentionally refuses the daily development Compose project. It leaves
-its demonstration records intact for inspection and restores injected faults in
-finally blocks. No network probes or user commands are sent to a target.
+This is the only verification layer that acts on the running topology instead of a
+process: the checks container has no Docker access, so restarting app/Runner, stopping
+PostgreSQL, revoking checkpoint privileges and tampering with an evidence archive can
+only be driven from the host. Behaviour that pytest already covers at the service and
+HTTP level is asserted here only to show it still holds across a real fault.
+
+The script intentionally refuses the daily development Compose project. It leaves its
+demonstration records intact for inspection and restores injected faults in finally
+blocks. No network probes or user commands are sent to a target.
 """
 
 import argparse
@@ -358,6 +364,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True)
     parser.add_argument("--base-url", default="http://127.0.0.1:18000")
+    parser.add_argument(
+        "--no-console-fixture",
+        action="store_true",
+        help="skip the extra unknown Run that prepares the browser reconciliation check",
+    )
     options = parser.parse_args()
     try:
         probe = Probe(options.project, options.base_url)
@@ -370,10 +381,12 @@ def main() -> None:
     probe.evidence_loss_fault(run_id)
     probe.restart_fault()
     probe.reconciliation_flow()
-    probe.unknown_run_for_console()
+    if not options.no_console_fixture:
+        # Leaves one unknown call behind and prints its id for the Playwright flow.
+        probe.unknown_run_for_console()
     probe.database_outage_fault()
     probe.checkpoint_fault()
-    print("Live recovery probes passed; use backend tests and Playwright for remaining P0 contracts")
+    print("Live recovery probes passed; use backend tests and Playwright for remaining contracts")
 
 
 if __name__ == "__main__":
