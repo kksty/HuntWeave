@@ -40,8 +40,9 @@ services:
     command: [python, -m, uvicorn, "huntweave.execution.server:create_runner", --factory, --host, 0.0.0.0, --port, "8001", --no-access-log]
     environment:
       HUNTWEAVE_RUNNER_TOKEN_FILE: /run/secrets/runner_token
+      HUNTWEAVE_RUNNER_STATE_DIR: /runner-state
     secrets: [runner_token]
-    volumes: ["evidence:/evidence"]
+    volumes: ["evidence:/evidence", "runner_state:/runner-state"]
     networks: [control]
     healthcheck:
       test: [CMD, python, -m, huntweave.execution.healthcheck]
@@ -85,6 +86,7 @@ networks:
 volumes:
   postgres_data: {}
   evidence: {}
+  runner_state: {}
 
 secrets:
   access_key: {file: ../runtime/secrets/access_key}

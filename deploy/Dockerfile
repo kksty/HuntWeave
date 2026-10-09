@@ -22,7 +22,7 @@ COPY backend/migrations ./migrations
 COPY profiles/common-tcp-v1.json /opt/huntweave/profiles/common-tcp-v1.json
 COPY --from=frontend /frontend/dist /opt/huntweave/frontend/dist
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin huntweave \
-    && mkdir /evidence && chown huntweave:huntweave /evidence
+    && mkdir /evidence /runner-state && chown huntweave:huntweave /evidence /runner-state
 USER 10001:10001
 CMD ["python", "-m", "huntweave.api.supervisor"]
 
