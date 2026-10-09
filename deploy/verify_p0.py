@@ -32,7 +32,8 @@ class Probe:
         if project != DISPOSABLE_PROJECT:
             raise ValueError(f"Failure injection requires --project {DISPOSABLE_PROJECT}")
         if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1"
-                or parsed.port in {None, 8000} or parsed.path or parsed.query or parsed.fragment):
+                or parsed.port in {None, 8000} or parsed.username or parsed.password
+                or parsed.path or parsed.query or parsed.fragment):
             raise ValueError("Use an isolated http://127.0.0.1:<port> origin, never port 8000")
         self.base_url = base_url
         self.environment = {**os.environ, "HUNTWEAVE_WEB_PORT": str(parsed.port),
