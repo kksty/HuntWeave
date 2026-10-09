@@ -63,7 +63,7 @@ cd frontend; $env:HUNTWEAVE_E2E_BASE_URL = "http://127.0.0.1:18000"; npx playwri
 P0 验收关闭之后，对 `5b3a3e4...8b9dbe3` 做了 Standards 与 Spec 两轴代码审查。以下三处表述与实现不符，在此更正；上方原始观察不改写，更正以本节为准：
 
 1. **确定性分支不是「输出→决策」**：确定性 Adapter 按 Run 记录的 `demonstration_scenario` 分支，并**不读取**已记录的调用输出（`last_output` 被写入但从未被读取）；`negative` 只作用于 Worker 步骤，Collector 的 step-0 决策不看场景。因此「相同初始服务遇不同固定输出产生不同后续研究决策」这条能力**未真正达成**，P0 规格第 5 节 P0-C 行与 issue #4 的同名验收条件不成立，已进入 P1 修复项跟踪。
-2. **issue #5 故障矩阵的「租约到期但旧调用仍在运行」行**标为 PASS，但 `deploy/verify_p0.py` 实际只有 app 重启、分页历史、证据丢失、Runner 重启、PostgreSQL 中断与检查点写失败六项，没有该探针；该行实为「未探针」，留待 P1 真实执行接入时补。
+2. **issue #5 故障矩阵的「租约到期但旧调用仍在运行」行**标为 PASS，但 `deploy/verify_p0.py` 当时没有以该行命名的专用探针（六项分别是 app 重启、分页历史、证据丢失、Runner 重启、PostgreSQL 中断与检查点写失败）。复核 `database_outage_fault` 的断言后更正本节结论：该行「执行端最迟在控制租约到期触发停止」一节**已由「PostgreSQL 中断」探针实际覆盖**——它先等待调用进入 `running`，再停库，随后断言账本记录为 `cancelled` 且 `reason_code=control_lease_expired`，即控制租约在旧调用仍在运行时到期并被停止；该行「核对并回收旧调用后才释放主机锁」一节当时无探针（核对侧现由 #15 的停止确认与收敛闸门覆盖，同 IP 主机锁属 #18/#21）。因此该行应记为「由 PostgreSQL 中断探针间接覆盖」，不是「未探针」；是否需要独立探针留待 P1 决定。P0 留下未探针的是本节第 3 处与上文「事件游标保留期」一行。
 3. **能力诚实性只在 API 层**：`GET /api/v1/system/capabilities` 存在，但前端没有任何代码消费它，且 `RunView.execution_ready` 的默认值为 true 且从不被置否——「界面始终标为假执行」当时只是文案，不是被程序约束的状态。
 
 三处均属 P1 修复范围，见 [当前状态](../STATUS.md)；① 档（真实执行前必修）与 ③ 档（文档更正）分别跟踪。
