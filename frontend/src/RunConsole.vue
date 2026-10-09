@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { useWorkspace, type Run } from './workspace';
+import { useWorkspace, ApiFailure, type Run } from './workspace';
 
 interface AuditEvent { cursor: number; type: string; payload: Record<string, unknown>; created_at: string }
 interface Call { id: string; session_id: string; decision_id: string; status: string; action: string; parameters: Record<string, unknown>; result: Record<string, unknown> | null; evidence_ids: string[]; created_at: string }
@@ -65,9 +65,19 @@ watch(() => props.run.id, async () => {
 onBeforeUnmount(() => { generation++; stop(); });
 async function control(action: string) {
   busy.value = true; error.value = '';
-  try {
+  const send = async () => {
     const run = await workspace.api<Run>(`/api/v1/runs/${props.run.id}/${action}`, { version: detail.value?.run.version || props.run.version });
     emit('updated', run); preview.value = null; await refresh();
+  };
+  try {
+    try { await send(); }
+    catch (failure) {
+      if (!(failure instanceof ApiFailure) || failure.reasonCode !== 'version_conflict') throw failure;
+      // The scheduler advances a Run between two renders, so a deliberate control request
+      // is re-sent once from a freshly read version instead of being silently dropped.
+      await refresh();
+      await send();
+    }
   } catch (e) { error.value = e instanceof Error ? e.message : '操作失败。'; await refresh(); }
   finally { busy.value = false; }
 }

@@ -19,6 +19,11 @@ export const messages: Record<string, string> = {
   budget_exhausted: '预算已耗尽，执行已阻断。', evidence_missing: '原始证据文件缺失。', evidence_corrupt: '证据校验失败。',
 };
 
+export class ApiFailure extends Error {
+  // The contract reason_code decides whether a deliberate request can be re-sent.
+  constructor(message: string, readonly reasonCode: string | undefined) { super(message); }
+}
+
 export const useWorkspace = defineStore('workspace', () => {
   // Session CSRF token lives in memory; the HttpOnly authentication cookie is server-managed.
   const csrf = ref('');
@@ -27,7 +32,10 @@ export const useWorkspace = defineStore('workspace', () => {
   async function api<T>(path: string, body?: unknown, extra: Record<string, string> = {}): Promise<T> {
     const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.value, ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (response.status === 401) { window.location.replace('/login'); throw new Error('会话已失效。'); }
-    if (!response.ok) { const data = await response.json(); throw new Error(messages[data.reason_code] || `请求失败（${data.reason_code || response.status}）。`); }
+    if (!response.ok) {
+      const data = await response.json() as { reason_code?: string };
+      throw new ApiFailure(messages[data.reason_code || ''] || `请求失败（${data.reason_code || response.status}）。`, data.reason_code);
+    }
     return response.status === 204 ? undefined as T : response.json();
   }
   async function load() {

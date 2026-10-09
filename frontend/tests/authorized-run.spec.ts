@@ -129,6 +129,9 @@ test('pause, reload, resume preview, original evidence and human close preserve 
 test('cancel waits for Runner acknowledgement and prevents later dispatch', async ({ page }) => {
   await login(page);
   await createDemo(page, 'negative');
+  // Wait for the console to show the first dispatched call, so the cancel exercises the
+  // acknowledgement path against a live snapshot instead of racing an empty console.
+  await expect(page.getByText('fake.collect', { exact: false }).first()).toBeVisible({ timeout: 30000 });
   await page.getByRole('button', { name: '取消 Run', exact: true }).click();
   await expect(page.getByText('已取消', { exact: true }).first()).toBeVisible({ timeout: 30000 });
   const snapshotUrl = `/api/v1${new URL(page.url()).pathname}/snapshot`;
