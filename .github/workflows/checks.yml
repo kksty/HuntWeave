@@ -1,0 +1,45 @@
+name: checks
+
+# 只跑不需要容器与数据库的纯检查。
+# 集成检查、启动/恢复故障探针和浏览器流程需要 Docker 与一次性栈，仍手工执行，
+# 入口见 README「验证」一节。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend（ruff / mypy / 单元检查）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --group dev
+      - run: uv run --frozen ruff check src tests
+      - run: uv run --frozen mypy --config-file pyproject.toml src
+      - run: uv run --frozen python -m pytest -m "not integration" -q
+
+  frontend:
+    name: frontend（类型 / 生产构建）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
