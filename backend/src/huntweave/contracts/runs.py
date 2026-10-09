@@ -93,6 +93,8 @@ class ScopeView(Contract):
 class RunCreate(Contract):
     scope_id: UUID
     scope_version: int = Field(ge=1, strict=True)
+    demonstration_scenario: Literal["positive", "negative", "failure"] = "positive"
+    demonstration_duration_ms: int = Field(default=1500, ge=0, le=30000, strict=True)
 
 
 class VersionRequest(Contract):
@@ -105,9 +107,25 @@ class RunView(Contract):
     scope_id: UUID
     scope_version: int
     scope_snapshot: ScopeSnapshot
-    status: Literal["draft", "queued"]
-    phase: None = None
+    status: Literal[
+        "draft",
+        "queued",
+        "running",
+        "waiting",
+        "pausing",
+        "paused",
+        "recovering",
+        "cancelling",
+        "closed",
+        "cancelled",
+        "failed",
+    ]
+    phase: Literal["collecting", "researching", "reviewing", "awaiting_human"] | None = None
     version: int
     created_at: datetime
     demonstration: Literal[True] = True
-    execution_ready: Literal[False] = False
+    execution_ready: bool = True
+    demonstration_scenario: Literal["positive", "negative", "failure"] = "positive"
+    started_at: datetime | None = None
+    reason_code: str | None = None
+    demonstration_duration_ms: int = 1500

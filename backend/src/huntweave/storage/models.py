@@ -4,14 +4,15 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     __abstract__ = True
-    __table_args__ = {"schema": "huntweave"}
+    # Declared for typing only: subclasses may replace it with a tuple of constraints.
+    __table_args__: Any = {"schema": "huntweave"}
 
 
 class AccessKeyState(Base):
@@ -70,4 +71,115 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String(20), default="draft")
     phase: Mapped[str | None] = mapped_column(String(20), nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    demonstration_scenario: Mapped[str] = mapped_column(String(20), default="positive")
+    demonstration_duration_ms: Mapped[int] = mapped_column(Integer, default=1500)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ResearchTask(Base):
+    __tablename__ = "research_tasks"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20))
+    step: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    lease_generation: Mapped[int] = mapped_column(Integer, default=0)
+    lease_owner: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.research_tasks.id"))
+    role: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20))
+    context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class Decision(Base):
+    __tablename__ = "decisions"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.agent_sessions.id"))
+    step: Mapped[int] = mapped_column(Integer)
+    content: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
+class ToolCall(Base):
+    __tablename__ = "tool_calls"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.agent_sessions.id"))
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("huntweave.decisions.id"), unique=True
+    )
+    status: Mapped[str] = mapped_column(String(20))
+    ticket: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ToolResult(Base):
+    __tablename__ = "tool_results"
+    call_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("huntweave.tool_calls.id"), primary_key=True
+    )
+    content: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class BudgetReservation(Base):
+    __tablename__ = "budget_reservations"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    call_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.tool_calls.id"), unique=True)
+    settled: Mapped[bool] = mapped_column(Boolean, default=False)
+    output_bytes: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Outbox(Base):
+    __tablename__ = "execution_outbox"
+    call_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("huntweave.tool_calls.id"), primary_key=True
+    )
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Evidence(Base):
+    __tablename__ = "evidence"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    call_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.tool_calls.id"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
+class EventCursor(Base):
+    __tablename__ = "event_cursors"
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), primary_key=True)
+    cursor: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (UniqueConstraint("run_id", "source_event_id"), {"schema": "huntweave"})
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), primary_key=True)
+    cursor: Mapped[int] = mapped_column(Integer, primary_key=True)
+    type: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    source_event_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class InterruptionRecord(Base):
+    __tablename__ = "interruption_records"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    reason_code: Mapped[str] = mapped_column(String(64))
+    recovery_condition: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

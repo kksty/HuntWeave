@@ -121,6 +121,8 @@ class RunService:
                 phase=None,
                 version=1,
                 created_at=now,
+                demonstration_scenario=request.demonstration_scenario,
+                demonstration_duration_ms=request.demonstration_duration_ms,
             )
             session.add(record)
             session.flush()
@@ -154,7 +156,9 @@ class RunService:
             )
             record.status = "queued"
             record.version += 1
-            # Execution remains unavailable until P0-C; queuing never invokes Runner here.
+            from huntweave.runs.orchestration import OrchestrationService
+
+            OrchestrationService._event(session, record, "run_queued", {"version": record.version})
             return self._run(record)
 
     @staticmethod
