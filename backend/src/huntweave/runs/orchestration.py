@@ -9,19 +9,21 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 from uuid import UUID, uuid4, uuid5
 
-from sqlalchemy import Engine, func, select, text
+from sqlalchemy import Engine, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from huntweave.contracts.errors import ServiceError
 from huntweave.contracts.execution import (
+    ExecutionObservation,
     ExecutionRecord,
     ExecutionRequest,
     FakeParameters,
     parameters_hash,
 )
+from huntweave.contracts.orchestration import ReconciliationVerdict
 from huntweave.contracts.runs import ScopeSnapshot
 from huntweave.harness.model import DeterministicModel
 from huntweave.runs.service import RunService
@@ -35,14 +37,22 @@ from huntweave.storage.models import (
     Evidence,
     InterruptionRecord,
     Outbox,
+    ReconciliationDecision,
     ResearchTask,
     Run,
     ToolCall,
     ToolResult,
 )
 
-TERMINAL_CALLS = {"succeeded", "failed", "cancelled", "denied"}
+# A call whose outcome no durable ledger confirmed stays terminal only through a verdict:
+# `incomplete` records that the action happened while its result never arrived.
+TERMINAL_CALLS = {"succeeded", "failed", "cancelled", "denied", "incomplete"}
 ACTIVE_RUNS = {"queued", "running", "recovering", "pausing", "cancelling", "waiting"}
+# Conditions a call can still put on its Run, in the order an operator has to clear them.
+OUTCOME_UNSETTLED = "outcome_unsettled"
+STOP_UNCONFIRMED = "stop_unconfirmed"
+CALL_PENDING = "call_pending"
+UNRECONCILED_REASONS = {"execution_unknown", "execution_stop_unconfirmed"}
 ROLES = ["collector", "worker", "reviewer"]
 # The demonstration scenario is a fixed mapping; no user text reaches the fake adapter.
 SCENARIOS: dict[str, Literal["success", "failure", "needs_evidence"]] = {
@@ -54,6 +64,14 @@ SCENARIOS: dict[str, Literal["success", "failure", "needs_evidence"]] = {
 
 def stable(run_id: UUID, kind: str) -> UUID:
     return uuid5(run_id, kind)
+
+
+class Redispatch(NamedTuple):
+    """The ids of one authorised re-dispatch of an original decision."""
+
+    decision_id: UUID
+    call_id: UUID
+    replaced_call_id: UUID
 
 
 class OrchestrationService:
@@ -183,10 +201,10 @@ class OrchestrationService:
             for run in candidates:
                 if run.status == "waiting" and not self._active(session, run.id):
                     continue
-                if self._has_unknown_call(session, run.id):
-                    # An unconfirmed outcome is never retried automatically, and no pass
-                    # can advance this Run. It waits for a human decision instead of
-                    # monopolising the single scheduler for every other Run.
+                if self._blockers(session, run.id, OUTCOME_UNSETTLED, STOP_UNCONFIRMED):
+                    # An unconfirmed outcome is never retried automatically, and an unconfirmed
+                    # stop never gains new actions. The Run waits for a human decision instead
+                    # of monopolising the single scheduler for every other Run.
                     continue
                 if run.status == "queued":
                     run.started_at = now
@@ -261,7 +279,10 @@ class OrchestrationService:
                 return None
             decision_id = stable(run.id, f"decision:{task.role}:{task.step}")
             existing = session.get(Decision, decision_id)
-            if existing is not None:
+            replacing = (
+                self._redispatch_target(session, existing) if existing is not None else None
+            )
+            if existing is not None and replacing is None:
                 return {"id": str(existing.id), **existing.content}
             # Reconcile an existing accepted call before any fresh decision.
             active = session.scalar(
@@ -286,23 +307,51 @@ class OrchestrationService:
                 return None
             agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
             assert agent is not None
-            decision = self.model.decide(task.role, task.step, agent.context)
-            session.add(
-                Decision(
-                    id=decision_id,
-                    run_id=run.id,
-                    session_id=agent.id,
-                    step=task.step,
-                    content=decision,
+            if replacing is None:
+                decision = self.model.decide(task.role, task.step, agent.context)
+                session.add(
+                    Decision(
+                        id=decision_id,
+                        run_id=run.id,
+                        session_id=agent.id,
+                        step=task.step,
+                        content=decision,
+                    )
                 )
-            )
-            session.flush()
-            self._event(
-                session,
-                run,
-                "decision",
-                {"decision_id": str(decision_id), "session_id": str(agent.id), **decision},
-            )
+                session.flush()
+                self._event(
+                    session,
+                    run,
+                    "decision",
+                    {"decision_id": str(decision_id), "session_id": str(agent.id), **decision},
+                )
+            else:
+                # The operator's verdict proved the original call never ran, so the same
+                # decision is dispatched again: a new call id, related to the call it
+                # replaces, and never a second action invented for the same step.
+                decision_id = replacing.decision_id
+                decision = existing.content  # type: ignore[union-attr]
+                session.add(
+                    Decision(
+                        id=decision_id,
+                        run_id=run.id,
+                        session_id=agent.id,
+                        step=task.step,
+                        content=decision,
+                    )
+                )
+                session.flush()
+                self._event(
+                    session,
+                    run,
+                    "decision",
+                    {
+                        "decision_id": str(decision_id),
+                        "session_id": str(agent.id),
+                        "redispatch_of": str(replacing.replaced_call_id),
+                        **decision,
+                    },
+                )
             if decision["action"] == "finish_research":
                 task.status = "completed"
                 task.version += 1
@@ -365,7 +414,12 @@ class OrchestrationService:
                     "Create a new Run with a sufficient budget; this reservation is not reset.",
                 )
                 return {"id": str(decision_id), **decision}
-            call_id = stable(decision_id, "call")
+            replaces: UUID | None = None
+            if replacing is None:
+                call_id = stable(decision_id, "call")
+            else:
+                call_id = replacing.call_id
+                replaces = replacing.replaced_call_id
             reservation_id = stable(call_id, "reservation")
             parameters = FakeParameters(
                 scenario=SCENARIOS[run.demonstration_scenario],
@@ -406,6 +460,7 @@ class OrchestrationService:
                     status="planned",
                     ticket=ticket.model_dump(mode="json"),
                     created_at=now,
+                    replaces_call_id=replaces,
                 )
             )
             session.flush()
@@ -439,13 +494,41 @@ class OrchestrationService:
                 )
             ]
 
-    def pending_runs(self, limit: int = 20, offset: int = 0) -> list[UUID]:
-        """Runs with at least one outstanding call, oldest first, for a rotating sweep."""
+    def reconcilable(self, run_id: UUID) -> list[dict[str, Any]]:
+        """Calls the dispatcher must still reconcile, oldest first.
+
+        Broader than :meth:`pending`: a call a verdict already settled still has to be asked
+        about until the execution side confirms what it left running, so the Run can converge
+        instead of waiting for a confirmation nobody ever requests.
+        """
         with Session(self.engine()) as session:
+            rows = session.execute(
+                select(ToolCall, ReconciliationDecision)
+                .outerjoin(ReconciliationDecision, ReconciliationDecision.call_id == ToolCall.id)
+                .where(ToolCall.run_id == run_id)
+                .order_by(ToolCall.created_at)
+            ).all()
+            return [
+                {"id": str(call.id), "status": call.status, "ticket": call.ticket}
+                for call, verdict in rows
+                if call.status not in TERMINAL_CALLS or verdict is not None
+            ]
+
+    def reconcilable_runs(self, limit: int = 20, offset: int = 0) -> list[UUID]:
+        """Live Runs with at least one call left to reconcile, oldest first, for a sweep."""
+        with Session(self.engine()) as session:
+            verdicts = select(ReconciliationDecision.call_id)
             return list(
                 session.scalars(
                     select(ToolCall.run_id)
-                    .where(~ToolCall.status.in_(TERMINAL_CALLS))
+                    .join(Run, Run.id == ToolCall.run_id)
+                    .where(Run.status.not_in({"closed", "cancelled", "failed"}))
+                    .where(
+                        or_(
+                            ~ToolCall.status.in_(TERMINAL_CALLS),
+                            ToolCall.id.in_(verdicts),
+                        )
+                    )
                     .group_by(ToolCall.run_id)
                     .order_by(func.min(ToolCall.created_at))
                     .limit(limit)
@@ -477,21 +560,32 @@ class OrchestrationService:
                     event.source_event_id,
                 )
             if record.status == "unknown":
-                call.status = "unknown"
-                # Reconcile idempotently: repeated passes must not keep bumping the
-                # version a human control request is checked against.
-                if run.status not in {"cancelling", "pausing", "waiting"}:
-                    run.status = "waiting"
-                    run.version += 1
-                self._interrupt(
-                    session,
-                    run,
-                    "execution_unknown",
-                    "Reconcile Runner ledger and execution identity; never blindly resubmit.",
-                )
+                verdict = session.get(ReconciliationDecision, call.id)
+                if record.observation is not None:
+                    call.observation = record.observation.model_dump(mode="json")
+                if verdict is None:
+                    call.status = "unknown"
+                    # Reconcile idempotently: repeated passes must not keep bumping the
+                    # version a human control request is checked against.
+                    if run.status not in {"cancelling", "pausing", "waiting"}:
+                        run.status = "waiting"
+                        run.version += 1
+                    self._interrupt(
+                        session,
+                        run,
+                        "execution_unknown",
+                        "Reconcile Runner ledger and execution identity; never blindly resubmit.",
+                    )
+                else:
+                    # The verdict settled what this Run may do with the call; the ledger's
+                    # own facts still arrive and still decide whether the Run can converge.
+                    self._refresh_interruption(session, run)
+                self._converge(session, run)
                 return
             if record.status in {"accepted", "running"}:
                 call.status = "dispatched" if record.status == "accepted" else "running"
+                if record.observation is not None:
+                    call.observation = record.observation.model_dump(mode="json")
                 return
             call.status = {"completed": "succeeded", "failed": "failed", "cancelled": "cancelled"}[
                 record.status
@@ -626,32 +720,296 @@ class OrchestrationService:
                 str(call_id) + ":unreachable",
             )
 
-    @staticmethod
-    def _has_unknown_call(session: Session, run_id: UUID) -> bool:
-        """True while the Run holds a call whose outcome no durable ledger confirmed."""
-        return (
-            session.scalar(
-                select(ToolCall.id).where(
-                    ToolCall.run_id == run_id,
-                    ~ToolCall.status.in_(TERMINAL_CALLS),
-                    ToolCall.status == "unknown",
-                )
+    def reconcile(
+        self,
+        run_id: UUID,
+        call_id: UUID,
+        verdict: ReconciliationVerdict,
+        operator_session_id: UUID,
+        observation: ExecutionObservation | None,
+    ) -> dict[str, Any]:
+        """Record an operator's evidence-bound verdict on a call with an unknown outcome.
+
+        The verdict is business-side only: it never rewrites the execution ledger, never
+        supplies a stop the execution side has not confirmed, and never turns a missing
+        result into a ToolResult. ``observation`` is what the trusted ledger says right now.
+        """
+        with Session(self.engine()) as session, session.begin():
+            run = self._run(session, run_id)
+            call = session.get(ToolCall, call_id, with_for_update=True)
+            if call is None or call.run_id != run.id:
+                raise ServiceError("call_not_found", 404)
+            recorded = session.get(ReconciliationDecision, call.id)
+            if recorded is not None:
+                # Repeating a verdict is idempotent, so it is answered before the version is
+                # fenced: a lost response is not a second decision on a changed Run. Changing
+                # the answer, though, would rewrite an execution-bound record in place.
+                if recorded.outcome != verdict.outcome:
+                    raise ServiceError("reconciliation_conflict", 409)
+                return self._verdict_result(session, run, call, recorded)
+            if run.version != verdict.version:
+                raise ServiceError("version_conflict", 409)
+            if call.status != "unknown":
+                raise ServiceError("invalid_call_state", 409)
+            self._check_citations(session, run, verdict.evidence_ids)
+            if verdict.outcome == "not_executed":
+                redispatch = self._authorize_redispatch(session, call, observation)
+            elif verdict.outcome == "executed":
+                self._require_executed_basis(observation)
+                redispatch = False
+            else:
+                redispatch = False
+            latest = observation or self._stored_observation(call)
+            decision = ReconciliationDecision(
+                call_id=call.id,
+                run_id=run.id,
+                outcome=verdict.outcome,
+                operator_session_id=operator_session_id,
+                scope_version=run.scope_version,
+                evidence_ids=[str(x) for x in verdict.evidence_ids],
+                note=verdict.note,
+                observation=latest.model_dump(mode="json") if latest else None,
+                redispatch_authorized=redispatch,
+                created_at=database_now(session),
             )
-            is not None
+            session.add(decision)
+            run.version += 1
+            if latest is not None:
+                call.observation = latest.model_dump(mode="json")
+            if verdict.outcome == "not_executed":
+                call.status = "cancelled"
+            elif verdict.outcome == "executed":
+                call.status = "incomplete"
+                self._advance_past_unreported_step(session, call)
+            self._event(
+                session,
+                run,
+                "reconciliation_recorded",
+                {
+                    "call_id": str(call.id),
+                    "outcome": verdict.outcome,
+                    "operator_session_id": str(operator_session_id),
+                    "scope_version": run.scope_version,
+                    "evidence_ids": [str(x) for x in verdict.evidence_ids],
+                    "note": verdict.note,
+                    "call_status": call.status,
+                    "stop_confirmed": self._stop_confirmed(call.observation),
+                    "redispatch_authorized": redispatch,
+                },
+                str(call.id) + ":reconciliation",
+            )
+            self._refresh_interruption(session, run)
+            self._converge(session, run)
+            session.flush()
+            return self._verdict_result(session, run, call, decision)
+
+    @staticmethod
+    def _check_citations(session: Session, run: Run, evidence_ids: list[UUID]) -> None:
+        """A verdict's basis must exist inside this Run; a stray id is no basis."""
+        if not evidence_ids:
+            return
+        found = set(
+            session.scalars(
+                select(Evidence.id).where(Evidence.run_id == run.id, Evidence.id.in_(evidence_ids))
+            )
+        )
+        if found != set(evidence_ids):
+            raise ServiceError("reconciliation_evidence_missing", 409)
+
+    def _authorize_redispatch(
+        self, session: Session, call: ToolCall, observation: ExecutionObservation | None
+    ) -> bool:
+        """Whether the trusted record lets the same decision run again on a new call id.
+
+        The operator clicks; the execution side proves. Without a record that the action
+        never started, with anything it may have left running still unaccounted for, or while
+        the original control lease still authorises the old call, no verdict re-dispatches.
+        """
+        if observation is None:
+            raise ServiceError("reconciliation_evidence_missing", 409)
+        if observation.started:
+            raise ServiceError("reconciliation_evidence_contradicted", 409)
+        if not self._stop_confirmed(observation.model_dump(mode="json")):
+            raise ServiceError("execution_stop_unconfirmed", 409)
+        ticket = ExecutionRequest.model_validate(call.ticket)
+        if ticket.lease_expires_at > database_now(session):
+            raise ServiceError("reconciliation_lease_active", 409)
+        return True
+
+    @staticmethod
+    def _require_executed_basis(observation: ExecutionObservation | None) -> None:
+        """Confirming execution is settled from what exists, and only what exists."""
+        if observation is None:
+            raise ServiceError("reconciliation_evidence_missing", 409)
+        if not observation.started:
+            raise ServiceError("reconciliation_evidence_contradicted", 409)
+
+    @staticmethod
+    def _advance_past_unreported_step(session: Session, call: ToolCall) -> None:
+        """Move the role past a step whose result nobody can report.
+
+        No output is invented for the agent, so the missing result stays visible in the
+        call history instead of being papered over as a success.
+        """
+        agent = session.get(AgentSession, call.session_id)
+        if agent is None:
+            return
+        task = session.get(ResearchTask, agent.task_id)
+        if task is not None:
+            task.step += 1
+            task.version += 1
+        agent.context = {
+            **agent.context,
+            "last_status": "incomplete",
+            "unreported_call_id": str(call.id),
+        }
+
+    @staticmethod
+    def _stored_observation(call: ToolCall) -> ExecutionObservation | None:
+        if not call.observation:
+            return None
+        return ExecutionObservation.model_validate(call.observation)
+
+    @staticmethod
+    def _redispatch_target(session: Session, original: Decision | None) -> Redispatch | None:
+        """The ids of one authorised re-dispatch of an original decision, if any.
+
+        A verdict that proved the original action never ran is the only thing that lets the
+        same decision be dispatched again; the replacement takes a new call id and names the
+        call it replaces. A graph replay finds the replacement already there and dispatches
+        nothing.
+        """
+        if original is None:
+            return None
+        call = session.scalar(select(ToolCall).where(ToolCall.decision_id == original.id))
+        if call is None:
+            return None
+        recorded = session.get(ReconciliationDecision, call.id)
+        if recorded is None or not recorded.redispatch_authorized:
+            return None
+        call_id = stable(call.id, "redispatch")
+        if session.get(ToolCall, call_id) is not None:
+            return None
+        return Redispatch(stable(call.id, "redispatch-decision"), call_id, call.id)
+
+    @staticmethod
+    def _stop_confirmed(observation: dict[str, Any] | None) -> bool:
+        """A stop is proven by the execution side, never by an operator's verdict.
+
+        A ledger that reports ``None`` for the process or the connection is saying it cannot
+        confirm either way, which is not a stop: a shell may have left descendants behind.
+        """
+        return bool(
+            observation
+            and observation.get("process_active") is False
+            and observation.get("connection_open") is False
         )
 
-    def _converge(self, session: Session, run: Run) -> None:
-        active = session.scalar(
-            select(ToolCall.id).where(
-                ToolCall.run_id == run.id, ~ToolCall.status.in_(TERMINAL_CALLS)
+    def _call_conditions(
+        self, call: ToolCall, verdict: ReconciliationDecision | None
+    ) -> list[str]:
+        """What one call still asks of its Run, in the order an operator clears it."""
+        conditions = []
+        if call.status in {"planned", "dispatched", "running"}:
+            # An ordinary call in flight: it holds the Run, but it needs no decision.
+            conditions.append(CALL_PENDING)
+        if call.status == "unknown" or verdict is not None:
+            unsettled = verdict is None or verdict.outcome == "undetermined"
+            if call.status == "unknown" and unsettled:
+                conditions.append(OUTCOME_UNSETTLED)
+            if not self._stop_confirmed(call.observation):
+                conditions.append(STOP_UNCONFIRMED)
+        return conditions
+
+    def _outstanding(self, session: Session, run_id: UUID) -> list[tuple[ToolCall, list[str]]]:
+        """Every call that still puts a condition on its Run, oldest first.
+
+        Outcomes and resources are separate conditions: an unsettled outcome stops the Run
+        from building on a result nobody has, while an unconfirmed stop stops it from adding
+        anything to a session that may still be running.
+        """
+        rows = session.execute(
+            select(ToolCall, ReconciliationDecision)
+            .outerjoin(ReconciliationDecision, ReconciliationDecision.call_id == ToolCall.id)
+            .where(ToolCall.run_id == run_id)
+            .order_by(ToolCall.created_at)
+        ).all()
+        outstanding = []
+        for call, verdict in rows:
+            conditions = self._call_conditions(call, verdict)
+            if conditions:
+                outstanding.append((call, conditions))
+        return outstanding
+
+    def _blockers(self, session: Session, run_id: UUID, *wanted: str) -> list[ToolCall]:
+        return [
+            call
+            for call, conditions in self._outstanding(session, run_id)
+            if set(conditions) & set(wanted)
+        ]
+
+    def _refresh_interruption(self, session: Session, run: Run) -> None:
+        """Keep the Run's stated reason equal to what its calls actually still need."""
+        conditions = {x for _, items in self._outstanding(session, run.id) for x in items}
+        if STOP_UNCONFIRMED in conditions:
+            self._interrupt(
+                session,
+                run,
+                "execution_stop_unconfirmed",
+                "Confirm the call's process and connection stopped; no new action runs "
+                "against a session that may still be occupied.",
             )
-        )
-        if active is not None:
+        elif OUTCOME_UNSETTLED in conditions:
+            self._interrupt(
+                session,
+                run,
+                "execution_unknown",
+                "Reconcile the original call_id from evidence; never blindly resubmit.",
+            )
+        elif run.reason_code in UNRECONCILED_REASONS:
+            previous = run.reason_code
+            run.reason_code = None
+            self._event(
+                session,
+                run,
+                "interruption_resolved",
+                {"previous_reason_code": previous, "version": run.version},
+            )
+
+    @staticmethod
+    def _unreported_calls(session: Session, run_id: UUID) -> list[str]:
+        """Calls the Run ends with no confirmed result for, oldest first.
+
+        These are what make an end limited: the action either never got a confirmed outcome
+        or was settled as executed without its result ever arriving. A call a verdict proved
+        never ran is not one of them, because its outcome is known.
+        """
+        return [
+            str(call_id)
+            for call_id in session.scalars(
+                select(ToolCall.id)
+                .where(
+                    ToolCall.run_id == run_id,
+                    ToolCall.status.in_(["unknown", "incomplete"]),
+                )
+                .order_by(ToolCall.created_at)
+            )
+        ]
+
+    def _converge(self, session: Session, run: Run) -> None:
+        # An unsettled outcome does not keep a Run alive: with every stop confirmed the Run
+        # ends on the facts it has, marked as limited instead of pretending to be normal.
+        if self._blockers(session, run.id, CALL_PENDING, STOP_UNCONFIRMED):
             return
         if run.status in {"pausing", "cancelling"}:
             cancelling = run.status == "cancelling"
+            incomplete = self._unreported_calls(session, run.id)
             run.status = "cancelled" if cancelling else "paused"
             run.version += 1
+            if incomplete:
+                # Ended on the facts it has: the Run says so, instead of looking like a
+                # normal end while a call's result is still missing.
+                run.reason_code = "result_incomplete"
             for task in session.scalars(
                 select(ResearchTask).where(
                     ResearchTask.run_id == run.id, ResearchTask.status != "completed"
@@ -666,7 +1024,12 @@ class OrchestrationService:
                 session,
                 run,
                 "run_cancelled" if cancelling else "run_paused",
-                {"version": run.version, "cleanup_confirmed": True},
+                {
+                    "version": run.version,
+                    "cleanup_confirmed": True,
+                    "limited": bool(incomplete),
+                    "incomplete_calls": incomplete,
+                },
             )
 
     def control(self, run_id: UUID, action: str, version: int) -> dict[str, Any]:
@@ -675,19 +1038,30 @@ class OrchestrationService:
             if run.version != version:
                 raise ServiceError("version_conflict", 409)
             if action == "close":
-                if (
-                    run.status != "waiting"
-                    or run.phase != "awaiting_human"
-                    or self._active(session, run.id)
-                ):
+                if run.status != "waiting" or run.phase != "awaiting_human":
                     raise ServiceError("invalid_run_state", 409)
+                if self._blockers(session, run.id, CALL_PENDING):
+                    raise ServiceError("invalid_run_state", 409)
+                # A verdict never stands in for a stop: closing on unknown resources would
+                # hide work the operator still has to confirm.
+                if self._blockers(session, run.id, STOP_UNCONFIRMED):
+                    raise ServiceError("execution_stop_unconfirmed", 409)
+                incomplete = self._unreported_calls(session, run.id)
                 run.status = "closed"
                 run.version += 1
+                if incomplete:
+                    # A human end is still a limited end while a result nobody confirmed.
+                    run.reason_code = "result_incomplete"
                 self._event(
                     session,
                     run,
                     "human_decision",
-                    {"decision": "end_demonstration", "version": run.version},
+                    {
+                        "decision": "end_demonstration",
+                        "version": run.version,
+                        "limited": bool(incomplete),
+                        "incomplete_calls": incomplete,
+                    },
                 )
             elif action == "pause":
                 if run.status not in {"queued", "running", "recovering"}:
@@ -708,6 +1082,10 @@ class OrchestrationService:
                     raise ServiceError("invalid_run_state", 409)
                 if self._active(session, run.id):
                     raise ServiceError("execution_reconciliation_required", 409)
+                # Resuming starts new actions: they must not run against a session whose
+                # earlier process or connection is still unaccounted for.
+                if self._blockers(session, run.id, STOP_UNCONFIRMED):
+                    raise ServiceError("execution_stop_unconfirmed", 409)
                 scope = ScopeSnapshot.model_validate(run.scope_snapshot)
                 RunService._check_window(scope, database_now(session))
                 if run.reason_code in {"budget_exhausted", "evidence_incomplete"}:
@@ -751,27 +1129,96 @@ class OrchestrationService:
         run = snapshot["run"]
         scope = ScopeSnapshot.model_validate(run["scope_snapshot"])
         valid = scope.starts_at <= datetime.now(UTC) < scope.expires_at
-        pending = self.pending(run_id)
-        reason = "execution_reconciliation_required" if pending else run.get("reason_code")
+        with Session(self.engine()) as session:
+            self._view(session, run_id)
+            outstanding = self._outstanding(session, run_id)
+        conditions = {item for _, items in outstanding for item in items}
+        reason = run.get("reason_code")
+        if OUTCOME_UNSETTLED in conditions:
+            reason = "execution_reconciliation_required"
+        elif STOP_UNCONFIRMED in conditions:
+            reason = "execution_stop_unconfirmed"
+        expected = []
+        if OUTCOME_UNSETTLED in conditions:
+            expected.append("Reconcile the unknown call from evidence before continuing.")
+        if STOP_UNCONFIRMED in conditions:
+            expected.append("Confirm the call's process and connection stopped.")
+        if not expected:
+            expected.append(
+                "Continue existing graph from durable records; do not repeat completed effects."
+            )
         return {
             "version": run["version"],
             "last_completed_step": max((x["step"] for x in snapshot["tasks"]), default=0),
-            "pending_calls": [{"id": x["id"], "status": x["status"]} for x in pending],
+            "pending_calls": [
+                {"id": str(call.id), "status": call.status, "conditions": items}
+                for call, items in outstanding
+            ],
             "remaining_tool_calls": max(
                 0, scope.budget.max_tool_calls - snapshot["budget"]["reserved_tool_calls"]
             ),
             "authorization_valid": valid,
             "can_resume": valid
-            and not pending
+            and not conditions
             and run["status"] in {"paused", "waiting"}
             and run["phase"] != "awaiting_human"
-            and reason not in {"budget_exhausted", "evidence_incomplete"},
-            "expected_actions": [
-                "Continue existing graph from durable records; do not repeat completed effects."
-            ]
-            if not pending
-            else ["Reconcile original call IDs with Runner."],
+            and run.get("reason_code") not in {"budget_exhausted", "evidence_incomplete"},
+            "expected_actions": expected,
             "reason_code": reason if valid else "authorization_expired",
+        }
+
+    def _call_view(
+        self,
+        session: Session,
+        call: ToolCall,
+        recorded: ReconciliationDecision | None = None,
+    ) -> dict[str, Any]:
+        """One call as the console sees it: execution facts, and any verdict kept apart."""
+        verdict = recorded or session.get(ReconciliationDecision, call.id)
+        result = session.get(ToolResult, call.id)
+        return {
+            "id": str(call.id),
+            "session_id": str(call.session_id),
+            "decision_id": str(call.decision_id),
+            "status": call.status,
+            "action": call.ticket["action_id"],
+            "parameters": call.ticket["parameters"],
+            "result": result.content if result else None,
+            "evidence_ids": [
+                str(e)
+                for e in session.scalars(select(Evidence.id).where(Evidence.call_id == call.id))
+            ],
+            "created_at": call.created_at.isoformat(),
+            "replaces_call_id": str(call.replaces_call_id) if call.replaces_call_id else None,
+            "observation": self._observation_view(call.observation),
+            "reconciliation": self._reconciliation_view(verdict) if verdict else None,
+            "conditions": self._call_conditions(call, verdict),
+        }
+
+    def _observation_view(self, observation: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not observation:
+            return None
+        return {**observation, "stop_confirmed": self._stop_confirmed(observation)}
+
+    def _reconciliation_view(self, verdict: ReconciliationDecision) -> dict[str, Any]:
+        return {
+            "call_id": str(verdict.call_id),
+            "outcome": verdict.outcome,
+            "operator_session_id": str(verdict.operator_session_id),
+            "scope_version": verdict.scope_version,
+            "evidence_ids": verdict.evidence_ids,
+            "note": verdict.note,
+            "observation": self._observation_view(verdict.observation),
+            "redispatch_authorized": verdict.redispatch_authorized,
+            "recorded_at": verdict.created_at.isoformat(),
+        }
+
+    def _verdict_result(
+        self, session: Session, run: Run, call: ToolCall, verdict: ReconciliationDecision
+    ) -> dict[str, Any]:
+        return {
+            "run": RunService._run(run).model_dump(mode="json"),
+            "call": self._call_view(session, call, verdict),
         }
 
     def snapshot(self, run_id: UUID) -> dict[str, Any]:
@@ -814,27 +1261,7 @@ class OrchestrationService:
                     {"id": str(x.id), "session_id": str(x.session_id), "step": x.step, **x.content}
                     for x in session.scalars(select(Decision).where(Decision.run_id == run.id))
                 ],
-                "calls": [
-                    {
-                        "id": str(x.id),
-                        "session_id": str(x.session_id),
-                        "decision_id": str(x.decision_id),
-                        "status": x.status,
-                        "action": x.ticket["action_id"],
-                        "parameters": x.ticket["parameters"],
-                        "result": result.content
-                        if (result := session.get(ToolResult, x.id))
-                        else None,
-                        "evidence_ids": [
-                            str(e)
-                            for e in session.scalars(
-                                select(Evidence.id).where(Evidence.call_id == x.id)
-                            )
-                        ],
-                        "created_at": x.created_at.isoformat(),
-                    }
-                    for x in calls
-                ],
+                "calls": [self._call_view(session, x) for x in calls],
                 "budget": {
                     "reserved_tool_calls": len(reservations),
                     "settled_tool_calls": sum(x.settled for x in reservations),

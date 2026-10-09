@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from huntweave.contracts.execution import (
+    ExecutionObservation,
     ExecutionRecord,
     ExecutionRequest,
     FakeParameters,
@@ -62,7 +63,10 @@ class Business:
             if ExecutionRequest.model_validate(item["ticket"]).run_id == run_id
         ]
 
-    def pending_runs(self, limit: int = 20, offset: int = 0) -> list[UUID]:
+    def reconcilable(self, run_id: UUID) -> list[dict[str, Any]]:
+        return self.pending(run_id)
+
+    def reconcilable_runs(self, limit: int = 20, offset: int = 0) -> list[UUID]:
         run_ids = [
             ExecutionRequest.model_validate(item["ticket"]).run_id for item in self.calls
         ]
@@ -81,8 +85,11 @@ class Business:
 class Runner:
     """Minimal authenticated-ledger stand-in: query, submit, renew and cancel."""
 
-    def __init__(self, record: ExecutionRecord | None = None):
+    def __init__(
+        self, record: ExecutionRecord | None = None, stopped: ExecutionRecord | None = None
+    ):
         self.record = record
+        self.stopped = stopped
         self.submitted: list[ExecutionRequest] = []
         self.renewed: list[tuple[UUID, int]] = []
         self.cancelled: list[tuple[UUID, int]] = []
@@ -108,6 +115,8 @@ class Runner:
 
     def cancel(self, call_id: UUID, generation: int) -> ExecutionRecord:
         self.cancelled.append((call_id, generation))
+        if self.stopped is not None:
+            return self.stopped
         assert self.record is not None
         return self.record.model_copy(
             update={"status": "cancelled", "reason_code": "operator_cancelled"}
@@ -250,3 +259,46 @@ def test_ticket_locally_dispatched_but_absent_from_the_ledger_is_unknown():
     assert business.unknowns == [call.call_id]
     assert runner.submitted == []
     assert business.unreachable_calls == []
+
+
+def test_a_cancelling_run_asks_the_ledger_to_confirm_the_stop():
+    # The operator ended the Run while one call's outcome is unconfirmed. Waiting for an
+    # outcome that will never arrive would wedge the Run, so the dispatcher has the
+    # execution side stop what the call left and records that stop as its own fact.
+    call = ticket()
+    unknown = ExecutionRecord(
+        request=call,
+        status="unknown",
+        reason_code="execution_unknown",
+        observation=ExecutionObservation(
+            started=True,
+            process_active=None,
+            connection_open=None,
+            observed_at=datetime.now(UTC),
+        ),
+    )
+    stopped = unknown.model_copy(
+        update={
+            "observation": ExecutionObservation(
+                started=True,
+                process_active=False,
+                connection_open=False,
+                observed_at=datetime.now(UTC),
+            )
+        }
+    )
+    runner = Runner(unknown, stopped)
+    business = Business("cancelling", pending(call, "unknown"))
+    ExecutionDispatcher(business, runner).reconcile(call.run_id)  # type: ignore[arg-type]
+    assert runner.cancelled == [(call.call_id, call.lease_generation)]
+    assert business.accepted == [stopped]
+
+
+def test_an_unknown_call_is_left_alone_while_the_run_is_not_stopping():
+    call = ticket()
+    unknown = ExecutionRecord(request=call, status="unknown", reason_code="execution_unknown")
+    runner = Runner(unknown)
+    business = Business("waiting", pending(call, "unknown"))
+    ExecutionDispatcher(business, runner).reconcile(call.run_id)  # type: ignore[arg-type]
+    assert runner.cancelled == []
+    assert business.accepted == [unknown]

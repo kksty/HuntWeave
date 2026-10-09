@@ -123,6 +123,37 @@ class ToolCall(Base):
     status: Mapped[str] = mapped_column(String(20))
     ticket: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # A re-dispatched call names the call whose verdict proved the original never ran.
+    replaces_call_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("huntweave.tool_calls.id"), nullable=True
+    )
+    # The execution side's own last word on this call's process and connection.
+    observation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class ReconciliationDecision(Base):
+    """An operator's evidence-bound verdict on one call with an unconfirmed outcome.
+
+    The verdict is business-side only: it never rewrites the execution ledger, and it never
+    stands in for a stop confirmation the execution side has to give separately.
+    """
+
+    __tablename__ = "reconciliation_decisions"
+    call_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("huntweave.tool_calls.id"), primary_key=True
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    outcome: Mapped[str] = mapped_column(String(20))
+    # The operator's session identifier is kept by value, without a foreign key: expired
+    # sessions are housekeeping data the access layer deletes, while this verdict keeps
+    # naming who decided as durable audit history.
+    operator_session_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    scope_version: Mapped[int] = mapped_column(Integer)
+    evidence_ids: Mapped[list[str]] = mapped_column(JSONB)
+    note: Mapped[str] = mapped_column(Text)
+    observation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    redispatch_authorized: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class ToolResult(Base):

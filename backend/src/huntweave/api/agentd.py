@@ -77,8 +77,22 @@ def main() -> int:
                             flush=True,
                         )
                 # The sweep re-reads every outstanding call, including Runs the scheduler
-                # cannot claim: an unconfirmed outcome is reconciled, never retried.
-                swept = dispatcher.sweep(SWEEP_LIMIT, sweep_offset)
+                # cannot claim: an unconfirmed outcome is reconciled, never retried. A Run
+                # that is reconciled away or cleared between the window query and this pass
+                # is a contract outcome for that Run, not a reason to stop scheduling.
+                try:
+                    swept = dispatcher.sweep(SWEEP_LIMIT, sweep_offset)
+                except ServiceError as error:
+                    print(
+                        json.dumps(
+                            {
+                                "reason_code": error.reason_code,
+                                "stage": "sweep_pass",
+                            }
+                        ),
+                        flush=True,
+                    )
+                    swept = 0
                 sweep_offset = sweep_offset + SWEEP_LIMIT if swept == SWEEP_LIMIT else 0
                 stopping.wait(0.5)
     except Exception as error:

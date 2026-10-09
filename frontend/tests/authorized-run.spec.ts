@@ -126,6 +126,37 @@ test('pause, reload, resume preview, original evidence and human close preserve 
   await page.screenshot({ path: '../runtime/validation/p0-console.png', fullPage: true });
 });
 
+test('the console records an operator verdict on an unknown call and shows what is missing', async ({ page }) => {
+  // deploy/verify_p0.py leaves one Run with an unconfirmed call and prints its id; the
+  // browser check rules on it the way an operator would.
+  const runId = process.env.HUNTWEAVE_E2E_RECONCILE_RUN_ID;
+  test.skip(!runId, 'Set HUNTWEAVE_E2E_RECONCILE_RUN_ID from the reconciliation probe.');
+  await login(page);
+  await page.goto(`/runs/${runId}`);
+  const region = page.getByRole('region', { name: '待核对调用' });
+  await expect(region).toBeVisible({ timeout: 30000 });
+  // Execution facts and the missing conditions are shown before any verdict is offered.
+  await expect(region).toContainText('执行端事实');
+  await expect(region).toContainText('停止确认 未确认');
+  await expect(region).toContainText('结果未裁定');
+  await expect(region).toContainText('仍缺条件');
+  // A verdict the execution ledger contradicts is refused, not silently accepted.
+  await region.getByRole('button', { name: '确认未执行' }).click();
+  await expect(page.getByRole('alert')).toContainText('执行端记录与该裁定矛盾');
+  // What is recorded is the operator's own evidence-bound decision.
+  await region.getByLabel('裁定说明').fill('结果未到达；执行端账本证明动作已经开始');
+  await region.getByRole('button', { name: '确认已执行' }).click();
+  await expect(region).toContainText('操作员裁定：确认已执行');
+  await expect(region).toContainText('结果未到达；执行端账本证明动作已经开始');
+  await expect(region).toContainText('允许重派 否');
+  // A recorded verdict is a decision, not a form: it gives way to the record itself, and a
+  // conflicting verdict is refused by the interface rather than rewriting it in place.
+  await expect(region.getByRole('button', { name: '确认未执行' })).toHaveCount(0);
+  // No result was invented for the call, and the stop is still the execution side's to give.
+  await expect(region).toContainText('停止未确认');
+  await page.screenshot({ path: '../runtime/validation/p1-reconciliation.png', fullPage: true });
+});
+
 test('cancel waits for Runner acknowledgement and prevents later dispatch', async ({ page }) => {
   await login(page);
   await createDemo(page, 'negative');

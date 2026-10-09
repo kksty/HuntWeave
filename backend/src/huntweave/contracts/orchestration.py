@@ -1,10 +1,14 @@
 """Versioned views of durable research, execution timeline and evidence resources."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
+from pydantic import Field
+
 from huntweave.contracts.runs import Contract, RunView
+
+ReconciliationOutcome = Literal["not_executed", "executed", "undetermined"]
 
 
 class TaskView(Contract):
@@ -34,6 +38,37 @@ class DecisionView(Contract):
     evidence_ids: list[UUID]
 
 
+class ReconciliationVerdict(Contract):
+    """An operator's evidence-bound decision on one call with an unconfirmed outcome."""
+
+    outcome: ReconciliationOutcome
+    version: int = Field(ge=1, strict=True)
+    evidence_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    note: str = Field(default="", max_length=500)
+
+
+class CallObservationView(Contract):
+    """What the execution side could prove about one call, kept apart from any verdict."""
+
+    started: bool
+    process_active: bool | None
+    connection_open: bool | None
+    observed_at: datetime
+    stop_confirmed: bool
+
+
+class ReconciliationView(Contract):
+    call_id: UUID
+    outcome: ReconciliationOutcome
+    operator_session_id: UUID
+    scope_version: int
+    evidence_ids: list[UUID]
+    note: str
+    observation: CallObservationView | None
+    redispatch_authorized: bool
+    recorded_at: datetime
+
+
 class ToolCallView(Contract):
     id: UUID
     session_id: UUID
@@ -44,6 +79,11 @@ class ToolCallView(Contract):
     result: dict[str, Any] | None
     evidence_ids: list[UUID]
     created_at: datetime
+    replaces_call_id: UUID | None = None
+    observation: CallObservationView | None = None
+    reconciliation: ReconciliationView | None = None
+    # What this call still asks of its Run: outcome_unsettled / stop_unconfirmed / call_pending.
+    conditions: list[str] = Field(default_factory=list)
 
 
 class BudgetView(Contract):
@@ -85,9 +125,16 @@ class EventPage(Contract):
     gap: bool
 
 
+class ReconciliationResult(Contract):
+    run: RunView
+    call: ToolCallView
+
+
 class PendingCallView(Contract):
     id: UUID
     status: str
+    # Why this call still blocks the Run: outcome_unsettled / stop_unconfirmed / call_pending.
+    conditions: list[str]
 
 
 class ResumePreview(Contract):

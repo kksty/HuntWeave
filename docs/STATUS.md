@@ -9,14 +9,14 @@
 | 阶段 | 范围 | 状态 |
 | --- | --- | --- |
 | P0 | 运行骨架、认证与授权快照、持久假 Run、隔离靶场验证 | 已有验收记录；P0-A 至 P0-D 的实施 Issue 已关闭，审查更正记录 [#12](https://github.com/kksty/HuntWeave/issues/12) 仍 open 待人工确认；后续缺口见 `docs/validation/0005-p0-execution-and-recovery.md`，不视作全部目标行为已经达成 |
-| P1 | Kali 真实执行、选择性保留、透明控制台 | 进行中：正式规格 [0002](./specs/0002-real-execution.md) 已有，#9–#21 待办仍开放；真实执行未开放 |
+| P1 | Kali 真实执行、选择性保留、透明控制台 | 进行中：正式规格 [0002](./specs/0002-real-execution.md) 已有；tracer [#15](https://github.com/kksty/HuntWeave/issues/15) 核对入口已交付（验证记录 `docs/validation/0006-p1-reconciliation.md`），#9–#21 其余待办仍开放；真实执行未开放 |
 | P2 | 完整 Agent MVP：真实模型、联网研究、Run 内规划、24×7 持续推进 | 实现未开始；[0003](./specs/0003-agent-research.md) 与 [0004](./specs/0004-finding-admission.md) 是**未经评审的草案**（评分与准入尚无阶段表归属），取舍见 ADR-0009/0011/0013 |
 
 ## 当前能力
 
-已交付：服务端会话与授权快照、持久 Run 与排队状态机、LangGraph 角色闭环（确定性模型 Adapter）、持久假 Runner 账本与租约、原始证据归档与哈希校验、有序事件与 SSE 时间线、暂停/取消/恢复预览/重启对账。
+已交付：服务端会话与授权快照、持久 Run 与排队状态机、LangGraph 角色闭环（确定性模型 Adapter）、持久假 Runner 账本与租约、原始证据归档与哈希校验、有序事件与 SSE 时间线、暂停/取消/恢复预览/重启对账、`unknown` 调用的操作员核对入口（三种裁定、受限结束、带证据重派）。
 
-已知限制：确定性 Adapter 按预置场景而非工具返回分支，当前每角色固定一项任务，尚无 Worker × N 的研究闭环；完整 Finding/Review/报告和持久依赖尚未实现。#12 的记录更正已落文档，但 Issue 仍待人工确认。以上状态于 2026-10-09 对照源码与 GitHub Issues 核实。
+已知限制：确定性 Adapter 按预置场景而非工具返回分支，当前每角色固定一项任务，尚无 Worker × N 的研究闭环；完整 Finding/Review/报告和持久依赖尚未实现。核对入口的停止确认与观测事实目前只由假执行账本提供，真实执行端尚未接入；`确认未执行` 的重派只有受信记录证明动作未开始且旧租约失效时可用，否则明确拒绝。#12 的记录更正已落文档，但 Issue 仍待人工确认。以上状态于 2026-10-09 对照源码与 GitHub Issues 核实。
 
 **真实执行未开放。** `fake_execution_ready=true` 只表示固定假动作链路就绪；`real_execution_ready=false`，原因 `environment_unsupported`。界面与响应标注“开发演示 / 假执行”。
 
@@ -30,7 +30,7 @@
 
 tracer 顺序（实现切片）：
 
-1. [#15](https://github.com/kksty/HuntWeave/issues/15) `unknown` 调用的操作员核对入口：当前此类 Run 停在 `waiting`，`resume`/`close` 被拒绝、`cancel` 无法收敛。用现有假执行账本验收，不引入真实容器。
+1. ~~[#15](https://github.com/kksty/HuntWeave/issues/15) `unknown` 调用的操作员核对入口~~ 已交付（2026-10-09，实现与证据见 `docs/validation/0006-p1-reconciliation.md`，待人工确认后关闭）：用现有假执行账本验收，不引入真实容器。
 2. [#16](https://github.com/kksty/HuntWeave/issues/16) 受信管理组件与真实容器生命周期。
 3. [#18](https://github.com/kksty/HuntWeave/issues/18) 出口控制与取消/回收：必须先于 #17 的实际靶场目标动作验收。
 4. [#17](https://github.com/kksty/HuntWeave/issues/17) 真实动作最小闭环：真实工具容器走既有票据、租约、取消与证据契约，以工具结果驱动确定性后续分支。

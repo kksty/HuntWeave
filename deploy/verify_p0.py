@@ -189,7 +189,10 @@ class Probe:
         self.wait(lambda: self.request(f"/api/v1/runs/{run_id}"),
                   lambda run: run["status"] == "waiting" and run["phase"] == "awaiting_human")
         records = self.ledger(run_id)
-        assert records[0]["request"]["call_id"] == first_id
+        # The ledger is keyed by call id, so its order is not creation order: the restart
+        # must reuse the accepted call exactly once rather than dispatch a second action.
+        call_ids = [record["request"]["call_id"] for record in records]
+        assert call_ids.count(first_id) == 1
         self.assert_once(records)
         assert all(record["status"] == "completed" for record in records)
         print("PASS: app restart resumes the same Run and reuses accepted actions")
@@ -197,6 +200,93 @@ class Probe:
 
     def snapshot(self, run_id: str) -> dict:
         return self.request(f"/api/v1/runs/{run_id}/snapshot")
+
+    @staticmethod
+    def reconciliation_path(run_id: str, call_id: str) -> str:
+        return f"/api/v1/runs/{run_id}/calls/{call_id}/reconciliation"
+
+    def call(self, run_id: str, call_id: str) -> dict:
+        calls = [item for item in self.snapshot(run_id)["calls"] if item["id"] == str(call_id)]
+        assert len(calls) == 1
+        return calls[0]
+
+    def unknown_call_after_runner_restart(self, run_id: str) -> str:
+        """Restart the Runner around one fixed action and return its unconfirmed call id."""
+        call_id = self.running(run_id)["request"]["call_id"]
+        self.compose("restart", "runner")
+        self.ready()
+        self.wait(
+            lambda: self.call(run_id, call_id),
+            lambda item: item["status"] == "unknown" and item["observation"] is not None,
+        )
+        return str(call_id)
+
+    def reconciliation_flow(self) -> str:
+        """An operator rules on an unknown call, and the Run converges on the facts.
+
+        The Runner restart leaves the outcome unconfirmed while proving nothing about the
+        process it left behind: the verdict settles the outcome, the stop still has to come
+        from the execution side, and the Run ends marked as limited rather than normal.
+        """
+        run_id = self.create_run(duration_ms=30000)
+        call_id = self.unknown_call_after_runner_restart(run_id)
+        call = self.call(run_id, call_id)
+        assert call["observation"]["started"] is True
+        assert call["observation"]["process_active"] is None, "Ledger claimed an unproven stop"
+        assert call["conditions"] == ["outcome_unsettled", "stop_unconfirmed"]
+
+        # The ledger proves the action started, so an operator's click cannot call it back.
+        contradicted = self.request(
+            self.reconciliation_path(run_id, call_id),
+            {"outcome": "not_executed", "version": self.snapshot(run_id)["run"]["version"],
+             "evidence_ids": [], "note": "probe: must be refused"},
+            expected=409,
+        )
+        assert contradicted["reason_code"] == "reconciliation_evidence_contradicted"
+
+        # Confirming execution settles the outcome without inventing a result or a stop.
+        verified = self.request(
+            self.reconciliation_path(run_id, call_id),
+            {"outcome": "executed", "version": self.snapshot(run_id)["run"]["version"],
+             "evidence_ids": [], "note": "probe: fixed action started, result never arrived"},
+        )
+        assert verified["call"]["status"] == "incomplete"
+        assert verified["call"]["result"] is None
+        assert verified["call"]["reconciliation"]["outcome"] == "executed"
+        assert verified["call"]["reconciliation"]["redispatch_authorized"] is False
+        assert verified["call"]["observation"]["stop_confirmed"] is False
+
+        preview = self.request(f"/api/v1/runs/{run_id}/resume-preview")
+        assert preview["can_resume"] is False
+        assert preview["reason_code"] == "execution_stop_unconfirmed"
+        assert preview["pending_calls"][0]["conditions"] == ["stop_unconfirmed"]
+
+        # Cancelling stays available, and only the execution side's own stop confirmation
+        # lets the Run converge - as a limited end, not as a normal one.
+        self.request(
+            f"/api/v1/runs/{run_id}/cancel",
+            {"version": self.snapshot(run_id)["run"]["version"]},
+        )
+        settled = self.wait(
+            lambda: self.request(f"/api/v1/runs/{run_id}"),
+            lambda run: run["status"] == "cancelled",
+        )
+        assert settled["reason_code"] == "result_incomplete"
+        events = self.request(f"/api/v1/runs/{run_id}/event-history?after=0&limit=500")["events"]
+        types = [event["type"] for event in events]
+        assert types.count("reconciliation_recorded") == 1
+        assert types.count("execution_stopped") == 1
+        closed = [event for event in events if event["type"] == "run_cancelled"][-1]["payload"]
+        assert closed["limited"] is True and closed["incomplete_calls"] == [call_id]
+        print("PASS: operator reconciliation settles an unknown call and converges limited")
+        return run_id
+
+    def unknown_run_for_console(self) -> str:
+        """Leave one unknown call for the browser flow, where the operator rules on it."""
+        run_id = self.create_run(duration_ms=30000)
+        self.unknown_call_after_runner_restart(run_id)
+        print(f"CONSOLE_RECONCILIATION_RUN={run_id}")
+        return run_id
 
     def checkpoint_fault(self) -> None:
         run_id = self.create_run(duration_ms=6000)
@@ -279,6 +369,8 @@ def main() -> None:
     probe.history(run_id)
     probe.evidence_loss_fault(run_id)
     probe.restart_fault()
+    probe.reconciliation_flow()
+    probe.unknown_run_for_console()
     probe.database_outage_fault()
     probe.checkpoint_fault()
     print("Live recovery probes passed; use backend tests and Playwright for remaining P0 contracts")

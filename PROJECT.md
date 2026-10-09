@@ -445,7 +445,7 @@ P2 的 ContextBuilder 根据角色和任务从业务事实构建上下文，不�
 - Run 分开记录 `phase` 与 `status`，避免把研究阶段、暂停和故障混在一个枚举。phase 为 `collecting / researching / reviewing / awaiting_human`；status 为 `draft / queued / running / waiting / pausing / paused / recovering / cancelling / closed / cancelled / failed`。草稿/排队可没有 phase；结束保留最后阶段。正常路径为排队、运行、等待人工、关闭，补证以新任务返回研究/复审阶段。
 - P2 单独持久记录自动阶段的结束时间、reason_code、复审是否完成、未决摘要和结束所依据的任务/事实版本及事件游标，与人工裁定分别保存。`awaiting_human / waiting` 表示“自动执行已结束，待人工复审”；研究中的 `waiting` 表示“自动阶段尚未结束，等待条件”。预算停止或复审不可用不能显示为完整研究已完成。后续明确请求补证时记录新一段自动执行的开始事件，重新校验条件并保留此前结束记录；普通唤醒不能重开已结束的自动阶段。
 - AgentSession/ResearchTask 的状态为 `queued / running / waiting_approval / waiting_input / blocked / pausing / paused / recovering / cancelling / completed / cancelled / failed`，配合明确 reason_code。单个分支等待不阻塞其他可运行分支；全部分支等待时 Run 才进入 waiting。任何未结束阶段均可请求取消。
-- ToolCall：`planned → dispatched → running → succeeded / failed`；未执行可进入 `denied / cancelled`，已派发取消经过 `cancelling`，确认进程回收后才进入 cancelled。`unknown` 表示无法可靠确认执行结果，必须对账后收敛，不能等同于失败重试。
+- ToolCall：`planned → dispatched → running → succeeded / failed`；未执行可进入 `denied / cancelled`，已派发取消经过 `cancelling`，确认进程回收后才进入 cancelled。`unknown` 表示无法可靠确认执行结果，必须对账后收敛，不能等同于失败重试。核对后按证据收敛：确认未执行进入 `cancelled`；确认已执行但结果始终未到达进入 `incomplete`（执行已发生、结果不完整，不写成功结果）；`incomplete` 与其他终态一样属于执行事实，不表示成功，也不释放执行端的停止确认。
 - Finding 证据状态：`suspected / supported / verified / inconclusive / refuted`；复审建议和人工裁定采用独立字段。
 - 复现方式：`fresh_replay`（本轮重新执行）、`existing_evidence`（审阅已有执行证据）、`not_replayed`。审阅已有证据不标成“现场复现成功”。
 

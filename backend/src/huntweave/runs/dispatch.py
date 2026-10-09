@@ -5,9 +5,26 @@ from uuid import UUID
 
 import httpx
 
-from huntweave.contracts.execution import ExecutionRecord, ExecutionRequest
+from huntweave.contracts.execution import (
+    ExecutionObservation,
+    ExecutionRecord,
+    ExecutionRequest,
+)
 from huntweave.execution.client import RunnerClient
 from huntweave.runs.orchestration import OrchestrationService
+
+
+def read_observation(runner: RunnerClient, call_id: UUID) -> ExecutionObservation | None:
+    """Read what the execution side can prove about a call, outside any transaction.
+
+    An unreachable ledger yields no observation, which is not the same as a proof of
+    non-execution: a verdict that needs proof must be refused instead.
+    """
+    try:
+        record = runner.query(call_id)
+    except (httpx.HTTPError, OSError, TimeoutError):
+        return None
+    return record.observation if record is not None else None
 
 
 class ExecutionDispatcher:
@@ -25,7 +42,7 @@ class ExecutionDispatcher:
         interface leaves every local status alone instead of guessing an outcome.
         """
         state = self.business.snapshot(run_id)["run"]
-        for call in self.business.pending(run_id):
+        for call in self.business.reconcilable(run_id):
             ticket = ExecutionRequest.model_validate(call["ticket"])
             try:
                 record = self.runner.query(ticket.call_id)
@@ -51,6 +68,10 @@ class ExecutionDispatcher:
                     record = self._maintain(state["status"], ticket)
                     if record is None:
                         continue
+                elif record.status == "unknown" and state["status"] == "cancelling":
+                    # The operator ended the Run: have the execution side confirm what the
+                    # call left running instead of waiting for an outcome it will never give.
+                    record = self._confirm_stop(ticket) or record
                 self.business.accept(record)
             except (httpx.HTTPError, OSError, TimeoutError):
                 # Stop dispatching and renewing this call for now: a call the Runner is
@@ -62,11 +83,12 @@ class ExecutionDispatcher:
     def sweep(self, limit: int = 20, offset: int = 0) -> int:
         """Re-reconcile Runs the scheduler itself cannot claim.
 
-        An unconfirmed call is never retried, but its ledger must still be read again:
-        this is where a Runner that answers later releases the Run. Returns how many Runs
-        were swept so the caller can rotate a bounded window.
+        An unconfirmed call is never retried, but its ledger must still be read again: this is
+        where a Runner that answers later releases the Run, and where a Run an operator ended
+        gets its stop confirmed. Returns how many Runs were swept so the caller can rotate a
+        bounded window.
         """
-        run_ids = self.business.pending_runs(limit, offset)
+        run_ids = self.business.reconcilable_runs(limit, offset)
         for run_id in run_ids:
             self.reconcile(run_id)
         return len(run_ids)
@@ -77,8 +99,27 @@ class ExecutionDispatcher:
         # The Runner's ledger confirms this call_id was never accepted, so recording the
         # refusal releases the run without replaying or duplicating any effect.
         self.business.accept(
-            ExecutionRecord(request=ticket, status="cancelled", reason_code=reason)
+            ExecutionRecord(
+                request=ticket,
+                status="cancelled",
+                reason_code=reason,
+                observation=ExecutionObservation(
+                    started=False,
+                    process_active=False,
+                    connection_open=False,
+                    observed_at=datetime.now(UTC),
+                ),
+            )
         )
+
+    def _confirm_stop(self, ticket: ExecutionRequest) -> ExecutionRecord | None:
+        # The Runner stops and records the stop; a refusal leaves its own verdict standing.
+        try:
+            return self.runner.cancel(ticket.call_id, ticket.lease_generation)
+        except httpx.HTTPStatusError as rejection:
+            if rejection.response.status_code >= 500:
+                raise
+            return None
 
     def _submit(self, run_id: UUID, ticket: ExecutionRequest) -> ExecutionRecord | None:
         try:

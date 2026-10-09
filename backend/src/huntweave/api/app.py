@@ -26,9 +26,12 @@ from huntweave.access.service import AccessService, BrowserSession
 from huntweave.config import AppSettings
 from huntweave.contracts.capabilities import Capabilities
 from huntweave.contracts.errors import ServiceError
+from huntweave.contracts.execution import ExecutionObservation
 from huntweave.contracts.orchestration import (
     EventPage,
     EvidenceView,
+    ReconciliationResult,
+    ReconciliationVerdict,
     ResumePreview,
     RunSnapshot,
 )
@@ -45,7 +48,8 @@ from huntweave.contracts.runs import (
     TargetPreview,
     VersionRequest,
 )
-from huntweave.execution.client import get_capabilities
+from huntweave.execution.client import RunnerClient, get_capabilities
+from huntweave.runs.dispatch import read_observation
 from huntweave.runs.inputs import expand_ports, preview_targets
 from huntweave.runs.orchestration import OrchestrationService
 from huntweave.runs.service import RunService
@@ -72,7 +76,11 @@ def error_response(error: ServiceError) -> JSONResponse:
     )
 
 
-def create_app(settings: AppSettings | None = None, engine: Engine | None = None) -> FastAPI:
+def create_app(
+    settings: AppSettings | None = None,
+    engine: Engine | None = None,
+    observation_reader: Callable[[UUID], ExecutionObservation | None] | None = None,
+) -> FastAPI:
     settings = settings or AppSettings.from_env()
     app = FastAPI(title="HuntWeave", docs_url=None, redoc_url=None, openapi_url=None)
     engine_lock = Lock()
@@ -83,6 +91,13 @@ def create_app(settings: AppSettings | None = None, engine: Engine | None = None
             if engine is None:
                 engine = connect_engine()
         return engine
+
+    def ledger_observation(call_id: UUID) -> ExecutionObservation | None:
+        # Read-only access to the Runner's own ledger: the verdict needs the execution side's
+        # facts, and the app never gains any container or execution capability from reading.
+        return read_observation(RunnerClient(), call_id)
+
+    observation_source = observation_reader or ledger_observation
 
     access = AccessService(database, settings)
     runs = RunService(database)
@@ -273,6 +288,19 @@ def create_app(settings: AppSettings | None = None, engine: Engine | None = None
     @app.post("/api/v1/runs/{run_id}/close")
     def close_run(run_id: UUID, payload: VersionRequest) -> RunView:
         return RunView.model_validate(orchestration.control(run_id, "close", payload.version))
+
+    @app.post("/api/v1/runs/{run_id}/calls/{call_id}/reconciliation")
+    def reconcile_call(
+        run_id: UUID, call_id: UUID, payload: ReconciliationVerdict, request: Request
+    ) -> ReconciliationResult:
+        browser: BrowserSession = request.state.browser
+        # The ledger is read before, and outside, the business transaction that records the
+        # verdict: the operator's decision is never the evidence for its own outcome.
+        return ReconciliationResult.model_validate(
+            orchestration.reconcile(
+                run_id, call_id, payload, browser.id, observation_source(call_id)
+            )
+        )
 
     @app.get("/api/v1/evidence/{evidence_id}")
     def evidence(

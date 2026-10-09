@@ -16,6 +16,14 @@ export const messages: Record<string, string> = {
   version_conflict: '状态已变更，请刷新后重试。', idempotency_conflict: '此请求键对应的内容已改变。', origin_invalid: '访问地址与服务端入口配置不一致。',
   csrf_invalid: '会话校验失败，请重新登录。', storage_unavailable: '数据库暂不可用，请稍后重试。', invalid_request: '输入不符合约束，请检查时间、预算和必填项。',
   invalid_run_state: '当前状态不支持此操作，请刷新状态。', execution_unknown: '调用结果未知，需要先核对执行账本。',
+  execution_reconciliation_required: '调用结果未知，请先依据证据核对后再继续。',
+  execution_stop_unconfirmed: '执行端尚未确认该调用的进程与连接已停止，恢复与关闭暂不可用。',
+  result_incomplete: '本次 Run 以受限方式结束：某个调用的结果始终未确认。',
+  reconciliation_conflict: '该调用已有不同的裁定记录，不能就地改写。',
+  reconciliation_evidence_missing: '缺少可依据的执行记录或证据，无法据此裁定。',
+  reconciliation_evidence_contradicted: '执行端记录与该裁定矛盾，请核对后再决定。',
+  reconciliation_lease_active: '原调用的控制租约仍然有效，请在租约到期后重试。',
+  invalid_call_state: '该调用当前状态不支持此裁定。', call_not_found: '该调用不属于此 Run 或不存在。',
   budget_exhausted: '预算已耗尽，执行已阻断。', evidence_missing: '原始证据文件缺失。', evidence_corrupt: '证据校验失败。',
 };
 

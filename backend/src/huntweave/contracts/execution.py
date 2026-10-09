@@ -68,12 +68,29 @@ class ExecutionEvent(Contract):
     created_at: AwareDatetime
 
 
+class ExecutionObservation(Contract):
+    """What the durable ledger can prove about one call, separately from its outcome.
+
+    ``started`` is written before any side effect, so a ledger that proves it absent proves
+    the action never ran. A ``None`` process or connection state means the ledger cannot
+    confirm either way: reconciliation must read that as "not stopped", never as a stop.
+    """
+
+    started: bool
+    process_active: bool | None
+    connection_open: bool | None
+    observed_at: AwareDatetime
+
+
 class ExecutionRecord(Contract):
     request: ExecutionRequest
     status: Literal["accepted", "running", "completed", "failed", "cancelled", "unknown"]
     reason_code: str | None = None
     result: ExecutionResult | None = None
     events: list[ExecutionEvent] = Field(default_factory=list)
+    # Absent only on records the control plane states without asking the ledger; an
+    # unproven absence of observation never authorises declaring a call not executed.
+    observation: ExecutionObservation | None = None
 
 
 class LeaseRenewal(Contract):

@@ -12,6 +12,7 @@ from uuid import UUID, uuid5
 from huntweave.contracts.execution import (
     ExecutionEvent,
     ExecutionEvidence,
+    ExecutionObservation,
     ExecutionRecord,
     ExecutionRequest,
     ExecutionResult,
@@ -75,6 +76,40 @@ class FakeRunner:
     def _persist(self) -> None:
         atomic_write(self.path, json.dumps(self.data, sort_keys=True).encode())
 
+    @staticmethod
+    def _observed(
+        started: bool, process_active: bool | None, connection_open: bool | None
+    ) -> ExecutionObservation:
+        return ExecutionObservation(
+            started=started,
+            process_active=process_active,
+            connection_open=connection_open,
+            observed_at=datetime.now(UTC),
+        )
+
+    def _has_started(self, record: ExecutionRecord) -> bool:
+        return any(event.type == "execution_started" for event in record.events)
+
+    def _resources(
+        self,
+        record: ExecutionRecord,
+        status: Literal["accepted", "running", "completed", "failed", "cancelled", "unknown"],
+    ) -> ExecutionObservation:
+        """Report what this ledger can prove about the call's process and connection.
+
+        A ledger that stopped observing an execution cannot prove the process it started is
+        gone: a shell may have left descendants behind. Only a record that never started, or
+        one whose executor finished or was stopped, supports claiming a stop.
+        """
+        if status == "accepted":
+            return self._observed(False, False, False)
+        if status == "running":
+            return self._observed(True, True, True)
+        if status == "unknown":
+            started = self._has_started(record)
+            return self._observed(started, None if started else False, None if started else False)
+        return self._observed(self._has_started(record), False, False)
+
     def _change(
         self,
         record: ExecutionRecord,
@@ -101,6 +136,7 @@ class FakeRunner:
             reason_code=reason,
             result=result,
             events=[*record.events, event],
+            observation=self._resources(record, status),
         )
         self.data[str(record.request.call_id)]["record"] = updated.model_dump(mode="json")
         self._persist()
@@ -141,7 +177,9 @@ class FakeRunner:
                         request.authorized_until,
                     ):
                         raise RunnerRejected("scope_policy_mismatch")
-            record = ExecutionRecord(request=request, status="accepted")
+            record = ExecutionRecord(
+                request=request, status="accepted", observation=self._observed(False, False, False)
+            )
             self.data[str(request.call_id)] = {
                 "fingerprint": fingerprint,
                 "record": record.model_dump(mode="json"),
@@ -225,6 +263,10 @@ class FakeRunner:
             record = self.query(call_id)
             assert record is not None
             if record.status != "accepted":
+                return
+            if self.closed.is_set():
+                # A runner that is stopping does not start accepted work: the durable
+                # acceptance stays, so the next reading proves the action never ran.
                 return
             now = datetime.now(UTC)
             if (
@@ -347,7 +389,35 @@ class FakeRunner:
                 return self._change(
                     record, "cancelled", "operator_cancelled", self._result(record, None)
                 )
+            if record.status == "unknown":
+                return self._stop(record)
             return record
+
+    def _stop(self, record: ExecutionRecord) -> ExecutionRecord:
+        """Record a performed stop without inventing an outcome for the call.
+
+        The ledger cannot say whether the action happened; it can say that whatever the call
+        left running is stopped. That is a separate fact the control plane needs, and it is
+        never derived from an operator's reconciliation verdict.
+        """
+        observation = record.observation
+        if observation is not None and observation.process_active is False:
+            return record
+        event = ExecutionEvent(
+            source_event_id=f"{record.request.call_id}:{len(record.events)}",
+            type="execution_stopped",
+            payload={"reason_code": "operator_stopped", "outcome": record.status},
+            created_at=datetime.now(UTC),
+        )
+        stopped = record.model_copy(
+            update={
+                "events": [*record.events, event],
+                "observation": self._observed(self._has_started(record), False, False),
+            }
+        )
+        self.data[str(record.request.call_id)]["record"] = stopped.model_dump(mode="json")
+        self._persist()
+        return stopped
 
     def close(self) -> None:
         self.closed.set()

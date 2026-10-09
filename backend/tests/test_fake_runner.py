@@ -89,6 +89,61 @@ def test_restart_around_execution_is_unknown_and_never_replayed(tmp_path: Path) 
     reopened.close()
 
 
+def test_unknown_after_restart_does_not_claim_a_stop_it_cannot_prove(tmp_path: Path) -> None:
+    params = FakeParameters(duration_ms=1000)
+    request = ticket(parameters=params, parameters_hash=parameters_hash(params))
+    runner = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
+    runner.submit(request)
+    settled(runner, request.call_id, "running")
+    runner.close()
+    record = FakeRunner(tmp_path / "ledger", tmp_path / "evidence").query(request.call_id)
+    assert record is not None and record.status == "unknown"
+    observation = record.observation
+    assert observation is not None
+    # The execution started, and a restart proves nothing about the process or the
+    # connection it left behind: the ledger reports the gap instead of a stop.
+    assert observation.started is True
+    assert observation.process_active is None and observation.connection_open is None
+
+
+def test_cancelling_an_unknown_call_records_the_stop_and_keeps_the_outcome(tmp_path: Path) -> None:
+    params = FakeParameters(duration_ms=1000)
+    request = ticket(parameters=params, parameters_hash=parameters_hash(params))
+    runner = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
+    runner.submit(request)
+    settled(runner, request.call_id, "running")
+    runner.close()
+    reopened = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
+    stopped = reopened.cancel(request.call_id, 1)
+    assert stopped.status == "unknown" and stopped.reason_code == "execution_unknown"
+    observation = stopped.observation
+    assert observation is not None
+    # Stopping what the call left behind is its own fact: the outcome stays unknown.
+    assert observation.started is True
+    assert observation.process_active is False and observation.connection_open is False
+    assert sum(event.type == "execution_stopped" for event in stopped.events) == 1
+    assert reopened.cancel(request.call_id, 1).observation == stopped.observation
+    reopened.close()
+
+
+def test_restart_before_start_proves_the_action_never_ran(tmp_path: Path) -> None:
+    request = ticket()
+    runner = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
+    # The runner stops before it starts accepted work: the acceptance is durable, the start
+    # is not, so a later reading proves the action never ran and nothing was left to stop.
+    runner.closed.set()
+    runner.submit(request)
+    runner.close()
+    reopened = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
+    record = reopened.query(request.call_id)
+    assert record is not None and record.status == "unknown"
+    observation = record.observation
+    assert observation is not None
+    assert observation.started is False
+    assert observation.process_active is False and observation.connection_open is False
+    reopened.close()
+
+
 def test_stale_generations_and_changed_tickets_are_rejected(tmp_path: Path) -> None:
     runner = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
     request = ticket(lease_generation=2)

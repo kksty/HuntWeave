@@ -169,6 +169,8 @@ cd frontend
 npm ci
 npx playwright install chromium
 $env:HUNTWEAVE_E2E_BASE_URL = "http://127.0.0.1:18000"
+# verify_p0.py 的核对探针会打印 CONSOLE_RECONCILIATION_RUN=<run_id>，用它跑控制台核对路径：
+$env:HUNTWEAVE_E2E_RECONCILE_RUN_ID = "<run_id>"
 npm run test:e2e
 cd ..
 
@@ -176,7 +178,7 @@ docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml down -v
 Remove-Item Env:HUNTWEAVE_WEB_PORT, Env:HUNTWEAVE_PUBLIC_ORIGIN, Env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE, Env:HUNTWEAVE_E2E_BASE_URL
 ```
 
-`verify_p0.py` 只接受 `huntweave-p0-checks` 项目与回环非 8000 端口，会重启 app/Runner、停止 PostgreSQL、撤销 checkpoint 写权限并临时改名一条证据文件，结束后在 `finally` 中恢复；它不发送任何目标流量。`down -v` 在此只用于删除自己创建的一次性验收项目。测试用文档保留 IP，不连接目标；浏览器截图保存在被忽略的 `runtime/validation/`。
+`verify_p0.py` 只接受 `huntweave-p0-checks` 项目与回环非 8000 端口，会重启 app/Runner、停止 PostgreSQL、撤销 checkpoint 写权限并临时改名一条证据文件，结束后在 `finally` 中恢复；它不发送任何目标流量。它的核对探针会额外留下一个结果未知的 Run 并打印其 id，供上面的浏览器核对路径使用。`down -v` 在此只用于删除自己创建的一次性验收项目。测试用文档保留 IP，不连接目标；浏览器截图保存在被忽略的 `runtime/validation/`。
 
 本地纯检查与前端构建（不含容器）。这些命令必须在 `backend/` 目录内执行：pytest 相对 rootdir 解析 `pythonpath`，在仓库根目录直接运行会因找不到 `huntweave` 包而整批收集失败：
 
