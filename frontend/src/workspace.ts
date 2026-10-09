@@ -5,7 +5,7 @@ export interface Project { id: string; name: string; description: string }
 export interface Budget { max_tool_calls: number; max_tokens: number; max_wall_seconds: number; max_output_bytes: number; max_concurrency: number }
 export interface Snapshot { targets: string[]; ports: number[]; transport: string; port_profile: string; starts_at: string; expires_at: string; authorization: string; budget: Budget; mode: string; execution_profile: string; config_version: string }
 export interface Scope { id: string; version: number; snapshot: Snapshot }
-export interface Run { id: string; project_id: string; status: 'draft' | 'queued'; version: number; scope_snapshot: Snapshot; created_at: string }
+export interface Run { id: string; project_id: string; status: string; phase: string | null; version: number; scope_snapshot: Snapshot; created_at: string; demonstration_scenario: string }
 export interface Preview { targets: string[]; valid: boolean; rows: { line: number; value: string; normalized: string | null; reason_code: string | null; duplicate_of: number | null }[] }
 
 export const messages: Record<string, string> = {
@@ -15,6 +15,8 @@ export const messages: Record<string, string> = {
   authorization_expired: '授权已过期，请重新配置。', authorization_not_started: '尚未进入授权时间窗。',
   version_conflict: '状态已变更，请刷新后重试。', idempotency_conflict: '此请求键对应的内容已改变。', origin_invalid: '访问地址与服务端入口配置不一致。',
   csrf_invalid: '会话校验失败，请重新登录。', storage_unavailable: '数据库暂不可用，请稍后重试。', invalid_request: '输入不符合约束，请检查时间、预算和必填项。',
+  invalid_run_state: '当前状态不支持此操作，请刷新状态。', execution_unknown: '调用结果未知，需要先核对执行账本。',
+  budget_exhausted: '预算已耗尽，执行已阻断。', evidence_missing: '原始证据文件缺失。', evidence_corrupt: '证据校验失败。',
 };
 
 export const useWorkspace = defineStore('workspace', () => {

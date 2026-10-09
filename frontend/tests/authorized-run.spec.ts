@@ -74,10 +74,69 @@ test('preview, freeze, idempotent draft creation, queue, reload and logout', asy
   await expect(page.getByRole('button', { name: '将假 Run 加入队列' })).toHaveCount(0);
   await page.reload();
   await expect(page).toHaveURL(runUrl);
-  await expect(page.getByText('已排队 · 尚未执行').first()).toBeVisible();
+  await expect(page.getByRole('region', { name: '玻璃鱼缸执行台' })).toBeVisible();
+  await expect(page.getByText('自动阶段结束 · 待人工复审').first()).toBeVisible({ timeout: 60000 });
   await expect(page.getByText('只用于本地假执行验证', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => Reflect.get(window, 'huntweaveInjected'))).toBeUndefined();
   await page.screenshot({ path: '../runtime/validation/p0-b-workspace.png', fullPage: true });
   await page.getByRole('button', { name: '退出登录' }).click();
   await expect(page).toHaveURL(/\/login$/);
+});
+
+async function createDemo(page: Page, scenario: string) {
+  if (!await page.getByLabel('项目名称', { exact: true }).isVisible()) await page.getByText('新建项目', { exact: true }).click();
+  await page.getByLabel('项目名称', { exact: true }).fill(`P0 控制 ${scenario} ${Date.now()}`);
+  await page.getByRole('button', { name: '创建项目', exact: true }).click();
+  await page.getByLabel(/目标 IP/).fill('192.0.2.30');
+  await page.getByRole('button', { name: '预览 IP', exact: true }).click();
+  await page.getByLabel('TCP 端口范围').selectOption('custom-tcp-v1');
+  await page.getByLabel('端口与范围').fill('80');
+  await page.getByRole('button', { name: '展开端口' }).click();
+  await page.getByLabel('授权说明', { exact: true }).fill('固定假动作浏览器验收，无目标连接');
+  await page.getByRole('button', { name: '保存授权快照' }).click();
+  await page.getByLabel('假输出场景').selectOption(scenario);
+  await page.getByRole('button', { name: '创建假 Run' }).click();
+  await expect(page).toHaveURL(/\/runs\/[a-f0-9-]+$/);
+  await page.getByRole('button', { name: '将假 Run 加入队列' }).click();
+}
+
+test('pause, reload, resume preview, original evidence and human close preserve a Run', async ({ page }) => {
+  await login(page);
+  await createDemo(page, 'positive');
+  const originalUrl = page.url();
+  await page.getByRole('button', { name: '暂停 Run', exact: true }).click();
+  await expect(page.getByRole('button', { name: '查看恢复预览' })).toBeVisible({ timeout: 30000 });
+  await page.reload();
+  await expect(page).toHaveURL(originalUrl);
+  await page.getByRole('button', { name: '查看恢复预览' }).click();
+  await expect(page.getByRole('region', { name: '恢复预览' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '按预览恢复' })).toBeEnabled();
+  await page.getByRole('button', { name: '按预览恢复' }).click();
+  await expect(page.getByRole('button', { name: '结束演示', exact: true })).toBeVisible({ timeout: 60000 });
+  await page.getByRole('button', { name: '查看原始证据' }).first().click();
+  await expect(page.getByRole('region', { name: '原始证据' })).toBeVisible();
+  const evidence = page.getByRole('region', { name: '原始证据' });
+  await expect(evidence.locator('pre')).not.toBeEmpty();
+  await expect(evidence).toContainText('SHA-256');
+  await page.getByRole('button', { name: '结束演示', exact: true }).click();
+  await expect(page.getByText('演示已结束').first()).toBeVisible();
+  await page.reload();
+  await expect(page).toHaveURL(originalUrl);
+  await expect(page.getByText('演示已结束').first()).toBeVisible();
+  await page.screenshot({ path: '../runtime/validation/p0-console.png', fullPage: true });
+});
+
+test('cancel waits for Runner acknowledgement and prevents later dispatch', async ({ page }) => {
+  await login(page);
+  await createDemo(page, 'negative');
+  await page.getByRole('button', { name: '取消 Run', exact: true }).click();
+  await expect(page.getByText('已取消', { exact: true }).first()).toBeVisible({ timeout: 30000 });
+  const snapshotUrl = `/api/v1${new URL(page.url()).pathname}/snapshot`;
+  const first = await (await page.request.get(snapshotUrl)).json();
+  await page.reload();
+  await expect(page.getByText('已取消', { exact: true }).first()).toBeVisible();
+  const second = await (await page.request.get(snapshotUrl)).json();
+  expect(second.calls.length).toBe(first.calls.length);
+  expect(second.budget).toEqual(first.budget);
+  await expect(page.getByRole('button', { name: '按预览恢复' })).toHaveCount(0);
 });
