@@ -1,16 +1,21 @@
 """Run startup fault probes through Docker CLI on Windows or Linux."""
 
+import argparse
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parent.parent
 COMPOSE = ["docker", "compose", "-f", str(REPOSITORY / "deploy" / "compose.yaml")]
+COMPOSE_ENV = os.environ.copy()
 
 
 def compose(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([*COMPOSE, *args], cwd=REPOSITORY, text=True, check=check)
+    return subprocess.run(
+        [*COMPOSE, *args], cwd=REPOSITORY, env=COMPOSE_ENV, text=True, check=check
+    )
 
 
 def inspect(container: str) -> dict:
@@ -21,6 +26,17 @@ def inspect(container: str) -> dict:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project", help="Isolated Compose project; default preserves compose.yaml")
+    parser.add_argument("--web-port", type=int, help="Loopback Web port for an isolated stack")
+    options = parser.parse_args()
+    if options.project:
+        COMPOSE.extend(["--project-name", options.project])
+    if options.web_port is not None:
+        if not 1 <= options.web_port <= 65535:
+            parser.error("--web-port must be between 1 and 65535")
+        COMPOSE_ENV["HUNTWEAVE_WEB_PORT"] = str(options.web_port)
+        COMPOSE_ENV["HUNTWEAVE_PUBLIC_ORIGIN"] = f"http://127.0.0.1:{options.web_port}"
     compose("up", "-d", "--wait", "--wait-timeout", "90")
     missing = """
 from fastapi.testclient import TestClient
@@ -76,7 +92,8 @@ print('PASS: app evidence archive is read-only')
     finally:
         compose("up", "-d", "--wait", "--wait-timeout", "90")
     result = subprocess.run(
-        [*COMPOSE, "ps", "-q", "app"], cwd=REPOSITORY, capture_output=True, text=True, check=True
+        [*COMPOSE, "ps", "-q", "app"], cwd=REPOSITORY, env=COMPOSE_ENV,
+        capture_output=True, text=True, check=True
     )
     app_id = result.stdout.strip()
     before = inspect(app_id)["RestartCount"]
