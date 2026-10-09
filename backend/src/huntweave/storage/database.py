@@ -1,8 +1,16 @@
-from sqlalchemy import Engine, create_engine, text
+from datetime import datetime
+from typing import cast
+
+from sqlalchemy import Engine, create_engine, func, select, text
+from sqlalchemy.orm import Session
 
 from huntweave.config import database_url
 
-BUSINESS_REVISION = "0001_runtime"
+BUSINESS_REVISION = "0002_identity_runs"
+
+
+def database_now(session: Session) -> datetime:
+    return cast(datetime, session.scalar(select(func.clock_timestamp())))
 
 
 def connect_engine(role: str = "app") -> Engine:

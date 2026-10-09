@@ -1,6 +1,7 @@
 from ipaddress import IPv4Address, IPv4Network
 
 import pytest
+
 from huntweave.execution.network_policy import Endpoint, NetworkPolicy, ScopeDenied
 
 

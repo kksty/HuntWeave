@@ -61,6 +61,8 @@ services:
       HUNTWEAVE_CHECKPOINT_DB_PASSWORD_FILE: /run/secrets/checkpoint_db_password
       HUNTWEAVE_MIGRATOR_DB_PASSWORD_FILE: /run/secrets/migrator_db_password
       HUNTWEAVE_ACCESS_KEY_FILE: /run/secrets/access_key
+      HUNTWEAVE_PUBLIC_ORIGIN: ${HUNTWEAVE_PUBLIC_ORIGIN:-http://127.0.0.1:${HUNTWEAVE_WEB_PORT:-8000}}
+      HUNTWEAVE_COOKIE_SECURE: ${HUNTWEAVE_COOKIE_SECURE:-false}
       HUNTWEAVE_RUNNER_TOKEN_FILE: /run/secrets/runner_token
       HUNTWEAVE_RUNNER_URL: http://runner:8001
     secrets: [access_key, app_db_password, checkpoint_db_password, migrator_db_password, runner_token]

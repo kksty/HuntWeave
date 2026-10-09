@@ -1,6 +1,6 @@
 # HuntWeave 项目总纲
 
-版本：0.7.1 · 更新日期：2026-10-08 · 状态：P0-A 工程启动已验证，完整 P0 尚未完成
+版本：0.7.2 · 更新日期：2026-10-09 · 状态：P0-A/B 已验证，完整 P0 尚未完成
 
 本文件用于统一产品、架构、Agent harness、授权边界和交付标准。后续需求拆分、数据库设计、接口实现、提示词编写、工具接入和验收均以此为起点；用户后续明确调整的需求优先，并应同步更新本文件。
 
@@ -9,6 +9,8 @@
 0.7 保留已经确定的产品与技术选型，补齐模块职责、状态归属、执行恢复与开工验收。当前结论以本文件为准；[ADR 索引](./docs/adr/README.md) 区分有效决定与历史取舍，旧 ADR 的默认 root、SQLite、完全自研及严格单容器选择不得用于新实现。下一步直接执行 [P0 工程与运行契约规格](./docs/specs/0001-foundation.md)。
 
 0.7.1 取消单服务研究时长上限，由 LLM 自主决定研究推进或放弃；保留执行超时与 Run 时间窗，具体规则见第 12 节。
+
+0.7.2 记录 P0-B 身份、授权与持久 Run 交付。产品品牌统一使用 HuntWeave，不设独立中文名称。
 
 阅读顺序：第 2 节看固定选型，第 6–8 节看部署、模块和状态，第 9–12 节看权限、工具、证据与透明性，第 13–14 节看代码组织和验收。本文描述完整首版，P0 只实现规格中明确列出的第一条闭环。
 
@@ -701,6 +703,7 @@ Agent 可以更新本会话的模板、下载代码型验证工具或按需准�
 - app/runner 使用 Python + Debian slim，工具准备/执行使用 Kali 衍生镜像，PostgreSQL 使用官方镜像；分别锁定 digest。LangGraph 底座保持，P0 验证恢复语义、数据库驱动与 Compose 生命周期。
 - Python 依赖锁文件、前端锁文件、基础镜像 digest、工具版本和模板版本一并管理。开发时选择互相兼容的受支持版本，不在本纲要假定“最新版”即可工作。
 - 本地开发可叠加 deploy/compose.dev.yaml 使用 Compose Watch：源码同步后重启 app/runner，迁移同步后重启 app，依赖锁及 Dockerfile 变化重建。仅开发构建阶段开放可写源码；基础部署保持只读镜像和现有权限边界。
+- P0-B 的 Vue 业务页面由 app 同源提供，登录使用独立最小资源，业务 JS/CSS 同样鉴权；Node 只参与前端构建。会话与登录限速在业务 PostgreSQL 中持久化。Run 先为 draft，再通过带状态版本的 start 入口进入 queued；P0-C 交付前仅保存记录，不派发动作。
 - 使用 pytest 做核心和集成验证，Playwright 验证关键用户流程；不以真实外网资产作为默认测试目标。
 - 日志采用结构化格式与关联 ID；首版不强制部署完整可观测性集群。
 
@@ -829,6 +832,6 @@ PROJECT.md 保存当前全局要求，ADR 记录决定及替代关系，`docs/sp
 
 ## 16. 项目状态与使用方式
 
-P0-A 三服务启动、访问门槛、独立数据库迁移与必需进程监督已实施并验证，结果见 docs/validation/0001-startup.md。Windows Docker Desktop 的每会话网络命名空间方案已通过本机隔离靶场技术验证，见 ADR-0007、profiles/windows11-wsl2-docker-desktop-gateway-v1.json 和 docs/validation/0002-windows-isolation.md；P1 产品接入后复验。登录、Run、研究图等后续切片仍待实施；没有执行任何真实目标测试。README 提供当前已验证的部署入口。
+P0-A 三服务启动、访问门槛、独立数据库迁移与必需进程监督已实施并验证，结果见 docs/validation/0001-startup.md。Windows Docker Desktop 的每会话网络命名空间方案已通过本机隔离靶场技术验证，见 ADR-0007、profiles/windows11-wsl2-docker-desktop-gateway-v1.json 和 docs/validation/0002-windows-isolation.md；P1 产品接入后复验。P0-B 已实现服务端会话、登录保护、Vue 页面、IP/端口预览、不可变授权快照、幂等 Run 创建/读取和版本化排队，验证见 docs/validation/0004-identity-runs.md。研究图、假执行器、证据时间线及暂停/取消/恢复仍待 P0-C/D；没有执行任何真实目标测试。README 提供当前已验证的部署入口。
 
 开始下一轮开发时阅读本文件、`AGENTS.md` 与 P0 规格，按规格切片推进。先交付可登录、可启动假 Run、可观察、可中断和可恢复的路径，再接入经过隔离验收的真实执行。当前 Windows 开发栈的已验证启动命令见 README；完整 P0 与真实隔离能力按对应切片分别验收。

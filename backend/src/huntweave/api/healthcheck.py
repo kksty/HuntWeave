@@ -9,7 +9,7 @@ from huntweave.storage.database import connect_engine, verify_agentd, verify_bus
 def main() -> int:
     engine = None
     try:
-        if not AppSettings.from_env().access_key:
+        if not AppSettings.from_env().current_access_key():
             print('{"reason_code":"access_key_missing"}')
             return 1
         response = httpx.get("http://127.0.0.1:8000/health/live", timeout=2, trust_env=False)

@@ -25,6 +25,20 @@ services:
           action: rebuild
         - path: ./Dockerfile
           action: rebuild
+        - path: ../frontend/src
+          action: rebuild
+        - path: ../frontend/index.html
+          action: rebuild
+        - path: ../frontend/package.json
+          action: rebuild
+        - path: ../frontend/package-lock.json
+          action: rebuild
+        - path: ../frontend/tsconfig.json
+          action: rebuild
+        - path: ../frontend/vite.config.ts
+          action: rebuild
+        - path: ../profiles/common-tcp-v1.json
+          action: rebuild
 
   runner:
     <<: *development

@@ -6,6 +6,8 @@
 
 2026-10-08 后续用户命名决定：项目品牌与仓库文档统一使用 HuntWeave，代码标识保持 `huntweave`。
 
+2026-10-09 用户重申：产品不采用独立中文名称，登录页、页面标题与导航品牌统一使用 HuntWeave；中文功能说明继续保留。这是既有命名决定的落实，不改变产品能力或接口标识。
+
 ## 原因
 
 原开发名称 ScopeHunter 与现有安全工具同名。该工具用于寻找漏洞赏金项目范围内的目标，与本项目同属安全领域，容易混淆，因此弃用该名称。[现有 ScopeHunter 项目](https://github.com/blackhatethicalhacking/ScopeHunter)

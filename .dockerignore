@@ -13,3 +13,13 @@
 !deploy/
 !deploy/*.py
 !deploy/Dockerfile
+!profiles/
+!profiles/common-tcp-v1.json
+!frontend/
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/src/
+!frontend/src/**

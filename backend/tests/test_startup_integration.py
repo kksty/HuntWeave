@@ -2,12 +2,13 @@ import os
 
 import httpx
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
+
 from huntweave.execution.client import get_capabilities
 from huntweave.harness.checkpoints import checkpoint_connection, verify_checkpoint_schema
 from huntweave.storage.database import connect_engine, verify_agentd, verify_business_schema
 from huntweave.storage.migrate import migrate
-from sqlalchemy import text
-from sqlalchemy.exc import ProgrammingError
 
 pytestmark = pytest.mark.integration
 

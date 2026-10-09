@@ -47,6 +47,7 @@ def main() -> int:
                     "--port",
                     "8000",
                     "--no-access-log",
+                    "--no-proxy-headers",
                 ],
                 api_env,
             ),

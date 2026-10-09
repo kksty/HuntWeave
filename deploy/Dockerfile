@@ -1,3 +1,11 @@
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS frontend
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts ./
+COPY frontend/src ./src
+RUN npm run build
+
 FROM ghcr.io/astral-sh/uv:0.12.23@sha256:61d393e44e249f2e4b526b6c7ddcecce245946826e608e11c93ad4f5bba55b21 AS uv
 FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS control
 
@@ -11,6 +19,8 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project --no-managed-python
 COPY backend/src ./src
 COPY backend/migrations ./migrations
+COPY profiles/common-tcp-v1.json /opt/huntweave/profiles/common-tcp-v1.json
+COPY --from=frontend /frontend/dist /opt/huntweave/frontend/dist
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin huntweave \
     && mkdir /evidence && chown huntweave:huntweave /evidence
 USER 10001:10001

@@ -1,6 +1,6 @@
 # P0：工程骨架与运行契约
 
-状态：部分实施，P0-A 三服务启动与本机隔离技术验证已通过，其余切片待实现。更新日期：2026-10-09。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)。当前成果与限制见 [启动验证记录](../validation/0001-startup.md)和[隔离验证记录](../validation/0002-windows-isolation.md)；下文完整闭环仍属于验收要求。
+状态：部分实施，P0-A 与 P0-B 已实施，P0-C/D 待实现。更新日期：2026-10-09。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)。当前成果与限制见 [启动验证记录](../validation/0001-startup.md)、[隔离验证记录](../validation/0002-windows-isolation.md)和 [身份与 Run 验证记录](../validation/0004-identity-runs.md)；下文完整研究闭环仍属于验收要求。
 
 ## 1. 交付目标与范围
 
@@ -29,6 +29,8 @@ P0 不实现动态安装/工具保留、真实模型/联网研究、完整 Findi
 目标预览遵循总纲的纯 IP 输入契约；错误行明确定位，不能静默丢弃。Run 固定 IP/端口、授权时间窗、操作模式、预算、profile 和配置版本。默认端口清单作为受版本管理的配置提交并展开给用户，不能把 profile 名称当作具体端口授权。
 
 创建 Run 使用 `Idempotency-Key`：同键同请求返回同一 Run，同键不同规范化请求 hash 返回 409。暂停、恢复、取消、关闭用状态版本检查避免重复/过期页面覆盖。Run 的 phase/status、任务和 ToolCall 的状态枚举以总纲第 8.2 节为准。
+
+P0-B 的创建顺序为 Project → 不可变 AuthorizationScope → draft Run。Run 创建请求引用 scope_id 与 scope_version，规范化 UUID 后计算请求 hash；授权中的规范化 IP、展开端口、预算、有效期、演示 profile/config 全部复制到 Run。仅有效时间窗内允许创建和排队；同键重放已存在的 Run 可读取原记录。新增 `POST /api/v1/runs/{id}/start`，以请求体 version 将 draft 转为 queued 并递增状态版本；并发或过期版本返回 409。P0-C 交付前 queued 不派发任何动作，页面和响应明确标记执行尚未就绪。
 
 `resume` 返回或使用恢复预览：上次完成步骤、待核对调用、剩余预算、当前授权有效性、预计恢复动作。结果未知且未核对时不可从普通恢复按钮重新派发。暂停等当前受限动作收尾；取消需等待执行端确认回收。关闭仅用于没有活动/未知调用的 awaiting_human 阶段，记录人工决定“结束演示”。
 
@@ -61,7 +63,9 @@ Runner 写入完整输出文件/证据，app 只读归档。先完成文件归�
 | --- | --- |
 | 登录与会话 | `POST /auth/login`、`POST /auth/logout`、`GET /auth/session` |
 | 项目与输入预览 | `/api/v1/projects`、`POST /api/v1/targets/preview`、`/api/v1/scopes` |
+| P0-B 端口与授权读取 | `POST /api/v1/ports/preview`、`GET /api/v1/scopes/{id}` |
 | Run 配置与状态 | `POST /api/v1/runs`、`GET /api/v1/runs/{id}` |
+| P0-B 列表与排队 | `GET /api/v1/runs`、`POST /api/v1/runs/{id}/start` |
 | 控制与恢复 | `POST /api/v1/runs/{id}/pause`、`/resume`、`/cancel`、`/close`，`GET /api/v1/runs/{id}/resume-preview` |
 | 玻璃鱼缸 | `GET /api/v1/runs/{id}/events`（SSE）、`/event-history`（分页）与任务状态快照 |
 | 输出与证据 | `GET /api/v1/evidence/{id}`，按权限提供元数据/分段内容 |
@@ -70,6 +74,8 @@ Runner 写入完整输出文件/证据，app 只读归档。先完成文件归�
 表中缩写路径延续该行的 Run 前缀。只实现上述实际用到的资源方法；API Schema 来自受版本管理的 contracts。版本冲突统一 409，未认证 401；权限/环境阻断有明确 reason_code。POST 等变更入口校验会话、CSRF 与 Origin；前端路由守卫不能代替这些检查。
 
 登录资源与最小存活检查之外，主页/业务静态资源、API、事件、证据与 API 文档统一鉴权。密钥不进入前端构建、URL、日志或 Agent；会话撤销、到期、轮换与已建立 SSE 的失效时限按总纲第 9.3 节实现。localhost 开发 Cookie 与 HTTPS 生产配置分开。
+
+P0-B 公开白名单为 GET `/login`、`/login.js`、`/login.css`、POST `/auth/login`，以及最小存活检查。未认证的 HTML 导航转到登录页，API/文件请求返回 401；业务 Vue 产物不进入登录资源白名单。变更请求必须携带与配置一致的 Origin，登录后的变更还需 X-CSRF-Token。登录请求体上限 4 KiB（含 chunked 请求），其他变更为 1 MiB；默认每直接连接来源 IP 每分钟 5 次、全局 30 次尝试，限速窗口持久化且不被被拒请求无限延长，不信任代理转发头。会话闲置上限 2 小时、绝对上限 24 小时；服务端每次请求重读密钥文件，轮换后下一请求拒绝旧会话。当前尚无 SSE；P0-C 接入流时必须补齐每 60 秒撤销/过期复查，不能仅复用建连鉴权。
 
 ## 5. 切片顺序与完成证据
 

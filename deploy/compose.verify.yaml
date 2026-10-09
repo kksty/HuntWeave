@@ -21,5 +21,6 @@ services:
       HUNTWEAVE_RUNNER_TOKEN_FILE: /run/secrets/runner_token
       HUNTWEAVE_RUNNER_URL: http://runner:8001
       HUNTWEAVE_APP_URL: http://app:8000
+      HUNTWEAVE_DISPOSABLE_TEST_DATABASE: ${HUNTWEAVE_DISPOSABLE_TEST_DATABASE:-0}
     secrets: [app_db_password, checkpoint_db_password, migrator_db_password, runner_token]
     networks: [control, database]
