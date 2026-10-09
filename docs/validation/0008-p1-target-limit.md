@@ -44,6 +44,8 @@
 
 ## 待人工确认
 
+处置已记录在 [#13 的关闭评论](https://github.com/kksty/HuntWeave/issues/13#issuecomment-6084734366)（2026-10-09），原表述保留：第 1、3 项接受现状，第 2、6 项顺延 [#19](https://github.com/kksty/HuntWeave/issues/19)，第 4 项顺延 [#21](https://github.com/kksty/HuntWeave/issues/21)，第 5 项记入 `STATUS` 已知限制。
+
 - [ ] 上限计**去重后的不同目标**（重复行不占额度）是否符合 `PROJECT.md` §12「100 个 IP」的意图，或应改为按原始输入行数封顶。
 - [ ] 是否接受「预览接口同样按上限拒绝」：操作员粘贴超限清单时得到 422 原因码而非逐行清单。若需改为「预览不设限、仅提交设限」，属独立切片并会影响 #19 的输入区交互。
 - [ ] 本轮只做 Seam A（纯函数）而未补 `POST /api/v1/scopes` 的集成断言，是否可接受；若要求补，需 Docker 与一次性栈。
