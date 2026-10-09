@@ -82,11 +82,18 @@ class FakeRunner:
         reason: str | None = None,
         result: ExecutionResult | None = None,
     ) -> ExecutionRecord:
+        now = datetime.now(UTC)
+        started = next(
+            (event.created_at for event in record.events if event.type == "execution_started"), now
+        )
         event = ExecutionEvent(
             source_event_id=f"{record.request.call_id}:{len(record.events)}",
             type="execution_started" if status == "running" else f"execution_{status}",
-            payload={"reason_code": reason},
-            created_at=datetime.now(UTC),
+            payload={
+                "reason_code": reason,
+                "elapsed_ms": int((now - started).total_seconds() * 1000),
+            },
+            created_at=now,
         )
         updated = ExecutionRecord(
             request=record.request,
@@ -117,7 +124,10 @@ class FakeRunner:
             for item in self.data.values():
                 old = ExecutionRecord.model_validate(item["record"]).request
                 if old.run_id == request.run_id:
-                    if request.lease_generation < old.lease_generation:
+                    if (
+                        old.session_id == request.session_id
+                        and request.lease_generation < old.lease_generation
+                    ):
                         raise RunnerRejected("stale_lease_generation")
                     if (
                         old.scope_id,
@@ -141,6 +151,44 @@ class FakeRunner:
             self.threads.append(worker)
             worker.start()
             return record
+
+    def _output(self, record: ExecutionRecord, text: str) -> ExecutionRecord:
+        relative = f"{record.request.run_id}/{record.request.call_id}.txt"
+        destination = self.evidence_dir / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        previous = destination.read_bytes() if destination.exists() else b""
+        atomic_write(destination, previous + text.encode())
+        event = ExecutionEvent(
+            source_event_id=f"{record.request.call_id}:{len(record.events)}",
+            type="execution_output",
+            payload={
+                "text": text,
+                "offset": len(previous),
+                "next_offset": len(previous) + len(text.encode()),
+                "fake": True,
+                "heartbeat": True,
+            },
+            created_at=datetime.now(UTC),
+        )
+        updated = record.model_copy(update={"events": [*record.events, event]})
+        self.data[str(record.request.call_id)]["record"] = updated.model_dump(mode="json")
+        self._persist()
+        return updated
+
+    def _result(self, record: ExecutionRecord, exit_code: int | None) -> ExecutionResult | None:
+        relative = f"{record.request.run_id}/{record.request.call_id}.txt"
+        destination = self.evidence_dir / relative
+        if not destination.exists():
+            return None
+        payload = destination.read_bytes()
+        evidence = ExecutionEvidence(
+            id=uuid5(record.request.call_id, "output"),
+            relative_path=relative,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size_bytes=len(payload),
+            available=True,
+        )
+        return ExecutionResult(output=payload.decode(), exit_code=exit_code, evidence=[evidence])
 
     def query(self, call_id: UUID) -> ExecutionRecord | None:
         with self.lock:
@@ -190,7 +238,15 @@ class FakeRunner:
                 self._change(record, "cancelled", "execution_ticket_expired")
                 return
             record = self._change(record, "running")
-        finish = datetime.now(UTC).timestamp() + record.request.parameters.duration_ms / 1000
+            try:
+                record = self._output(record, f"FAKE {record.request.action_id}: started\n")
+            except OSError:
+                self._change(record, "failed", "evidence_storage_failed")
+                return
+        started = datetime.now(UTC).timestamp()
+        finish = started + record.request.parameters.duration_ms / 1000
+        progress_sent = False
+        next_heartbeat = started + 5
         while not self.closed.wait(0.01):
             with self.lock:
                 record = self.query(call_id)
@@ -212,30 +268,38 @@ class FakeRunner:
                         "control_lease_expired"
                         if record.request.lease_expires_at <= now
                         else "execution_timeout",
+                        self._result(record, None),
                     )
                     return
                 if now.timestamp() < finish:
+                    if not progress_sent and now.timestamp() >= (started + finish) / 2:
+                        try:
+                            record = self._output(record, "FAKE fixed fixture progress\n")
+                            progress_sent = True
+                        except OSError:
+                            self._change(record, "failed", "evidence_storage_failed")
+                            return
+                    if now.timestamp() >= next_heartbeat:
+                        event = ExecutionEvent(
+                            source_event_id=f"{call_id}:{len(record.events)}",
+                            type="execution_heartbeat",
+                            payload={
+                                "status": "running",
+                                "fake": True,
+                                "elapsed_ms": int((now.timestamp() - started) * 1000),
+                            },
+                            created_at=now,
+                        )
+                        updated = record.model_copy(update={"events": [*record.events, event]})
+                        self.data[str(call_id)]["record"] = updated.model_dump(mode="json")
+                        self._persist()
+                        next_heartbeat = now.timestamp() + 5
                     continue
                 scenario = record.request.parameters.scenario
                 output = f"FAKE {record.request.action_id}: {scenario}\n"
-                payload = output.encode()
-                relative = f"{record.request.run_id}/{call_id}.txt"
-                destination = self.evidence_dir / relative
                 try:
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    atomic_write(destination, payload)
-                    evidence = ExecutionEvidence(
-                        id=uuid5(call_id, "output"),
-                        relative_path=relative,
-                        sha256=hashlib.sha256(payload).hexdigest(),
-                        size_bytes=len(payload),
-                        available=True,
-                    )
-                    result = ExecutionResult(
-                        output=output,
-                        exit_code=1 if scenario == "failure" else 0,
-                        evidence=[evidence],
-                    )
+                    record = self._output(record, output)
+                    result = self._result(record, 1 if scenario == "failure" else 0)
                     self._change(
                         record,
                         "failed" if scenario == "failure" else "completed",
@@ -280,7 +344,9 @@ class FakeRunner:
             if generation != record.request.lease_generation:
                 raise RunnerRejected("stale_lease_generation")
             if record.status in {"accepted", "running"}:
-                return self._change(record, "cancelled", "operator_cancelled")
+                return self._change(
+                    record, "cancelled", "operator_cancelled", self._result(record, None)
+                )
             return record
 
     def close(self) -> None:
