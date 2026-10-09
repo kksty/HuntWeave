@@ -116,7 +116,7 @@ npm run build:watch
 docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up --build --watch
 ```
 
-后端源码变化同步至 app/runner 并重启这两个服务，覆盖 API 和 agentd；迁移变化同步并重启 app，在启动阶段应用迁移。`pyproject.toml`、`uv.lock`、`profiles/common-tcp-v1.json` 和 Dockerfile 变化触发镜像重建。`initial_sync` 在监测开始时把宿主已有的后端源码和前端产物同步进容器，因此 watch 附着后不久可能出现一次 app/runner 重启，之后的前端改动不会重启服务（实测见 [0009](./docs/validation/0009-frontend-watch-sync.md)）。
+后端源码变化同步至 app/runner 并重启这两个服务，覆盖 API 和 agentd；迁移变化同步并重启 app，在启动阶段应用迁移。`pyproject.toml`、`uv.lock`、`profiles/common-tcp-v1.json` 和 Dockerfile 变化触发镜像重建。同步按**改动**触发：附着 watch 不会把启动前已存在的文件（后端源码或前端产物）复制进容器，因此容器在附着后仍提供镜像内的构建产物，直到第一次改动被同步；后端源码的第一次改动会重启 app/runner，前端改动同步时不重启服务。要让容器立刻用上宿主产物，附着后再保存一次前端文件即可（`npm run build:watch` 会重建并触发同步）。实测与更正见 [0009](./docs/validation/0009-frontend-watch-sync.md)。
 
 前端源码与构建配置变化不再触发镜像重建：`npm run build:watch` 在宿主重建 `frontend/dist`，Compose Watch 只做文件同步（`action: sync`），app 按请求从磁盘读取静态资源，因此改前端既不重启服务，也不在容器内重跑 `npm ci` / `vite build`。前端构建失败时容器继续提供上一次成功产物，不会中断正在运行的服务；改动前端依赖后需在宿主重新 `npm ci`。类型检查与生产构建仍以 `npm run build`（含 `vue-tsc --noEmit`）和 CI 为准。
 

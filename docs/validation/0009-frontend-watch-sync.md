@@ -33,3 +33,17 @@
 - 类型检查不在 watch 路径内，`vue-tsc --noEmit` 仍只在 `npm run build` 与 CI 执行。
 - 验证在独立 worktree 完成，未在主工作区复测（当时该工作区正由另一会话改动源码）。
 - 本轮未验证 Linux 原生宿主；与 0003 相同，结论只在上述 Windows 环境实测。
+
+## 本记录的更正
+
+2026-10-10（本记录提交后）。「行为与结果」表的「watch 附着时的前端 `initial_sync`」一行不能作为**附着时初始同步**的证据：该行引用的日志（`Syncing service "app" after 4 changes were detected`）在本次复核中只在**改动被检出**时出现，附着时没有对应输出。在独立一次性项目（`huntweave-watchsync`、Web 端口 18001、`deploy/compose.dev.yaml` 覆盖、镜内容与宿主 `frontend/dist` 不同）上做了三次受控复核：
+
+| 复核 | 结果 |
+| --- | --- |
+| 附着前在宿主 `frontend/dist` 写入 `watch-probe.txt`，再 `up --build --watch` | 容器内该文件**不存在**；随后改写该文件 → 同步进容器，app `StartedAt`、镜像 ID、`RestartCount=0` 均未变 |
+| 附着期间在宿主新建 `new-file-probe.txt` | 同步进容器（新增文件同样按改动同步） |
+| 停止 watch，在 `frontend/dist` 写入 `initial-probe.txt` 后重新附着 | 约 150 秒轮询内仍未同步；同一轮在 `backend/src` 写入 `zz_watch_probe.txt`（同为 `initial_sync: true` 的 `sync+restart` 规则）同样未同步、app 未重启 |
+| watch 未附着时移走 `frontend/dist` 再 `up --watch` | 以 `GetFileAttributesEx D:\code\HuntWeave\frontend\dist: The system cannot find the file specified.` 退出，exit 1（该项结论不变） |
+
+因此：本记录「前端改动同步不重启服务、不重建镜像」「`dist` 缺失时 `up --watch` 直接失败」「前端构建失败时容器保留上一次成功产物」三项结论仍然成立；**「附着时把启动前已存在的后端源码与前端产物同步进容器」不成立**——容器在附着后仍提供镜像内的构建产物，直到第一次改动被同步。README 的开发模式说明已按实测改正（含「附着后再保存一次前端文件」的操作提示），`deploy/compose.dev.yaml` 与 `frontend/package.json` 的改动本身不受影响。
+
