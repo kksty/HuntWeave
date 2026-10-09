@@ -4,7 +4,7 @@
 
 ## 环境与入口
 
-Windows 工作区 `D:\自动化渗透平台`；Docker Desktop Linux containers；一次性验收项目 `huntweave-p0-checks`（自己的 PostgreSQL、证据与 Runner 状态卷，Web `127.0.0.1:18000`）。日常 `huntweave` 组未被注入故障、数据库未清空。新增迁移 `0004_reconciliation` 并把 `BUSINESS_REVISION` 升到该版本；迁移在一次性库上做了一次 `downgrade 0003 → upgrade head` 的往返验证。
+Windows 工作区（仓库根目录）；Docker Desktop Linux containers；一次性验收项目 `huntweave-p0-checks`（自己的 PostgreSQL、证据与 Runner 状态卷，Web `127.0.0.1:18000`）。日常 `huntweave` 组未被注入故障、数据库未清空。新增迁移 `0004_reconciliation` 并把 `BUSINESS_REVISION` 升到该版本；迁移在一次性库上做了一次 `downgrade 0003 → upgrade head` 的往返验证。
 
 ```powershell
 $env:HUNTWEAVE_WEB_PORT = "18000"; $env:HUNTWEAVE_PUBLIC_ORIGIN = "http://127.0.0.1:18000"

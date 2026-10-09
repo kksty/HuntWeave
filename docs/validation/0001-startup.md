@@ -4,7 +4,7 @@
 
 ## 环境与固定版本
 
-- Windows 11 Pro，build 26200；源码位于 Windows 的 `D:\code\HuntWeave`。
+- Windows 11 Pro，build 26200；源码位于 Windows 工作区（仓库根目录）。
 - Docker Desktop 4.94.0，Engine 29.8.2，Compose 5.5.1，Linux containers / WSL2 后端。
 - WSL 3.0.1，内核 `6.18.40.1-microsoft-standard-WSL2`；单独的 Kali 发行版未参与构建或执行。
 - 容器 Python 3.12.15 / Debian bookworm；本地单元验证 Python 3.12.14。

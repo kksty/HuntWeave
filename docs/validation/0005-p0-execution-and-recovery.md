@@ -4,7 +4,7 @@
 
 ## 环境与入口
 
-Windows 工作区 `D:\自动化渗透平台`；Docker Desktop Linux containers。本地 Python 3.12.15（`backend/.venv`，由 `backend/uv.lock` 锁定），容器 Python 3.12.15，Node 24.20.0（容器内前端构建使用固定 digest 的 Node 22）。一次性验收项目 `huntweave-p0-checks` 使用自己的 PostgreSQL/证据/Runner 状态卷，Web 为 `127.0.0.1:18000`；故障注入脚本拒绝其他项目名、拒绝 8000 端口与非回环来源。日常 `huntweave` 组未被注入故障、数据库未清空。
+Windows 工作区（仓库根目录）；Docker Desktop Linux containers。本地 Python 3.12.15（`backend/.venv`，由 `backend/uv.lock` 锁定），容器 Python 3.12.15，Node 24.20.0（容器内前端构建使用固定 digest 的 Node 22）。一次性验收项目 `huntweave-p0-checks` 使用自己的 PostgreSQL/证据/Runner 状态卷，Web 为 `127.0.0.1:18000`；故障注入脚本拒绝其他项目名、拒绝 8000 端口与非回环来源。日常 `huntweave` 组未被注入故障、数据库未清空。
 
 ```powershell
 # 一次性验收栈：构建 → 全新卷 → 启动

@@ -4,7 +4,7 @@
 
 ## 环境与入口
 
-Windows 工作区 `D:\自动化渗透平台`；Docker Engine 29.7.2 / Compose 5.4.0 / Linux containers。本地及容器 Python 3.12.15，原 Python 依赖保持 `backend/uv.lock`；本地 Node 24.20.0，容器前端构建使用固定 digest 的 Node 22。Vue、Pinia、Vue Router、Vite、TypeScript、Playwright 由 `frontend/package-lock.json` 固定。
+Windows 工作区（仓库根目录）；Docker Engine 29.7.2 / Compose 5.4.0 / Linux containers。本地及容器 Python 3.12.15，原 Python 依赖保持 `backend/uv.lock`；本地 Node 24.20.0，容器前端构建使用固定 digest 的 Node 22。Vue、Pinia、Vue Router、Vite、TypeScript、Playwright 由 `frontend/package-lock.json` 固定。
 
 独立临时项目 `huntweave-p0b-checks` 使用自身 PostgreSQL/证据卷与专用网络，Web 为 localhost:18000；验收结束后已删除其容器/卷/网络，本机只保留 localhost:8000 的 `huntweave` 三服务。身份与 Run 故障测试只有显式设置 `HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 才执行；会重置测试表，不在开发数据库运行。浏览器回归只追加假记录，可在开发组执行。完整命令集中维护于 README。
 
