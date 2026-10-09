@@ -56,7 +56,17 @@ class Business:
         return {"run": {"status": self.status}}
 
     def pending(self, run_id: UUID) -> list[dict[str, Any]]:
-        return self.calls
+        return [
+            item
+            for item in self.calls
+            if ExecutionRequest.model_validate(item["ticket"]).run_id == run_id
+        ]
+
+    def pending_runs(self, limit: int = 20, offset: int = 0) -> list[UUID]:
+        run_ids = [
+            ExecutionRequest.model_validate(item["ticket"]).run_id for item in self.calls
+        ]
+        return run_ids[offset : offset + limit]
 
     def accept(self, record: ExecutionRecord) -> None:
         self.accepted.append(record)
@@ -110,9 +120,11 @@ def pending(request: ExecutionRequest, status: str = "planned") -> list[dict[str
     ]
 
 
-def rejection(status_code: int) -> httpx.HTTPStatusError:
-    response = httpx.Response(status_code, request=httpx.Request("POST", "http://runner/v1/calls"))
-    return httpx.HTTPStatusError("rejected", request=response.request, response=response)
+def rejection(status_code: int, reason_code: str | None = None) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://runner/v1/calls")
+    body = {"reason_code": reason_code} if reason_code else None
+    response = httpx.Response(status_code, request=request, json=body)
+    return httpx.HTTPStatusError("rejected", request=request, response=response)
 
 
 def test_accepted_call_is_maintained_instead_of_fenced_by_a_scheduling_restart():
@@ -163,16 +175,48 @@ def test_undispatched_ticket_past_its_control_lease_never_starts():
     assert business.unknowns == []
 
 
-def test_runner_refusal_of_a_new_intent_settles_without_guessing():
+@pytest.mark.parametrize(
+    "refusal,expected",
+    [("stale_lease_generation", "stale_lease_generation"), (None, "cancelled_before_dispatch")],
+)
+def test_runner_refusal_of_a_new_intent_settles_without_guessing(
+    refusal: str | None, expected: str
+):
+    # The Runner's own reason is kept, so a fenced or expired intent never looks like an
+    # operator cancellation; a refusal without a reason falls back to the local code.
     call = ticket()
     runner = Runner(None)
-    runner.submit_error = rejection(409)
+    runner.submit_error = rejection(409, refusal)
     business = Business("running", pending(call))
     ExecutionDispatcher(business, runner).reconcile(call.run_id)  # type: ignore[arg-type]
     assert [(item.status, item.reason_code) for item in business.accepted] == [
-        ("cancelled", "cancelled_before_dispatch")
+        ("cancelled", expected)
     ]
     assert business.unknowns == []
+
+
+def test_sweep_reconciles_calls_the_scheduler_cannot_claim():
+    # An unconfirmed call is never claimed again, but its ledger must still be read: this
+    # is how a Runner that answers later releases the Run.
+    call = ticket()
+    record = ExecutionRecord(request=call, status="completed")
+    runner = Runner(record)
+    business = Business("waiting", pending(call, "unknown"))
+    dispatcher = ExecutionDispatcher(business, runner)  # type: ignore[arg-type]
+    assert dispatcher.sweep() == 1
+    assert business.accepted == [record]
+
+
+def test_sweep_window_rotates_over_every_pending_run():
+    first, second = ticket(), ticket()
+    runner = Runner(None)
+    runner.query_error = httpx.ConnectError("unreachable")
+    business = Business("waiting", [*pending(first, "unknown"), *pending(second, "unknown")])
+    dispatcher = ExecutionDispatcher(business, runner)  # type: ignore[arg-type]
+    assert dispatcher.sweep(limit=1, offset=0) == 1
+    assert business.unreachable_calls == [first.call_id]
+    assert dispatcher.sweep(limit=1, offset=1) == 1
+    assert business.unreachable_calls == [first.call_id, second.call_id]
 
 
 @pytest.mark.parametrize("failure", [httpx.ConnectError("unreachable"), rejection(503)])

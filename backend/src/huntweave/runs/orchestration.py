@@ -71,6 +71,14 @@ class OrchestrationService:
         return record
 
     @staticmethod
+    def _view(session: Session, run_id: UUID) -> Run:
+        """Read a Run for display or reconciliation without taking the queue lock."""
+        record = session.get(Run, run_id)
+        if record is None:
+            raise ServiceError("run_not_found", 404)
+        return record
+
+    @staticmethod
     def _event(
         session: Session, run: Run, kind: str, payload: dict[str, Any], source: str | None = None
     ) -> None:
@@ -431,6 +439,20 @@ class OrchestrationService:
                 )
             ]
 
+    def pending_runs(self, limit: int = 20, offset: int = 0) -> list[UUID]:
+        """Runs with at least one outstanding call, oldest first, for a rotating sweep."""
+        with Session(self.engine()) as session:
+            return list(
+                session.scalars(
+                    select(ToolCall.run_id)
+                    .where(~ToolCall.status.in_(TERMINAL_CALLS))
+                    .group_by(ToolCall.run_id)
+                    .order_by(func.min(ToolCall.created_at))
+                    .limit(limit)
+                    .offset(offset)
+                )
+            )
+
     def accept(self, record: ExecutionRecord) -> None:
         with Session(self.engine()) as session, session.begin():
             run = self._run(session, record.request.run_id)
@@ -754,7 +776,7 @@ class OrchestrationService:
 
     def snapshot(self, run_id: UUID) -> dict[str, Any]:
         with Session(self.engine()) as session, session.begin():
-            run = self._run(session, run_id)
+            run = self._view(session, run_id)
             calls = list(
                 session.scalars(
                     select(ToolCall).where(ToolCall.run_id == run.id).order_by(ToolCall.created_at)

@@ -264,8 +264,11 @@ def test_authenticated_http_boundary_rejects_shell_and_replays_results(tmp_path:
             ).status_code
             == 422
         )
-        sleep(0.1)
+        deadline = monotonic() + 15
         result = client.get(f"/v1/calls/{request.call_id}", headers=headers)
+        while monotonic() < deadline and result.json()["status"] != "completed":
+            sleep(0.01)
+            result = client.get(f"/v1/calls/{request.call_id}", headers=headers)
         assert result.json()["status"] == "completed"
         assert client.post("/v1/calls", json=data, headers=headers).json() == result.json()
         assert (

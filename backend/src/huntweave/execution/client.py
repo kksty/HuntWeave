@@ -25,8 +25,9 @@ class RunnerClient:
             timeout=3,
             trust_env=False,
         )
-        if response.status_code != 404:
-            response.raise_for_status()
+        # Every refusal, including 404, surfaces as a status error: no caller may parse a
+        # refusal body as if it were a record.
+        response.raise_for_status()
         return response
 
     def capabilities(self) -> Capabilities:
@@ -38,10 +39,14 @@ class RunnerClient:
         )
 
     def query(self, call_id: UUID) -> ExecutionRecord | None:
-        response = self._request("GET", f"/v1/calls/{call_id}")
-        return (
-            None if response.status_code == 404 else ExecutionRecord.model_validate(response.json())
-        )
+        try:
+            response = self._request("GET", f"/v1/calls/{call_id}")
+        except httpx.HTTPStatusError as error:
+            # Only the ledger's explicit "no such call" answer means the ID was never accepted.
+            if error.response.status_code == 404:
+                return None
+            raise
+        return ExecutionRecord.model_validate(response.json())
 
     def renew(self, call_id: UUID, generation: int, expires_at: datetime) -> ExecutionRecord:
         return ExecutionRecord.model_validate(

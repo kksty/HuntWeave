@@ -14,6 +14,9 @@ from huntweave.runs.dispatch import ExecutionDispatcher
 from huntweave.runs.orchestration import OrchestrationService
 from huntweave.storage.database import connect_engine, verify_business_schema
 
+# Runs swept per pass; the window rotates so no stuck Run hides another from reconciliation.
+SWEEP_LIMIT = 20
+
 
 def main() -> int:
     stopping = threading.Event()
@@ -28,6 +31,7 @@ def main() -> int:
     business = OrchestrationService(lambda: engine)
     harness = ResearchHarness(business)
     dispatcher = ExecutionDispatcher(business, RunnerClient())
+    sweep_offset = 0
     try:
         verify_business_schema(engine)
         verify_checkpoint_schema()
@@ -56,6 +60,7 @@ def main() -> int:
                     try:
                         dispatcher.reconcile(run_id)
                         harness.advance(claim)
+                        # Submit what this pass just planned without waiting for the sweep.
                         dispatcher.reconcile(run_id)
                     except ServiceError as error:
                         # A Run can lose its lease or be reconciled away between the claim
@@ -71,6 +76,10 @@ def main() -> int:
                             ),
                             flush=True,
                         )
+                # The sweep re-reads every outstanding call, including Runs the scheduler
+                # cannot claim: an unconfirmed outcome is reconciled, never retried.
+                swept = dispatcher.sweep(SWEEP_LIMIT, sweep_offset)
+                sweep_offset = sweep_offset + SWEEP_LIMIT if swept == SWEEP_LIMIT else 0
                 stopping.wait(0.5)
     except Exception as error:
         print(f'{{"reason_code":"scheduler_unavailable","error_type":"{type(error).__name__}"}}')

@@ -26,6 +26,12 @@ from huntweave.access.service import AccessService, BrowserSession
 from huntweave.config import AppSettings
 from huntweave.contracts.capabilities import Capabilities
 from huntweave.contracts.errors import ServiceError
+from huntweave.contracts.orchestration import (
+    EventPage,
+    EvidenceView,
+    ResumePreview,
+    RunSnapshot,
+)
 from huntweave.contracts.runs import (
     LoginRequest,
     PortInput,
@@ -237,44 +243,44 @@ def create_app(settings: AppSettings | None = None, engine: Engine | None = None
         return runs.start(run_id, payload.version)
 
     @app.get("/api/v1/runs/{run_id}/snapshot")
-    def run_snapshot(run_id: UUID) -> dict[str, object]:
-        return orchestration.snapshot(run_id)
+    def run_snapshot(run_id: UUID) -> RunSnapshot:
+        return RunSnapshot.model_validate(orchestration.snapshot(run_id))
 
     @app.get("/api/v1/runs/{run_id}/event-history")
     def event_history(
         run_id: UUID,
         after: int = Query(default=0, ge=0),
         limit: int = Query(default=100, ge=1, le=500),
-    ) -> dict[str, object]:
-        return orchestration.history(run_id, after, limit)
+    ) -> EventPage:
+        return EventPage.model_validate(orchestration.history(run_id, after, limit))
 
     @app.get("/api/v1/runs/{run_id}/resume-preview")
-    def resume_preview(run_id: UUID) -> dict[str, object]:
-        return orchestration.preview(run_id)
+    def resume_preview(run_id: UUID) -> ResumePreview:
+        return ResumePreview.model_validate(orchestration.preview(run_id))
 
     @app.post("/api/v1/runs/{run_id}/pause")
-    def pause_run(run_id: UUID, payload: VersionRequest) -> dict[str, object]:
-        return orchestration.control(run_id, "pause", payload.version)
+    def pause_run(run_id: UUID, payload: VersionRequest) -> RunView:
+        return RunView.model_validate(orchestration.control(run_id, "pause", payload.version))
 
     @app.post("/api/v1/runs/{run_id}/resume")
-    def resume_run(run_id: UUID, payload: VersionRequest) -> dict[str, object]:
-        return orchestration.control(run_id, "resume", payload.version)
+    def resume_run(run_id: UUID, payload: VersionRequest) -> RunView:
+        return RunView.model_validate(orchestration.control(run_id, "resume", payload.version))
 
     @app.post("/api/v1/runs/{run_id}/cancel")
-    def cancel_run(run_id: UUID, payload: VersionRequest) -> dict[str, object]:
-        return orchestration.control(run_id, "cancel", payload.version)
+    def cancel_run(run_id: UUID, payload: VersionRequest) -> RunView:
+        return RunView.model_validate(orchestration.control(run_id, "cancel", payload.version))
 
     @app.post("/api/v1/runs/{run_id}/close")
-    def close_run(run_id: UUID, payload: VersionRequest) -> dict[str, object]:
-        return orchestration.control(run_id, "close", payload.version)
+    def close_run(run_id: UUID, payload: VersionRequest) -> RunView:
+        return RunView.model_validate(orchestration.control(run_id, "close", payload.version))
 
     @app.get("/api/v1/evidence/{evidence_id}")
     def evidence(
         evidence_id: UUID,
         offset: int = Query(default=0, ge=0),
         limit: int = Query(default=65536, ge=1, le=65536),
-    ) -> dict[str, object]:
-        return orchestration.evidence(evidence_id, offset, limit)
+    ) -> EvidenceView:
+        return EvidenceView.model_validate(orchestration.evidence(evidence_id, offset, limit))
 
     @app.get("/api/v1/runs/{run_id}/events")
     async def events(

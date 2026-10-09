@@ -54,8 +54,11 @@ def test_run_awaiting_reconciliation_never_starves_the_single_scheduler(business
     service.plan(stuck_id, claim["task_id"], claim["lease_generation"])
     service.unknown(stuck_id, UUID(service.snapshot(stuck_id)["calls"][0]["id"]))
     # The unconfirmed call needs a human decision, so this Run is skipped while the
-    # remaining Runs keep being served by the one active scheduler.
+    # remaining Runs keep being served by the one active scheduler;
     assert service.claim(stuck_id) is None
+    # ...and its ledger is still re-read by the dispatcher sweep, so a Runner that
+    # answers later can release the Run instead of leaving it wedged.
+    assert stuck_id in service.pending_runs()
     view = runs.run(stuck_id)
     second = runs.create_run(
         RunCreate(scope_id=view.scope_id, scope_version=view.scope_version), str(uuid4())

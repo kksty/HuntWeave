@@ -59,13 +59,25 @@ class ExecutionDispatcher:
                 # invent a verdict the execution ledger never gave.
                 self.business.unreachable(run_id, ticket.call_id)
 
-    def _settle_undispatched(self, run_id: UUID, ticket: ExecutionRequest) -> None:
-        # The Runner's ledger confirms this call_id was never accepted, so recording a
-        # cancellation releases the run without replaying or duplicating any effect.
+    def sweep(self, limit: int = 20, offset: int = 0) -> int:
+        """Re-reconcile Runs the scheduler itself cannot claim.
+
+        An unconfirmed call is never retried, but its ledger must still be read again:
+        this is where a Runner that answers later releases the Run. Returns how many Runs
+        were swept so the caller can rotate a bounded window.
+        """
+        run_ids = self.business.pending_runs(limit, offset)
+        for run_id in run_ids:
+            self.reconcile(run_id)
+        return len(run_ids)
+
+    def _settle_undispatched(
+        self, run_id: UUID, ticket: ExecutionRequest, reason: str = "cancelled_before_dispatch"
+    ) -> None:
+        # The Runner's ledger confirms this call_id was never accepted, so recording the
+        # refusal releases the run without replaying or duplicating any effect.
         self.business.accept(
-            ExecutionRecord(
-                request=ticket, status="cancelled", reason_code="cancelled_before_dispatch"
-            )
+            ExecutionRecord(request=ticket, status="cancelled", reason_code=reason)
         )
 
     def _submit(self, run_id: UUID, ticket: ExecutionRequest) -> ExecutionRecord | None:
@@ -74,10 +86,21 @@ class ExecutionDispatcher:
         except httpx.HTTPStatusError as rejection:
             if rejection.response.status_code < 500:
                 # The Runner refused the intent outright; nothing was accepted, so the Run
-                # is released instead of waiting on an intent that can never start.
-                self._settle_undispatched(run_id, ticket)
+                # is released with the Runner's own reason instead of waiting forever.
+                self._settle_undispatched(run_id, ticket, self._refusal_reason(rejection))
                 return None
             raise
+
+    @staticmethod
+    def _refusal_reason(rejection: httpx.HTTPStatusError) -> str:
+        try:
+            body = rejection.response.json()
+        except ValueError:
+            return "cancelled_before_dispatch"
+        if not isinstance(body, dict):
+            return "cancelled_before_dispatch"
+        reason = body.get("reason_code")
+        return reason if isinstance(reason, str) and reason else "cancelled_before_dispatch"
 
     def _maintain(self, run_status: str, ticket: ExecutionRequest) -> ExecutionRecord | None:
         # The Runner owns the call it accepted: keep its control lease alive so a bounded
