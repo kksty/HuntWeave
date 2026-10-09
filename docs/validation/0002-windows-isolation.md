@@ -36,6 +36,8 @@ Windows 11 x86_64，Docker Desktop 4.94.0、Engine 29.8.2、WSL 3.0.1.0 / NAT、
 
 ## 已处理的失败与边界
 
+2026-10-09 10:13:21–10:14:12（Asia/Shanghai）为 P0 全局验收再次运行统一入口，40 项探针全部通过，cleanup_errors 为空。当前环境为 Windows 11 build 26200、WSL 2.7.10.0 / NAT、Engine 29.7.2、内核 `6.18.33.2-microsoft-standard-WSL2`、cgroup v2；iptables 1.8.9 / nf_tables。连接撤销检测为 1.653 秒，父进程退出后的残留子进程和网络端点回收通过。新增一组一次性验收控制服务地址使保护目的地址检查数增加；未修改隔离策略。报告 SHA-256 为 `cee6b1e0e22234ba3f86490f77bd0b57734b9135df9ca44a9aab5d4879cdf5f6`，策略与管理脚本 hash 与上次统一入口一致。原始报告位于 `runtime/isolation/9eac5af96a374ac8b83c6f5919a9c8a6/report.json`，不入 Git。源码为集成分支实施中版本，报告如实记录 source_tree_dirty=true。
+
 早期使用跨 bridge 路由转发的探针未到达网关 FORWARD 链，授权端点不可达，该轮报告为失败且资源已回收。最终采用每会话独立网络命名空间，在共享命名空间的 OUTPUT/INPUT 直接限制工具流量；未改变宿主全局转发设置。另一次 UDP 探针把内核 EPERM 当作脚本失败，随后修正探针并结合真实丢包计数验证。
 
 本 profile 仅验证 IPv4/TCP 与当前指纹，不支持 DNS、UDP、IPv6 或 loopback TCP。Docker/WSL/内核、策略或工具镜像改变后需要重跑入口。P1 仍需将该网络生命周期、执行票据、租约、资源/取消和 Kali 工具环境接入真实 Runner 并复验。默认 Compose Runner 没有 Docker socket，尚未使用本技术验证 profile，因此继续报告 `environment_unsupported`。

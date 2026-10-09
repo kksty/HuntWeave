@@ -12,7 +12,7 @@ interface Detail {
   interruptions: { reason_code: string; recovery_condition: string; created_at: string }[]; heartbeat_at: string | null; cursor: number;
 }
 interface ResumePreview { version: number; last_completed_step: string | null; pending_calls: unknown[]; remaining_tool_calls: number; authorization_valid: boolean; can_resume: boolean; expected_actions: string[]; reason_code: string | null }
-interface EvidenceView { id?: string; content?: string; sha256?: string; hash?: string; available?: boolean; availability?: string; truncated?: boolean; redacted?: boolean; size?: number; reason_code?: string }
+interface EvidenceView { id?: string; content?: string; sha256?: string; hash?: string; available?: boolean; availability?: string; truncated?: boolean; redacted?: boolean; size?: number; reason_code?: string; missing_reason?: string | null }
 const props = defineProps<{ run: Run }>();
 const emit = defineEmits<{ updated: [run: Run] }>();
 const workspace = useWorkspace();
@@ -104,7 +104,7 @@ async function readEvidence(id: string, offset = 0) {
       <button :disabled="busy || !preview.can_resume" @click="control('resume')">按预览恢复</button>
     </div>
     <div v-if="detail" class="console-content">
-      <div class="budget-strip"><span>调用预留 <strong>{{ detail.budget.reserved_tool_calls }}</strong></span><span>已结算 <strong>{{ detail.budget.settled_tool_calls }} / {{ detail.budget.max_tool_calls }}</strong></span><span>输出 <strong>{{ detail.budget.output_bytes }} B</strong></span></div>
+      <div class="budget-strip"><span>累计调用预留 <strong>{{ detail.budget.reserved_tool_calls }}</strong></span><span>已结算 <strong>{{ detail.budget.settled_tool_calls }} / {{ detail.budget.max_tool_calls }}</strong></span><span>输出 <strong>{{ detail.budget.output_bytes }} B</strong></span></div>
       <h3>研究任务</h3><ul class="task-list"><li v-for="task in detail.tasks" :key="task.id"><strong>{{ task.role }}</strong><span>{{ task.status }} · {{ task.step }}</span><small>代次 {{ task.lease_generation }} · {{ task.id }}</small></li></ul>
       <div v-for="item in detail.interruptions" :key="item.created_at" class="notice"><strong>{{ item.reason_code }}</strong><p>{{ item.recovery_condition }}</p></div>
       <h3>决策摘要</h3><details v-for="decision in detail.decisions" :key="decision.id"><summary>{{ decision.action }} · {{ decision.step }}</summary><p>{{ decision.summary }}</p><p>预期：{{ decision.expected }}</p><p>停止条件：{{ decision.stop_condition }}</p><small>{{ decision.id }} · {{ decision.session_id }}</small></details>
