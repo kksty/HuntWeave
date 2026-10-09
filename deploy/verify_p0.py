@@ -103,7 +103,7 @@ class Probe:
             "authorization": "Disposable local fixed-action demo; no target connections",
         }, expected=201)
         run = self.request("/api/v1/runs", {"scope_id": scope["id"], "scope_version": 1,
-                                          "scenario": scenario,
+                                          "demonstration_scenario": scenario,
                                           "demonstration_duration_ms": duration_ms},
                            expected=201, extra_headers={"Idempotency-Key": uuid.uuid4().hex})
         self.request(f"/api/v1/runs/{run['id']}/start", {"version": run["version"]})
@@ -202,7 +202,7 @@ class Probe:
                   lambda run: run["status"] == "waiting" and run["phase"] == "awaiting_human")
         snapshot = self.snapshot(run_id)
         self.assert_once(self.ledger(run_id))
-        assert snapshot["budget"]["reserved_tool_calls"] == 0
+        assert snapshot["budget"]["reserved_tool_calls"] == len(snapshot["calls"])
         assert snapshot["budget"]["settled_tool_calls"] == len(snapshot["calls"])
         assert len({item["id"] for item in snapshot["decisions"]}) == len(snapshot["decisions"])
         print("PASS: checkpoint write failure recovers without duplicate actions or settlement")
@@ -224,8 +224,9 @@ class Probe:
                    "path.with_suffix('.fault-backup').rename(path)")
         try:
             self.compose("exec", "-T", "runner", "python", "-c", script)
-            missing = self.request(f"/api/v1/evidence/{evidence_id}", expected=503)
-            assert missing["reason_code"] in {"evidence_missing", "evidence_unavailable"}
+            missing = self.request(f"/api/v1/evidence/{evidence_id}")
+            assert not missing["available"] and not missing["content"]
+            assert missing["missing_reason"] == "archive_missing"
         finally:
             self.compose("exec", "-T", "runner", "python", "-c", restore)
         restored = self.request(f"/api/v1/evidence/{evidence_id}")
