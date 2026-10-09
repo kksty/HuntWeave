@@ -9,7 +9,7 @@
 | 阶段 | 范围 | 状态 |
 | --- | --- | --- |
 | P0 | 运行骨架、认证与授权快照、持久假 Run、隔离靶场验证 | 已有验收记录；P0-A 至 P0-D 的实施 Issue 已关闭，审查更正记录 [#12](https://github.com/kksty/HuntWeave/issues/12) 仍 open 待人工确认；后续缺口见 `docs/validation/0005-p0-execution-and-recovery.md`，不视作全部目标行为已经达成 |
-| P1 | Kali 真实执行、选择性保留、透明控制台 | 进行中：正式规格 [0002](./specs/0002-real-execution.md) 已有；tracer [#15](https://github.com/kksty/HuntWeave/issues/15) 核对入口已交付（验证记录 `docs/validation/0006-p1-reconciliation.md`），#9–#21 其余待办仍开放；真实执行未开放 |
+| P1 | Kali 真实执行、选择性保留、透明控制台 | 进行中：正式规格 [0002](./specs/0002-real-execution.md) 已有；tracer [#15](https://github.com/kksty/HuntWeave/issues/15) 核对入口已交付（验证记录 `docs/validation/0006-p1-reconciliation.md`），①档前置 [#9](https://github.com/kksty/HuntWeave/issues/9) 票据目标绑定已交付（验证记录 `docs/validation/0007-p1-ticket-binding.md`），#10、#11、#13 与 #16–#21 其余待办仍开放；真实执行未开放 |
 | P2 | 完整 Agent MVP：真实模型、联网研究、Run 内规划、24×7 持续推进 | 实现未开始；[0003](./specs/0003-agent-research.md) 与 [0004](./specs/0004-finding-admission.md) 是**未经评审的草案**（评分与准入尚无阶段表归属），取舍见 ADR-0009/0011/0013 |
 
 ## 当前能力
@@ -26,7 +26,10 @@
 
 规格：`docs/specs/0002-real-execution.md`。边界与门槛见 [ADR-0010](./adr/0010-real-execution-boundary-and-gate.md)。
 
-前置修复（阻塞首批 tracer）：[#9](https://github.com/kksty/HuntWeave/issues/9) 执行票据写死目标绑定、[#10](https://github.com/kksty/HuntWeave/issues/10) 能力就绪状态只在 API 层、[#11](https://github.com/kksty/HuntWeave/issues/11) 控制台在 `version_conflict` 后静默重发、[#13](https://github.com/kksty/HuntWeave/issues/13) 单 Run 目标上限文档 100 与实现 5000 不一致。
+前置修复（①档，阻塞首批 tracer）：
+
+1. ~~[#9](https://github.com/kksty/HuntWeave/issues/9) 执行票据写死目标绑定~~ 已交付（2026-10-09，票据按计划的实际目标绑定、越界计划在占用预算前以 `scope_denied` 拒绝、`policy_version` 取自授权快照；证据见 `docs/validation/0007-p1-ticket-binding.md`，待人工确认后关闭）。
+2. [#10](https://github.com/kksty/HuntWeave/issues/10) 能力就绪状态只在 API 层、[#11](https://github.com/kksty/HuntWeave/issues/11) 控制台在 `version_conflict` 后静默重发、[#13](https://github.com/kksty/HuntWeave/issues/13) 单 Run 目标上限文档 100 与实现 5000 不一致：仍开放，未实现。
 
 tracer 顺序（实现切片）：
 

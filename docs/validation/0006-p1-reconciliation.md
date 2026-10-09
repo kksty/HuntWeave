@@ -66,7 +66,7 @@ $env:HUNTWEAVE_E2E_RECONCILE_RUN_ID = "<CONSOLE_RECONCILIATION_RUN>"; npm run te
 
 - **真实执行仍关闭**（`real_execution_ready=false`）：本轮观测与停止确认只由假执行账本提供；真实执行端接入后必须给出等价的 `started`/进程/连接事实（#16、#18）。
 - 「确认未执行」的可证性依赖账本在副作用之前写入 `execution_started`；真实动作需要 #18 保证同等前置写入，否则该裁定只能停在 `undetermined`。
-- 重派只在同一决策上再派发一次，且仍需 #9 修正后才是逐目标正确的票据绑定；#17 按自身验收条件验证真实动作闭环。
+- 重派只在同一决策上再派发一次；逐目标正确的票据绑定已由 [#9](https://github.com/kksty/HuntWeave/issues/9) 修正（见 `docs/validation/0007-p1-ticket-binding.md`），重派沿用原票据的目标绑定；#17 按自身验收条件验证真实动作闭环。
 - 界面新路径在 `version_conflict` 后不静默重发；既有控制动作的静默重发仍由 [#11](https://github.com/kksty/HuntWeave/issues/11) 跟踪。
 - 浏览器核对路径需要一个「结果未知」的 Run，由 `verify_p0.py` 的核对探针创建并经环境变量传入；浏览器流程自身无法制造该状态。
 

@@ -66,6 +66,33 @@ def stable(run_id: UUID, kind: str) -> UUID:
     return uuid5(run_id, kind)
 
 
+def resolve_target(decision: dict[str, Any], scope: ScopeSnapshot, ordinal: int) -> tuple[str, int]:
+    """The endpoint one ticket acts on, always from inside the authorized snapshot.
+
+    A plan that names its own target is checked against the snapshot and refused with
+    ``scope_denied`` when it names one outside it. Retargeting it silently would attribute
+    the action's evidence to an endpoint nobody authorized, and the ticket is the record
+    that decides which target a result belongs to. A plan that names no target takes the
+    Run's next authorized endpoint, so the successive actions of one Run are not all
+    recorded against the first entry of the authorization list.
+    """
+    named_ip, named_port = decision.get("target_ip"), decision.get("target_port")
+    if named_ip is None and named_port is None:
+        endpoints = [(ip, port) for ip in scope.targets for port in scope.ports]
+        if not endpoints:
+            raise ServiceError("scope_denied", 409)
+        return endpoints[ordinal % len(endpoints)]
+    if named_ip is None or named_port is None:
+        raise ServiceError("scope_denied", 409)
+    try:
+        address = str(ip_address(str(named_ip)))
+    except ValueError:
+        raise ServiceError("scope_denied", 409) from None
+    if type(named_port) is not int or address not in scope.targets or named_port not in scope.ports:
+        raise ServiceError("scope_denied", 409)
+    return address, named_port
+
+
 class Redispatch(NamedTuple):
     """The ids of one authorised re-dispatch of an original decision."""
 
@@ -417,9 +444,53 @@ class OrchestrationService:
             replaces: UUID | None = None
             if replacing is None:
                 call_id = stable(decision_id, "call")
+                planned_calls = (
+                    session.scalar(
+                        select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run.id)
+                    )
+                    or 0
+                )
+                try:
+                    bound_ip, bound_port = resolve_target(decision, scope, planned_calls)
+                except ServiceError as error:
+                    # No ticket, no reservation and no outbox entry: a plan aimed outside the
+                    # authorization is refused before it can hold budget or reach the Runner.
+                    run.status = "waiting"
+                    run.version += 1
+                    task.status = "blocked"
+                    agent.status = "blocked"
+                    self._interrupt(
+                        session,
+                        run,
+                        error.reason_code,
+                        "Plan an authorized target, or widen the authorization snapshot.",
+                    )
+                    self._event(
+                        session,
+                        run,
+                        "scope_denied",
+                        {
+                            "decision_id": str(decision_id),
+                            "action": decision["action"],
+                            "planned_target_ip": decision.get("target_ip"),
+                            "planned_target_port": decision.get("target_port"),
+                            "authorized_targets": len(scope.targets),
+                            "authorized_ports": len(scope.ports),
+                        },
+                    )
+                    return None
             else:
+                # A re-dispatch replays one original action, so it keeps that action's
+                # binding: the same plan must not act on a second endpoint the first one
+                # was never authorized to move to.
+                replaced = session.get(ToolCall, replacing.replaced_call_id)
+                assert replaced is not None
                 call_id = replacing.call_id
                 replaces = replacing.replaced_call_id
+                bound_ip, bound_port = (
+                    str(replaced.ticket["target_ip"]),
+                    int(replaced.ticket["target_port"]),
+                )
             reservation_id = stable(call_id, "reservation")
             parameters = FakeParameters(
                 scenario=SCENARIOS[run.demonstration_scenario],
@@ -443,13 +514,13 @@ class OrchestrationService:
                 parameters=parameters,
                 parameters_hash=parameters_hash(parameters),
                 scope_version=run.scope_version,
-                policy_version=1,
+                policy_version=scope.policy_version,
                 lease_generation=generation,
                 lease_expires_at=task.lease_expires_at,
                 deadline_at=deadline,
                 authorized_until=scope.expires_at,
-                target_ip=ip_address(scope.targets[0]),
-                target_port=scope.ports[0],
+                target_ip=ip_address(bound_ip),
+                target_port=bound_port,
             )
             session.add(
                 ToolCall(

@@ -9,6 +9,13 @@ class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+# The version of the authorized-execution policy a ticket is fenced to. It is recorded inside
+# the authorization snapshot, so every Run keeps the policy it was authorized under. Bump it
+# when the action set, the profiles, the protected-address rules or the exit rules change in a
+# way that is not interchangeable with the previous version.
+EXECUTION_POLICY_VERSION = 1
+
+
 class LoginRequest(Contract):
     access_key: SecretStr = Field(min_length=1, max_length=512)
 
@@ -80,6 +87,9 @@ class ScopeSnapshot(Contract):
     mode: Literal["demonstration"] = "demonstration"
     execution_profile: Literal["fake-p0-v1"] = "fake-p0-v1"
     config_version: Literal["p0-b-v1"] = "p0-b-v1"
+    # Recorded at authorization, never re-read from the current build: an active Run must not
+    # silently change policy while it still holds tickets minted under the old one.
+    policy_version: int = Field(default=EXECUTION_POLICY_VERSION, ge=1, strict=True)
 
 
 class ScopeView(Contract):
