@@ -7,6 +7,7 @@
 - 项目名称统一为 HuntWeave，代码/包标识统一使用 `huntweave`；命名依据见 `docs/adr/0001-project-name.md`。
 - 本项目开发的是面向已授权目标的 Agent 安全测试平台。
 - 保持 `Collector → Worker × N → Reviewer → 人工复审`，LLM 负责有证据反馈的研究决策。
+- 24×7 指一次发布的 Run 在有效授权和预算内自主持续推进，完成后停止；重启后恢复同一 Run，不周期性从头重跑。人工复审在自动研究结束后处理结论。
 - 目标由手动粘贴 IP 导入，不引入 SRC 归属、FOFA 或其他空间资产测绘业务。
 - 使用 Python、FastAPI、Vue 3 / TypeScript、PostgreSQL、SQLAlchemy / Alembic、LangGraph OSS、Docker；不再采用 SQLite 或完全自研运行底座。
 - 首版一个 Compose 项目，app/postgres/runner 三个常驻服务，工具/准备容器按需创建。控制服务 Python/Debian slim，工具环境 Kali 衍生镜像；不同职责独立升级。

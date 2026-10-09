@@ -33,6 +33,10 @@ flowchart LR
 
 目标工作流：`Collector → Worker × N → Reviewer → 人工复审`。技术栈为 Python、FastAPI、SQLAlchemy / Alembic、PostgreSQL、LangGraph OSS、Vue 3 / TypeScript 和 Docker Compose。
 
+后续架构采用证据驱动的任务规划：服务事实与研究依赖分别记录，Worker 可自主选择工具、联网研究 Web 与非 Web 方法，Run 内规划步骤按新观察调整任务。24×7 指一次发布后，同一 Run 在有效授权和预算内持续自主推进，完成后停止；服务重启后先对账，再接续原 Run。这些均为待实现规划；[架构改进研究](./docs/research/2026-10-09-architecture-improvement.md)说明问题、取舍与验收方式，[ADR-0009](./docs/adr/0009-adaptive-research-and-continuous-execution.md)记录架构决定。
+
+正常交付顺序为 **自主渗透并留证 → AI 复审及有限补证 → 自动执行结束、释放执行资源 → 人工复审**。人工未处理结论时，证据继续按策略保留，自动执行已经停止；AI 复审无法完成等例外会明确记录原因和未决项。
+
 ## 环境要求
 
 | 平台 | 容器运行时 | 当前状态 |
@@ -184,9 +188,10 @@ python deploy/verify_isolation.py
 - [架构决策](./docs/adr/README.md) · [Agent 开发约定](./AGENTS.md)
 - [启动验证记录](./docs/validation/0001-startup.md) · [隔离验证记录](./docs/validation/0002-windows-isolation.md)
 - [身份与 Run 验证记录](./docs/validation/0004-identity-runs.md)
+- [架构改进研究](./docs/research/2026-10-09-architecture-improvement.md) · [自主规划与持续执行决定](./docs/adr/0009-adaptive-research-and-continuous-execution.md)
 - [GitHub Issues](https://github.com/kksty/HuntWeave/issues)
 
-下一实施项：[运行确定性 Agent 并展示证据时间线 · #4](https://github.com/kksty/HuntWeave/issues/4)。P0 后续完成确定性 Agent、假执行时间线、暂停取消与恢复；P1 接入真实执行，P2 形成完整 Agent MVP。
+下一实施项：[运行确定性 Agent 并展示证据时间线 · #4](https://github.com/kksty/HuntWeave/issues/4)。P0 后续完成确定性 Agent、假执行时间线、暂停取消与恢复；P1 接入真实执行，P2 形成含增量规划与单次任务持续自主执行的完整 Agent MVP，P4 验证并优化长时间运行的可靠性。架构研究不扩大当前 P0-C/D 的实施范围。
 
 ## 许可证
 
