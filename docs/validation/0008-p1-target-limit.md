@@ -52,3 +52,23 @@
 - [ ] 上限是否需要成为可配置项（当前为常量，改动需改代码）。若需要，按 Issue 验收标准第 3 条须同时给出默认值 100 与配置版本记录。
 - [ ] 既有授权快照是否需要回溯设限：当前 `create_run` 不重新校验，本提交前建立的超限快照仍可创建 Run。若要求封堵，须在 Run 创建路径补一次校验（属新行为，非 #13 裁决范围）。
 - [ ] 计入额度但不可提交的 IPv6 目标是否应从上限统计中排除（当前计入，故可能先报 `target_limit_exceeded` 而非 `ipv6_environment_unsupported`）。
+
+## 本记录的更正
+
+2026-10-09 补记（Issue 关闭后）。上文「未达成与限制」第 2 项「未加集成层检查」作废，第 6 项中「未重复运行……故障探针」的部分同样作废：它们的依据是一次**未被察觉的失败构建**，而不是有意取舍。
+
+排查经过：`docker compose … build` 因对 `auth.docker.io` 的匿名令牌请求被重置而失败（首阶段基底 `node:22-bookworm-slim` 无法拉取），错误行被构建输出截断掩盖，Compose 随即回退到本机**既有旧镜像**。当时 `huntweave-control:p0` 构建于 2026-10-08T17:02Z，**不含 `runs/` 等任何 P1 模块**；`huntweave-checks:p0` 的 `tests/` 只有 5 个文件（12 个中缺 7 个）。因此该轮实为在旧代码上收集到 18 项的**假阳性**，不构成验收依据，上文验证表中「既有路径不回退」一行不应被读作容器内结论。
+
+重新拉取基底镜像后重建，并**核对镜像内容**而非只看退出码：`huntweave-control:p0` 的 `runs/inputs.py` 含 `TARGET_LIMIT = 100` 与 `len(targets) > TARGET_LIMIT`；`huntweave-checks:p0` 的 `tests/` 为 12 个文件。随后在一次性项目 `huntweave-p0-checks`（`HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1`，独立卷与网络）上重跑：
+
+| 行为 | 结果 |
+| --- | --- |
+| 一次性栈内后端检查（含集成项） | `python -m pytest -p no:cacheprovider tests` → **109 项全部通过**；与记录 `0007` 的 107 项相差恰为本轮新增的 2 项，可交叉印证 |
+| 启动故障探针 | `deploy/verify_startup.py --project huntweave-p0-checks --web-port 18000` 通过（含就绪态拒绝不可用 Runner、supervisor 重启恢复健康、证据归档只读） |
+| 真实进程与卷故障注入 | `deploy/verify_p0.py --project huntweave-p0-checks --base-url http://127.0.0.1:18000 --no-console-fixture` 通过，7 项探针全部 PASS |
+| 浏览器流程 | 仍未运行，且确认**无需**运行：`frontend/tests/authorized-run.spec.ts` 最多粘贴 3 个目标，与 100 上限无关 |
+| 环境复核 | 一次性项目已 `down -v` 清除；日常 `huntweave` 项目未被触及 |
+
+因此：未做可配置化、预览接口同样按上限拒绝、既有快照不受约束、未按部署容量校准四项限制**仍然成立**；计数口径、IPv6 占额度与「拒绝先于 Run 创建」三项结论**不变**。关闭评论中「只做纯函数层、属新切片」的处置不因此改变——集成层现已跑通，该项不再是缺口。
+
+**给后续切片的警告**：本机 Docker 构建在基底镜像拉取失败时会**静默回退到旧镜像并仍然「通过」**。容器验证必须先确认镜像内容（目标模块与测试文件确实在镜像内），不能只看 Compose 退出码。本轮排查时日常 `huntweave` 项目也仍在运行 2026-10-08 的旧镜像。
