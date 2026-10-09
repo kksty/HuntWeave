@@ -54,6 +54,12 @@ class Probe:
         self.compose("exec", "-T", "postgres", "psql", "-U", "postgres", "-d", "huntweave",
                      "--no-psqlrc", "-v", "ON_ERROR_STOP=1", "-c", statement)
 
+    def app_restart_count(self) -> int:
+        container = self.compose("ps", "-a", "-q", "app")
+        result = subprocess.run(["docker", "inspect", container], text=True,
+                                capture_output=True, check=True)
+        return json.loads(result.stdout)[0]["RestartCount"]
+
     def request(self, path: str, body: dict | None = None, *, expected: int = 200,
                 extra_headers: dict | None = None) -> dict | list:
         headers = {"Origin": self.base_url, "X-CSRF-Token": self.csrf,
@@ -194,13 +200,14 @@ class Probe:
     def checkpoint_fault(self) -> None:
         run_id = self.create_run(duration_ms=6000)
         self.running(run_id)
+        restart_count = self.app_restart_count()
         try:
             self.sql("REVOKE INSERT, UPDATE ON ALL TABLES IN SCHEMA huntweave_checkpoint "
                      "FROM huntweave_checkpoint")
             settled = self.wait(lambda: self.snapshot(run_id),
                                 lambda snapshot: snapshot["budget"]["settled_tool_calls"] >= 1)
             assert settled["budget"]["settled_tool_calls"] <= len(settled["calls"])
-            time.sleep(2)
+            self.wait(self.app_restart_count, lambda count: count > restart_count, timeout=30)
         finally:
             self.sql("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "
                      "huntweave_checkpoint TO huntweave_checkpoint")
