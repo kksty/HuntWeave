@@ -16,8 +16,7 @@ def test_runner_requires_its_own_token() -> None:
     assert token not in response.text
 
 
-def test_unimplemented_execution_is_explicit() -> None:
+def test_execution_requires_a_strict_ticket() -> None:
     client = TestClient(create_runner(token="b" * 64))
     response = client.post("/v1/calls", headers={"Authorization": "Bearer " + "b" * 64})
-    assert response.status_code == 501
-    assert response.json()["reason_code"] == "execution_not_implemented"
+    assert response.status_code == 422

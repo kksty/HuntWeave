@@ -1,4 +1,5 @@
 """Strict, versioned control-plane tickets for demonstration execution."""
+
 import hashlib
 import json
 from typing import Any, Literal
@@ -11,12 +12,14 @@ from huntweave.contracts.runs import Contract
 
 class FakeParameters(Contract):
     scenario: Literal["success", "failure", "needs_evidence"] = "success"
-    duration_ms: int = Field(default=1500, ge=0, le=10000, strict=True)
+    duration_ms: int = Field(default=1500, ge=0, le=30000, strict=True)
 
 
 def parameters_hash(parameters: FakeParameters | dict[str, Any]) -> str:
     value = parameters.model_dump() if isinstance(parameters, FakeParameters) else parameters
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class ExecutionRequest(Contract):
