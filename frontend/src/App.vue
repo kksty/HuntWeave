@@ -39,6 +39,7 @@ function previewTargets() { return perform(async () => { preview.value = await w
 function previewPorts() { return perform(async () => { const result = await workspace.api<{ ports: number[] }>('/api/v1/ports/preview', { profile: portProfile.value, custom: portProfile.value === 'custom-tcp-v1' ? customPorts.value : '' }); ports.value = result.ports; }); }
 function saveScope() { return perform(async () => {
   scope.value = await workspace.api<Scope>('/api/v1/scopes', { project_id: projectId.value, targets_text: targets.value, ports: { profile: portProfile.value, custom: portProfile.value === 'custom-tcp-v1' ? customPorts.value : '' }, starts_at: new Date(`${starts.value}+08:00`).toISOString(), expires_at: new Date(`${expires.value}+08:00`).toISOString(), authorization: authorization.value, budget: { max_tool_calls: calls.value, max_tokens: tokens.value, max_wall_seconds: seconds.value, max_output_bytes: outputMiB.value * 1048576, max_concurrency: concurrency.value } });
+  idempotencyKey = crypto.randomUUID();
 }); }
 function createRun() { return perform(async () => {
   if (!scope.value) return;

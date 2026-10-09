@@ -156,14 +156,17 @@ docker compose --project-name huntweave-p0b-checks -f deploy/compose.yaml -f dep
 cd frontend
 npm ci
 npx playwright install chromium
+$env:HUNTWEAVE_E2E_BASE_URL = "http://127.0.0.1:18000"
 npm run test:e2e
 cd ..
 
 docker compose --project-name huntweave-p0b-checks -f deploy/compose.yaml down -v
-Remove-Item Env:HUNTWEAVE_WEB_PORT, Env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE
+Remove-Item Env:HUNTWEAVE_WEB_PORT, Env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE, Env:HUNTWEAVE_E2E_BASE_URL
 ```
 
 `down -v` 在此只用于删除自己创建的一次性验收项目。测试用文档保留 IP，不连接目标；浏览器截图保存在被忽略的 `runtime/validation/`。前端类型/构建验证为 `cd frontend` 后 `npm run build`。本轮 52 个后端检查、2 个浏览器流程通过，细节见身份与 Run 验证记录。
+
+日常本机开发只保留 `huntweave` 一组服务。浏览器检查默认访问 localhost:8000，追加假项目和 Run，不清空数据库；无需保留验收项目。完整故障验收的独立项目仅临时使用，结束后立即删除其容器/测试卷。
 
 启动故障与隔离探针入口：
 

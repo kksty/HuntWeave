@@ -57,6 +57,17 @@ test('preview, freeze, idempotent draft creation, queue, reload and logout', asy
   await page.getByRole('button', { name: '保存授权快照' }).click();
   await page.getByRole('button', { name: '创建假 Run' }).click();
   await expect(page).toHaveURL(/\/runs\/[a-f0-9-]+$/);
+  const firstRunUrl = page.url();
+  const firstCount = (await (await page.request.get('/api/v1/runs')).json()).length;
+  await page.getByRole('button', { name: '创建假 Run' }).click();
+  await expect(page.getByRole('button', { name: '退出登录' })).toBeEnabled();
+  await expect(page).toHaveURL(firstRunUrl);
+  expect((await (await page.request.get('/api/v1/runs')).json()).length).toBe(firstCount);
+  // A new immutable scope needs a new key, even if its input fields are unchanged.
+  await page.getByRole('button', { name: '保存授权快照' }).click();
+  await page.getByRole('button', { name: '创建假 Run' }).click();
+  await expect(page).not.toHaveURL(firstRunUrl);
+  expect((await (await page.request.get('/api/v1/runs')).json()).length).toBe(firstCount + 1);
   const runUrl = page.url();
   await expect(page.getByRole('button', { name: '将假 Run 加入队列' })).toBeVisible();
   await page.getByRole('button', { name: '将假 Run 加入队列' }).click();

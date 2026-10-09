@@ -6,7 +6,7 @@
 
 Windows 工作区 `D:\自动化渗透平台`；Docker Engine 29.7.2 / Compose 5.4.0 / Linux containers。本地及容器 Python 3.12.15，原 Python 依赖保持 `backend/uv.lock`；本地 Node 24.20.0，容器前端构建使用固定 digest 的 Node 22。Vue、Pinia、Vue Router、Vite、TypeScript、Playwright 由 `frontend/package-lock.json` 固定。
 
-独立项目 `huntweave-p0b-checks` 使用自身 PostgreSQL/证据卷与专用网络，Web 为 localhost:18000；dev 项目保持 localhost:8000。身份与 Run 故障测试只有显式设置 `HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 才执行；会重置测试表，不在开发数据库运行。完整命令集中维护于 README。
+独立临时项目 `huntweave-p0b-checks` 使用自身 PostgreSQL/证据卷与专用网络，Web 为 localhost:18000；验收结束后已删除其容器/卷/网络，本机只保留 localhost:8000 的 `huntweave` 三服务。身份与 Run 故障测试只有显式设置 `HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 才执行；会重置测试表，不在开发数据库运行。浏览器回归只追加假记录，可在开发组执行。完整命令集中维护于 README。
 
 中文工作区路径下，Compose 同时构建 app/runner 曾出现 `x-docker-expose-session-sharedkey` 含不可打印字符的构建会话错误。单独 `build app` 后 `up --no-build` 已通过。迁移新增 `0002_identity_runs`，保留业务/checkpoint schema 与运行账号隔离；健康检查使用动态读取的密钥文件。
 
@@ -22,11 +22,17 @@ Windows 工作区 `D:\自动化渗透平台`；Docker Engine 29.7.2 / Compose 5.
 | 猜测限速 | 来源 IP / 全局窗口持久化，转发头不能更换来源；重建 app 保持限速；过窗口恢复，不无限延长封锁；请求体含 chunked 均限制登录 4 KiB |
 | 目标预览 | 保留错误行号和原值，IPv4/IPv6 规范化与去重；URL、端口、域名、CIDR、zone ID 拒绝；私有 IP 可用；受保护地址和当前未启用隔离的 IPv6 明确阻断 |
 | 端口和授权 | common-tcp-v1、custom-tcp-v1、all-tcp-v1 展开具体 TCP 端口；期限、授权说明、预算/profile/config 固定在授权与 Run；过期、未来未生效范围及非法预算拒绝创建 Run |
-| 创建与状态并发 | 同幂等键同请求返回同 Run、内容不同 409；8 个并发创建得到唯一记录；2 个并发 start 只有一个成功，旧状态版本 409；排队不调用 Runner |
+| 创建与状态并发 | 同幂等键同请求返回同 Run、内容不同 409；8 个并发创建得到唯一记录；2 个并发 start 只有一个成功，旧状态版本 409；排队不调用 Runner。界面同一快照重试创建复用原 Run，重新保存快照时分配新的请求键 |
 | 浏览器路径 | 登录 → 项目 → 错误 IP / IPv6 阻断 → 合并重复 IP → 展开端口 → 授权快照 → draft Run → queued → 刷新持久读取 → 退出，全程通过；项目文本中的脚本按纯文本展示 |
 | 检查数量 | Linux 容器 52 项 pytest 全部通过；Windows 28 项纯单元通过；2 个 Playwright Chromium 流程通过；前端类型/生产构建、Ruff 与严格 mypy 通过 |
 
 浏览器截图为 `runtime/validation/p0-b-workspace.png`，仅包含文档示例 IP 与假记录，未纳入 Git；认证 Cookie、密钥与浏览器 trace/video 未归档。产品 UI 使用 HuntWeave 品牌和中文功能文字。
+
+## 代码复审
+
+使用仓库 `code-review` 技能，以 `5b3a3e4` 为基线，对实现提交 `401110b` 分别进行 Standards / Spec 复审。Standards 未发现明确约定违例或可执行的代码异味；Spec 发现一项 P2：重新保存不变配置创建了新授权快照，却复用旧 Run 请求键，导致界面持续 409。
+
+修复为每次成功保存新快照后生成新幂等键，同一快照的创建重试保留原键。浏览器回归同时验证重试不新增 Run、重新保存后可创建另一 Run；修复后 2 项浏览器流程在唯一的 `huntweave` 开发组通过。直接提交到 main，不创建 PR。严格类型检查需使用 `backend/pyproject.toml` 的 Linux 平台设置：`backend/.venv/Scripts/mypy --config-file backend/pyproject.toml backend/src`，避免按 Windows 标准库误报容器内 POSIX 调用。
 
 ## 当前限制
 
