@@ -225,7 +225,7 @@ python deploy/verify_isolation.py
 开发协作
 
 - [Agent 开发约定](./AGENTS.md) · [领域文档与术语](./docs/agents/domain.md) · [Issue 跟踪](./docs/agents/issue-tracker.md) · [Triage 标签](./docs/agents/triage-labels.md)
-- [术语表](./GLOSSARY.md) · [GitHub Issues](https://github.com/kksty/HuntWeave/issues)
+- [术语表](./GLOSSARY.md) · [GitHub Issues](https://github.com/kksty/HuntWeave/issues) · [P1 里程碑](https://github.com/kksty/HuntWeave/milestone/1)
 
 阶段交付和未开放能力只以 STATUS 为入口；各项验证记录说明实际覆盖与限制。原生 Linux 宿主验收按 ADR-0010 另立切片，不作为 P1 前置。使用和部署说明保留在本文件，产品规则与正式验收分别见总纲和各阶段规格。
 

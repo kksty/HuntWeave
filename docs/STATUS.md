@@ -24,7 +24,9 @@
 
 ## 下一实施项（P1）
 
-规格：`docs/specs/0002-real-execution.md`。边界与门槛见 [ADR-0010](./adr/0010-real-execution-boundary-and-gate.md)。实施顺序与逐条完成证据见规格第 5 节；规格 Issue [#14](https://github.com/kksty/HuntWeave/issues/14) 已交付关闭，实施不再挂在该 Issue 上。
+规格：`docs/specs/0002-real-execution.md`。边界与门槛见 [ADR-0010](./adr/0010-real-execution-boundary-and-gate.md)。实施顺序与逐条完成证据见规格第 5 节；规格 Issue [#14](https://github.com/kksty/HuntWeave/issues/14) 已交付关闭（其正文的「退出条件」已移交下列里程碑与本文件），实施不再挂在该 Issue 上。
+
+GitHub 侧的切片进度见[里程碑 P1](https://github.com/kksty/HuntWeave/milestone/1)（成员为 #10、#11、#13 与 #16–#21，满足规格第 5 节末段的退出条件时关闭）。里程碑只表达切片进度，阶段状态仍以本文件为准。
 
 前置修复（①档，阻塞首批 tracer）：
 
