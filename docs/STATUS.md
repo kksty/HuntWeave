@@ -9,7 +9,7 @@
 | 阶段 | 范围 | 状态 |
 | --- | --- | --- |
 | P0 | 运行骨架、认证与授权快照、持久假 Run、隔离靶场验证 | 已有验收记录（`0001`–`0005`）；P0-A 至 P0-D 的实施 Issue 已关闭，记录更正 [#12](https://github.com/kksty/HuntWeave/issues/12) 已人工确认关闭（2026-10-09）；后续缺口见 `docs/validation/0005-p0-execution-and-recovery.md`，不视作全部目标行为已经达成 |
-| P1 | Kali 真实执行、选择性保留、透明控制台 | 进行中：正式规格 [0002](./specs/0002-real-execution.md) 已交付，规格 Issue [#14](https://github.com/kksty/HuntWeave/issues/14) 已关闭（2026-10-09）；tracer [#15](https://github.com/kksty/HuntWeave/issues/15) 核对入口（验证记录 `0006`）与①档前置 [#9](https://github.com/kksty/HuntWeave/issues/9) 票据目标绑定（验证记录 `0007`）已交付并关闭；[#10](https://github.com/kksty/HuntWeave/issues/10)、[#11](https://github.com/kksty/HuntWeave/issues/11)、[#13](https://github.com/kksty/HuntWeave/issues/13) 与 #16–#21 仍开放；真实执行未开放 |
+| P1 | Kali 真实执行、选择性保留、透明控制台 | 进行中：正式规格 [0002](./specs/0002-real-execution.md) 已交付，规格 Issue [#14](https://github.com/kksty/HuntWeave/issues/14) 已关闭（2026-10-09）；tracer [#15](https://github.com/kksty/HuntWeave/issues/15) 核对入口（验证记录 `0006`）与①档前置 [#9](https://github.com/kksty/HuntWeave/issues/9) 票据目标绑定（验证记录 `0007`）已交付并关闭；[#13](https://github.com/kksty/HuntWeave/issues/13) 单 Run 目标上限（验证记录 `0008`）已交付、待人工确认关闭；[#10](https://github.com/kksty/HuntWeave/issues/10)、[#11](https://github.com/kksty/HuntWeave/issues/11) 与 #16–#21 仍开放；真实执行未开放 |
 | P2 | 完整 Agent MVP：真实模型、联网研究、Run 内规划、24×7 持续推进 | 实现未开始；[0003](./specs/0003-agent-research.md) 与 [0004](./specs/0004-finding-admission.md) 是**未经评审的草案**（评分与准入尚无阶段表归属），取舍见 ADR-0009/0011/0013；实施 Issue 尚未建立 |
 
 ## 当前能力
@@ -31,12 +31,13 @@ GitHub 侧的切片进度见[里程碑 P1](https://github.com/kksty/HuntWeave/mi
 前置修复（①档，阻塞首批 tracer）：
 
 1. ~~[#9](https://github.com/kksty/HuntWeave/issues/9) 执行票据写死目标绑定~~ 已交付并关闭（2026-10-09：票据按计划的实际目标绑定、越界计划在占用预算前以 `scope_denied` 拒绝、`policy_version` 取自授权快照；提交 `656ab22`，证据见 `docs/validation/0007-p1-ticket-binding.md`）。
-2. [#10](https://github.com/kksty/HuntWeave/issues/10) 能力就绪状态只在 API 层、[#11](https://github.com/kksty/HuntWeave/issues/11) 控制台在 `version_conflict` 后静默重发、[#13](https://github.com/kksty/HuntWeave/issues/13) 单 Run 目标上限文档 100 与实现 5000 不一致：仍开放，未实现。三条互不阻塞；其中 [#13](https://github.com/kksty/HuntWeave/issues/13) 是 [#16](https://github.com/kksty/HuntWeave/issues/16) 的原生阻塞边，须先于 #16 落地。
+2. ~~[#13](https://github.com/kksty/HuntWeave/issues/13) 单 Run 目标上限文档 100 与实现 5000 不一致~~ 已交付、待人工确认关闭（2026-10-09：上限收紧为 `TARGET_LIMIT = 100`，`target_limit_exceeded` 原因码与状态码不变，README、`PROJECT.md` §12 与实现三处对齐；提交 `c1a4ec2`（检查命名与断言调整 `7321082`），证据见 `docs/validation/0008-p1-target-limit.md`）。这是 [#16](https://github.com/kksty/HuntWeave/issues/16) 原生阻塞边的已决部分。
+3. [#10](https://github.com/kksty/HuntWeave/issues/10) 能力就绪状态只在 API 层、[#11](https://github.com/kksty/HuntWeave/issues/11) 控制台在 `version_conflict` 后静默重发：仍开放，未实现。与已交付的 #13 互不阻塞。
 
 tracer 顺序（实现切片）：
 
 1. ~~[#15](https://github.com/kksty/HuntWeave/issues/15) `unknown` 调用的操作员核对入口~~ 已交付并关闭（2026-10-09，实现与证据见 `docs/validation/0006-p1-reconciliation.md`）：用现有假执行账本验收，不引入真实容器。
-2. [#16](https://github.com/kksty/HuntWeave/issues/16) 受信管理组件与真实容器生命周期（阻塞边：#13 待交付；#9 已关闭）。
+2. [#16](https://github.com/kksty/HuntWeave/issues/16) 受信管理组件与真实容器生命周期（阻塞边：#13 已交付、待人工确认关闭；#9 已关闭）。
 3. [#18](https://github.com/kksty/HuntWeave/issues/18) 出口控制与取消/回收：必须先于 #17 的实际靶场目标动作验收。
 4. [#17](https://github.com/kksty/HuntWeave/issues/17) 真实动作最小闭环：真实工具容器走既有票据、租约、取消与证据契约，以工具结果驱动确定性后续分支。
 5. [#19](https://github.com/kksty/HuntWeave/issues/19) 透明控制台：只读六项 + 待核对调用区块 + 会话容器与网关状态及回收确认。
