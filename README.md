@@ -2,7 +2,7 @@
 
 面向已授权目标的 Agent 安全测试平台。以 LLM 驱动研究决策，通过受控执行、原始证据、独立复审与人工确认形成可追溯结论。
 
-> **开发阶段：P0。** 已完成运行骨架、Windows 本机隔离技术验证，以及登录、授权快照与持久化假 Run。Agent 研究循环、工具执行与时间线尚未交付，当前版本不能发起安全测试。
+> **开发阶段：P0 已验收，真实执行未开放。** 当前阶段、已交付能力、下一实施项与未开放能力统一记录在 [docs/STATUS.md](./docs/STATUS.md)。当前版本不能发起真实安全测试。
 
 ## 架构
 
@@ -176,14 +176,17 @@ Remove-Item Env:HUNTWEAVE_WEB_PORT, Env:HUNTWEAVE_PUBLIC_ORIGIN, Env:HUNTWEAVE_D
 
 `verify_p0.py` 只接受 `huntweave-p0-checks` 项目与回环非 8000 端口，会重启 app/Runner、停止 PostgreSQL、撤销 checkpoint 写权限并临时改名一条证据文件，结束后在 `finally` 中恢复；它不发送任何目标流量。`down -v` 在此只用于删除自己创建的一次性验收项目。测试用文档保留 IP，不连接目标；浏览器截图保存在被忽略的 `runtime/validation/`。
 
-本地纯检查与前端构建（不含容器）：
+本地纯检查与前端构建（不含容器）。这些命令必须在 `backend/` 目录内执行：pytest 相对 rootdir 解析 `pythonpath`，在仓库根目录直接运行会因找不到 `huntweave` 包而整批收集失败：
 
 ```sh
 cd backend
-backend/.venv/Scripts/mypy --config-file backend/pyproject.toml backend/src   # 严格类型（Linux 平台设置）
-backend/.venv/Scripts/python -m pytest -m "not integration" -q
+.venv/Scripts/python -m pytest -m "not integration" -q   # Linux 为 .venv/bin/python
+.venv/Scripts/ruff check src tests
+.venv/Scripts/mypy --config-file pyproject.toml src       # 严格类型（Linux 平台设置）
 cd ../frontend && npm run build
 ```
+
+CI（`.github/workflows/checks.yml`）运行同一组纯检查与前端构建，另有 `uv sync --frozen` 校验依赖锁。集成检查、启动/恢复故障探针和浏览器流程需要 Docker 与一次性栈，仍按上文手工执行。
 
 本轮 P0-C/D 验收结果：一次性栈内 77 项后端检查连续两次全部通过；5 项启动故障探针、6 项恢复故障探针、4 项 Playwright 浏览器流程通过；本地 Ruff、严格 mypy、51 项纯单元检查与前端类型/生产构建通过。细节与限制见 P0-C/D 验证记录。
 

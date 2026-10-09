@@ -34,7 +34,7 @@ python deploy/verify_startup.py
 | 配置缺失 | 容器镜像中移除 access-key 文件配置后，业务、文档与证据路径均返回 503 / `access_key_missing`；最小 liveness 仍可读取 |
 | 未建立会话 | 配置密钥后业务路径返回 401；直接发送全局密钥为 Bearer 不授予业务访问 |
 | Runner 内部认证 | 无 token、错误 token 和平台密钥均被拒绝，内部专用 token 才能查询能力 |
-| 未实现真实执行 | 返回 `real_execution_ready=false`、`environment_unsupported`；当前固定假动作也未实现，`fake_execution_ready=false` |
+| 未实现真实执行 | 返回 `real_execution_ready=false`、`environment_unsupported`；当时固定假动作也尚未实现，`fake_execution_ready=false`（该行写于 P0-C 之前；P0-C/D 交付后假执行链路已就绪，`fake_execution_ready=true`，真实执行仍为 `environment_unsupported`，见 [P0-C/D 验证记录](./0005-p0-execution-and-recovery.md)） |
 | 重复迁移 | 业务 Alembic 与 checkpoint 迁移连跑两次仍通过就绪检查 |
 | 运行账号权限 | app 不能 CREATE TABLE 或读取 checkpoint；checkpoint 不能读取业务 heartbeat，均为 PostgreSQL `42501` |
 | 进程故障 | 主动终止 agentd 后 supervisor 检测到必需进程退出，app 退出、Docker 重启，迁移后恢复 healthy |

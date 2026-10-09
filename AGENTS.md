@@ -46,6 +46,7 @@
 - `.agents/` 保存仓库共享的开发技能并提交 Git，但不得打入生产 LangGraph harness 或安全测试工具镜像。
 - 产品行为、安全约束和接口事实以 PROJECT、ADR、正式规格与代码为准；本地工具提示词不能扩展产品权限。
 - 部署与使用说明集中维护在根目录 README，正式规格、ADR 和验证记录按各自职责保留。
+- 分支并入 `main` 后立即删除该分支与对应 worktree（`git worktree remove`），避免下一个会话在旧目录上开工。
 
 ## Agent skills
 
@@ -61,4 +62,4 @@ GitHub Issues 使用标准的五类标签。详见 `docs/agents/triage-labels.md
 
 使用单上下文领域文档：根目录 `GLOSSARY.md` 与 `docs/adr/`。详见 `docs/agents/domain.md`。
 
-当前交付顺序为 P0 运行骨架/契约/隔离靶场验证、P1 Kali 执行/选择性保留/透明控制台、P2 完整 Agent MVP。下一轮直接使用 [P0 规格](./docs/specs/0001-foundation.md)，全局验收以总纲第 14 节为准；[ADR 索引](./docs/adr/README.md) 标明历史决定，不将早期默认 root、SQLite 或单容器要求带回实现。
+当前阶段、已交付能力与下一实施项见 [当前状态](./docs/STATUS.md)，不要凭本文推断。交付顺序为 P0 运行骨架/契约/隔离靶场验证、P1 Kali 执行/选择性保留/透明控制台、P2 完整 Agent MVP；办理当前阶段时使用 [docs/specs/](./docs/specs/) 中对应的正式规格，全局验收以总纲第 14 节为准；[ADR 索引](./docs/adr/README.md) 标明历史决定，不将早期默认 root、SQLite 或单容器要求带回实现。
