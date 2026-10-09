@@ -33,7 +33,7 @@ flowchart LR
 
 目标工作流：`Collector → Worker × N → Reviewer → 人工复审`。技术栈为 Python、FastAPI、SQLAlchemy / Alembic、PostgreSQL、LangGraph OSS、Vue 3 / TypeScript 和 Docker Compose。
 
-后续架构采用证据驱动的任务规划：服务事实与研究依赖分别记录，Run 内规划按有效事件提出零到多项建议，`runs` 统一提交任务，Worker 保留任务内方法选择；证据显式绑定，复审与报告按输入版本保存。24×7 指一次发布后，同一 Run 在有效授权和预算内持续推进，完成后停止，重启先对账再接续。设计取舍见[架构评估](./docs/research/2026-10-09-architecture-review.md)和 [ADR-0011](./docs/adr/0011-planning-authority-and-evidence-revisions.md)，待实现行为见 [P2 规格](./docs/specs/0003-agent-research.md)。
+后续架构采用证据驱动的任务规划：服务事实与研究依赖分别记录，Run 内规划按有效事件提出零到多项建议，`runs` 统一提交任务，Worker 保留任务内方法选择；证据显式绑定，复审与报告按输入版本保存。24×7 指一次发布后，同一 Run 在有效授权和预算内持续推进，完成后停止，重启先对账再接续。设计取舍见[架构评估](./docs/research/2026-10-09-architecture-assessment.md)和 [ADR-0011](./docs/adr/0011-planning-authority-and-evidence-revisions.md)，待实现行为见 [P2 规格](./docs/specs/0003-agent-research.md)。
 
 正常交付顺序为 **自主渗透并留证 → AI 复审及有限补证 → 自动执行结束、释放执行资源 → 人工复审**。人工未处理结论时，证据继续按策略保留，自动执行已经停止；AI 复审无法完成等例外会明确记录原因和未决项。
 
@@ -215,12 +215,15 @@ python deploy/verify_isolation.py
 
 决策记录
 
-- [ADR 索引](./docs/adr/README.md) · [真实执行边界与门槛](./docs/adr/0010-real-execution-boundary-and-gate.md) · [计划与证据版本](./docs/adr/0011-planning-authority-and-evidence-revisions.md) · [最小实证与目标数据](./docs/adr/0012-minimal-proof-and-target-data.md) · [严重性与准入](./docs/adr/0013-severity-and-finding-admission.md)
-- [架构评估与后续方向](./docs/research/2026-10-09-architecture-review.md) · [架构改进研究](./docs/research/2026-10-09-architecture-improvement.md)
+- [ADR 索引](./docs/adr/README.md) · [真实执行边界与门槛](./docs/adr/0010-real-execution-boundary-and-gate.md) · [计划与证据版本](./docs/adr/0011-planning-authority-and-evidence-revisions.md) · [最小实证与目标数据](./docs/adr/0012-minimal-proof-and-target-data.md) · [严重性与准入](./docs/adr/0013-severity-and-finding-admission.md) · [执行生命周期与环境身份](./docs/adr/0014-execution-lifecycle-and-environment-identity.md)
+
+研究记录
+
+- [架构评估与设计取舍](./docs/research/2026-10-09-architecture-assessment.md)：问题核对、备选方案比较与取舍依据
 
 验证记录
 
-- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定
+- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限
 
 开发协作
 

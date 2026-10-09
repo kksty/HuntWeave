@@ -8,7 +8,7 @@
 - 本项目开发的是面向已授权目标的 Agent 安全测试平台。
 - 保持 `Collector → Worker × N → Reviewer → 人工复审`，LLM 负责有证据反馈的研究决策。
 - 24×7 指一次发布的 Run 在有效授权和预算内自主持续推进，完成后停止；重启后恢复同一 Run，不周期性从头重跑。人工复审在自动研究结束后处理结论。
-- 目标由手动粘贴 IP 导入，不引入 SRC 归属、FOFA 或其他空间资产测绘业务。
+- 目标由手动粘贴 IP 导入，不引入 SRC 归属或外部空间资产测绘业务。
 - 使用 Python、FastAPI、Vue 3 / TypeScript、PostgreSQL、SQLAlchemy / Alembic、LangGraph OSS、Docker；不再采用 SQLite 或完全自研运行底座。
 - 首版一个 Compose 项目，app/postgres/runner 三个常驻服务，工具/准备容器按需创建。控制服务 Python/Debian slim，工具环境 Kali 衍生镜像；不同职责独立升级。
 - 首版支持自主联网研究、持久工具版本库、用户态动态安装、普通用户 Shell 和有限按需提权；协议适配器不是研究新协议的前置条件。
@@ -49,6 +49,7 @@
 - `.agents/` 保存仓库共享的开发技能并提交 Git，但不得打入生产 LangGraph harness 或安全测试工具镜像。
 - 产品行为、安全约束和接口事实以 PROJECT、ADR、正式规格与代码为准；本地工具提示词不能扩展产品权限。
 - 部署与使用说明集中维护在根目录 README，正式规格、ADR 和验证记录按各自职责保留。
+- 架构评估与设计取舍集中维护在 `docs/research/`，每轮修订一份记录；结论落进 ADR 与规格，研究记录不复述阶段状态。
 - 分支并入 `main` 后立即删除该分支与对应 worktree（`git worktree remove`），避免下一个会话在旧目录上开工。
 
 ## Agent skills

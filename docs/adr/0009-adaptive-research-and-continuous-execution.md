@@ -4,7 +4,7 @@
 
 状态：已采纳，待 P2 实现。初次决策时处于 P0-A/B，当前实现状态见 [STATUS](../STATUS.md)。规划提交权、持久依赖与证据版本由 [ADR-0011](./0011-planning-authority-and-evidence-revisions.md) 进一步明确。
 
-HuntWeave 需要在已授权服务之间扩大研究覆盖，并在新证据出现时改变方法。保留 Python、LangGraph OSS、PostgreSQL 和独立 Runner，补充持久研究任务依赖、增量规划与上下文组织。**24×7 指操作员发布一次任务后，同一个 Run 在有效授权和预算内持续自主推进，完成后停止；它不表示周期性创建 Run。**问题、方案与验收依据见[架构改进研究](../research/2026-10-09-architecture-improvement.md)。
+HuntWeave 需要在已授权服务之间扩大研究覆盖，并在新证据出现时改变方法。保留 Python、LangGraph OSS、PostgreSQL 和独立 Runner，补充持久研究任务依赖、增量规划与上下文组织。**24×7 指操作员发布一次任务后，同一个 Run 在有效授权和预算内持续自主推进，完成后停止；它不表示周期性创建 Run。**问题、方案与验收依据见[架构评估](../research/2026-10-09-architecture-assessment.md)。
 
 ## 取舍
 

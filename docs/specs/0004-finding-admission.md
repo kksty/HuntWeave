@@ -8,7 +8,7 @@
 
 采用 **CVSS v4.0 技术严重性评分 + HuntWeave 入库策略 v1**。不引入 SRC 归属、赏金、提交价值或任意模型加权总分。CVSS 提供可复算的严重性表达，不能单独证明目标确实存在漏洞，也不是目标组织的完整业务风险或收益评分。[FIRST CVSS v4.0 规范](https://www.first.org/cvss/v4.0/specification-document)
 
-参考 AutoHunter 公开 README 中“AI 初审筛选后交人工复审”的组织方式；本项目独立定义准入，不采用其资产测绘、SRC 归属或扩大危害流程，也未核验其内部评分算法。[AutoHunter README](https://github.com/StanleyNull/AutoHunter)
+准入按**机器初审筛选 → 人工确认**组织：机器复审筛出候选并给出证据、向量与理由，人工确认才使发现进入正式库。筛选与准入规则由本项目独立定义并保留逐条依据，不采用外部资产测绘、SRC 归属或扩大危害的流程。
 
 ## 2. 评分契约
 

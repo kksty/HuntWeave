@@ -54,4 +54,6 @@ tracer 顺序（实现切片）：
 
 ## 未开放能力
 
+2026-10-09 文档补充：[ADR-0014](./adr/0014-execution-lifecycle-and-environment-identity.md) 细化实例身份、环境清单、动态健康与控制路径，已映射到 P1/P2 对应切片；推导依据见[架构评估](./research/2026-10-09-architecture-assessment.md)。仅设计文档更新，未改代码、未新增验收结果，也未同步 GitHub Issue 正文；当前能力与开放状态不变。
+
 搜索与联网研究、真实模型、动态安装、选择性工具库、完整 Finding/Reviewer 报告、Run 内规划、24×7 持续推进。不要按已实现对待。
