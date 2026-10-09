@@ -1,3 +1,4 @@
+import json
 import signal
 import threading
 from types import FrameType
@@ -5,6 +6,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import text
 
+from huntweave.contracts.errors import ServiceError
 from huntweave.execution.client import RunnerClient
 from huntweave.harness.checkpoints import verify_checkpoint_schema
 from huntweave.harness.graph import ResearchHarness
@@ -51,9 +53,24 @@ def main() -> int:
                 claim = business.claim()
                 if claim:
                     run_id = UUID(claim["run_id"])
-                    dispatcher.reconcile(run_id)
-                    harness.advance(claim)
-                    dispatcher.reconcile(run_id)
+                    try:
+                        dispatcher.reconcile(run_id)
+                        harness.advance(claim)
+                        dispatcher.reconcile(run_id)
+                    except ServiceError as error:
+                        # A Run can lose its lease or be reconciled away between the claim
+                        # and this pass. Record the contract reason and keep scheduling;
+                        # storage failures still stop the daemon so the supervisor reacts.
+                        print(
+                            json.dumps(
+                                {
+                                    "reason_code": error.reason_code,
+                                    "run_id": str(run_id),
+                                    "stage": "claim_pass",
+                                }
+                            ),
+                            flush=True,
+                        )
                 stopping.wait(0.5)
     except Exception as error:
         print(f'{{"reason_code":"scheduler_unavailable","error_type":"{type(error).__name__}"}}')

@@ -50,6 +50,7 @@ class Business:
         self.calls = calls
         self.accepted: list[ExecutionRecord] = []
         self.unknowns: list[UUID] = []
+        self.unreachable_calls: list[UUID] = []
 
     def snapshot(self, run_id: UUID) -> dict[str, Any]:
         return {"run": {"status": self.status}}
@@ -62,6 +63,9 @@ class Business:
 
     def unknown(self, run_id: UUID, call_id: UUID, reason: str = "execution_unknown") -> None:
         self.unknowns.append(call_id)
+
+    def unreachable(self, run_id: UUID, call_id: UUID) -> None:
+        self.unreachable_calls.append(call_id)
 
 
 class Runner:
@@ -172,14 +176,26 @@ def test_runner_refusal_of_a_new_intent_settles_without_guessing():
 
 
 @pytest.mark.parametrize("failure", [httpx.ConnectError("unreachable"), rejection(503)])
-def test_unconfirmed_runner_state_stays_unknown(failure: httpx.HTTPError):
+def test_unavailable_runner_leaves_local_state_alone(failure: httpx.HTTPError):
+    # An outage is not an outcome: the pending call keeps its status, no verdict is
+    # invented, and the same call_id is reconciled once the Runner answers again.
     call = ticket()
     runner = Runner(None)
     runner.query_error = failure
     business = Business("running", pending(call))
     ExecutionDispatcher(business, runner).reconcile(call.run_id)  # type: ignore[arg-type]
-    assert business.unknowns == [call.call_id]
-    assert business.accepted == []
+    assert business.unreachable_calls == [call.call_id]
+    assert business.unknowns == [] and business.accepted == []
+
+
+def test_unavailable_runner_never_abandons_a_new_intent():
+    call = ticket()
+    runner = Runner(None)
+    runner.query_error = httpx.ConnectError("unreachable")
+    business = Business("running", pending(call, "dispatched"))
+    ExecutionDispatcher(business, runner).reconcile(call.run_id)  # type: ignore[arg-type]
+    assert business.unreachable_calls == [call.call_id]
+    assert business.unknowns == [] and business.accepted == []
 
 
 def test_ticket_locally_dispatched_but_absent_from_the_ledger_is_unknown():
@@ -189,3 +205,4 @@ def test_ticket_locally_dispatched_but_absent_from_the_ledger_is_unknown():
     ExecutionDispatcher(business, runner).reconcile(call.run_id)  # type: ignore[arg-type]
     assert business.unknowns == [call.call_id]
     assert runner.submitted == []
+    assert business.unreachable_calls == []

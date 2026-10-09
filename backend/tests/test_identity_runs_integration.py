@@ -1,5 +1,6 @@
 import os
 import secrets
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from huntweave.access.service import AccessService, digest
@@ -19,16 +21,47 @@ from huntweave.runs.service import RunService
 from huntweave.storage.database import connect_engine
 from huntweave.storage.models import (
     AccessKeyState,
+    AgentSession,
+    AuditEvent,
     AuthorizationScope,
+    BudgetReservation,
+    Decision,
+    EventCursor,
+    Evidence,
+    InterruptionRecord,
     LoginBucket,
+    Outbox,
     Project,
+    ResearchTask,
     Run,
+    ToolCall,
+    ToolResult,
     WebSession,
 )
 
 pytestmark = pytest.mark.integration
 ORIGIN = "http://127.0.0.1:8000"
 KEY = "p0-b-test-key-" + "a" * 64
+# Children first: execution records reference Runs, Projects and Agent sessions.
+CLEARED = (
+    AuditEvent,
+    EventCursor,
+    ToolResult,
+    Outbox,
+    BudgetReservation,
+    Evidence,
+    InterruptionRecord,
+    ToolCall,
+    Decision,
+    AgentSession,
+    ResearchTask,
+    Run,
+    AuthorizationScope,
+    Project,
+    WebSession,
+    LoginBucket,
+    AccessKeyState,
+)
 
 
 @pytest.fixture
@@ -37,9 +70,17 @@ def engine() -> Iterator[Engine]:
     if os.environ.get("HUNTWEAVE_DISPOSABLE_TEST_DATABASE") != "1":
         pytest.skip("Identity/Run fault tests require an explicitly disposable Compose database")
     result = connect_engine()
-    with Session(result) as session, session.begin():
-        for model in (Run, AuthorizationScope, Project, WebSession, LoginBucket, AccessKeyState):
-            session.execute(delete(model))
+    for attempt in range(5):
+        try:
+            with Session(result) as session, session.begin():
+                for model in CLEARED:
+                    session.execute(delete(model))
+            break
+        except IntegrityError:
+            # The live scheduler may attach a research task to a queued Run mid-cleanup.
+            if attempt == 4:
+                raise
+            time.sleep(0.5)
     yield result
     result.dispose()
 
@@ -265,7 +306,8 @@ def test_create_scope_run_replay_conflicts_and_immutable_snapshot(
     assert first.status_code == 201
     run = first.json()
     assert run["scope_snapshot"] == scope["snapshot"] and run["status"] == "draft"
-    assert run["demonstration"] and not run["execution_ready"]
+    # A draft still records whether the fixed fake execution path is available.
+    assert run["demonstration"] and run["execution_ready"]
     assert client.post("/api/v1/runs", json=body, headers=key_headers).json()["id"] == run["id"]
     assert (
         client.post(
@@ -297,9 +339,25 @@ def test_create_scope_run_replay_conflicts_and_immutable_snapshot(
         ).status_code
         == 409
     )
+    # P0-C schedules a queued Run immediately, so a later read may already show progress;
+    # a second app instance must still serve the same durable Run and Scope records.
     restarted = TestClient(create_app(AppSettings(access_key=KEY), engine), base_url=ORIGIN)
     restarted.cookies.update(client.cookies)
-    assert restarted.get(f"/api/v1/runs/{run['id']}").json() == queued
+    reread = restarted.get(f"/api/v1/runs/{run['id']}").json()
+    assert reread["id"] == run["id"] and reread["scope_snapshot"] == run["scope_snapshot"]
+    assert reread["version"] >= queued["version"]
+    assert reread["status"] in {
+        "queued",
+        "running",
+        "recovering",
+        "waiting",
+        "pausing",
+        "paused",
+        "cancelling",
+        "cancelled",
+        "failed",
+        "closed",
+    }
     assert restarted.get(f"/api/v1/scopes/{scope['id']}").json() == scope
 
 

@@ -175,6 +175,11 @@ class OrchestrationService:
             for run in candidates:
                 if run.status == "waiting" and not self._active(session, run.id):
                     continue
+                if self._has_unknown_call(session, run.id):
+                    # An unconfirmed outcome is never retried automatically, and no pass
+                    # can advance this Run. It waits for a human decision instead of
+                    # monopolising the single scheduler for every other Run.
+                    continue
                 if run.status == "queued":
                     run.started_at = now
                     run.status = "running"
@@ -570,7 +575,9 @@ class OrchestrationService:
             if call is None or call.status in TERMINAL_CALLS:
                 return
             call.status = "unknown"
-            if run.status not in {"pausing", "cancelling"}:
+            # Reconcile idempotently: repeated passes must not keep bumping the version a
+            # human control request is checked against.
+            if run.status not in {"pausing", "cancelling", "waiting"}:
                 run.status = "waiting"
                 run.version += 1
             self._interrupt(
@@ -579,6 +586,37 @@ class OrchestrationService:
                 reason,
                 "Restore Runner connectivity and reconcile the original call_id.",
             )
+
+    def unreachable(self, run_id: UUID, call_id: UUID) -> None:
+        """Record one bounded dependency failure per call without guessing its outcome."""
+        with Session(self.engine()) as session, session.begin():
+            run = self._run(session, run_id)
+            self._event(
+                session,
+                run,
+                "execution_unreachable",
+                {
+                    "call_id": str(call_id),
+                    "dependency": "runner",
+                    "reason_code": "execution_unreachable",
+                    "recovery_condition": "Runner answered again; reconcile this call_id.",
+                },
+                str(call_id) + ":unreachable",
+            )
+
+    @staticmethod
+    def _has_unknown_call(session: Session, run_id: UUID) -> bool:
+        """True while the Run holds a call whose outcome no durable ledger confirmed."""
+        return (
+            session.scalar(
+                select(ToolCall.id).where(
+                    ToolCall.run_id == run_id,
+                    ~ToolCall.status.in_(TERMINAL_CALLS),
+                    ToolCall.status == "unknown",
+                )
+            )
+            is not None
+        )
 
     def _converge(self, session: Session, run: Run) -> None:
         active = session.scalar(

@@ -1,12 +1,17 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from time import sleep
-from uuid import uuid4
+from time import monotonic, sleep
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
-from huntweave.contracts.execution import ExecutionRequest, FakeParameters, parameters_hash
+from huntweave.contracts.execution import (
+    ExecutionRecord,
+    ExecutionRequest,
+    FakeParameters,
+    parameters_hash,
+)
 from huntweave.execution.fake import FakeRunner, RunnerRejected
 from huntweave.execution.server import create_runner
 
@@ -37,14 +42,25 @@ def ticket(**changes: object) -> ExecutionRequest:
     return ExecutionRequest.model_validate(data)
 
 
+def settled(
+    runner: FakeRunner, call_id: UUID, *statuses: str, timeout: float = 15
+) -> ExecutionRecord:
+    """Poll the durable ledger instead of racing a fixed sleep on a loaded host."""
+    deadline = monotonic() + timeout
+    while monotonic() < deadline:
+        record = runner.query(call_id)
+        if record is not None and record.status in statuses:
+            return record
+        sleep(0.01)
+    raise AssertionError(f"call never reached {statuses}")
+
+
 def test_acknowledgement_loss_reuses_call_and_archived_evidence(tmp_path: Path) -> None:
     runner = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
     request = ticket()
     runner.submit(request)
     runner.submit(request)
-    sleep(0.1)
-    record = runner.query(request.call_id)
-    assert record is not None and record.status == "completed"
+    record = settled(runner, request.call_id, "completed")
     assert record.result is not None and record.result.output.startswith("FAKE")
     assert sum(event.type == "execution_started" for event in record.events) == 1
     evidence = record.result.evidence[0]
@@ -97,9 +113,7 @@ def test_lease_expiry_stops_and_cancel_is_durable(tmp_path: Path) -> None:
         lease_expires_at=datetime.now(UTC) + timedelta(milliseconds=50),
     )
     runner.submit(request)
-    sleep(0.15)
-    record = runner.query(request.call_id)
-    assert record is not None and record.status == "cancelled"
+    record = settled(runner, request.call_id, "cancelled")
     assert record.reason_code == "control_lease_expired"
     assert record.result is not None and record.result.exit_code is None
     second = ticket(parameters=params, parameters_hash=parameters_hash(params))
@@ -116,9 +130,8 @@ def test_missing_archive_is_explicitly_unavailable(tmp_path: Path) -> None:
     runner = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
     request = ticket()
     runner.submit(request)
-    sleep(0.1)
-    record = runner.query(request.call_id)
-    assert record is not None and record.result is not None
+    record = settled(runner, request.call_id, "completed")
+    assert record.result is not None
     (tmp_path / "evidence" / record.result.evidence[0].relative_path).unlink()
     missing = runner.query(request.call_id)
     assert missing is not None and missing.result is not None
@@ -150,18 +163,23 @@ def test_expired_ticket_hash_mismatch_and_scope_change_never_start(tmp_path: Pat
 
 def test_renewal_extends_live_control_and_old_generation_cannot_renew(tmp_path: Path) -> None:
     runner = FakeRunner(tmp_path / "ledger", tmp_path / "evidence")
-    params = FakeParameters(duration_ms=150)
+    # The action outlasts its first control lease, so only a renewal keeps it running;
+    # both windows stay wide enough for a loaded CI host.
+    params = FakeParameters(duration_ms=2000)
     request = ticket(
         parameters=params,
         parameters_hash=parameters_hash(params),
-        lease_expires_at=datetime.now(UTC) + timedelta(milliseconds=70),
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=1.5),
     )
     runner.submit(request)
-    renewed = runner.renew(request.call_id, 1, datetime.now(UTC) + timedelta(seconds=2))
+    renewed = runner.renew(request.call_id, 1, datetime.now(UTC) + timedelta(seconds=3))
     assert renewed.request.lease_expires_at > request.lease_expires_at
-    sleep(0.2)
-    record = runner.query(request.call_id)
-    assert record is not None and record.status == "completed"
+    for generation in (0, 2):
+        with pytest.raises(RunnerRejected, match="stale_lease_generation"):
+            runner.renew(request.call_id, generation, datetime.now(UTC) + timedelta(seconds=3))
+    # Only the extended control lease lets this 2 s action outlive its first 1.5 s window.
+    record = settled(runner, request.call_id, "completed")
+    assert record.reason_code is None
     runner.close()
 
 
@@ -190,10 +208,15 @@ def test_long_fixture_has_durable_heartbeat_without_releasing_control(tmp_path: 
         lease_expires_at=datetime.now(UTC) + timedelta(seconds=8),
     )
     runner.submit(request)
-    sleep(5.2)
+    deadline = monotonic() + 15
+    heartbeats: list = []
+    while monotonic() < deadline and not heartbeats:
+        current = runner.query(request.call_id)
+        assert current is not None
+        heartbeats = [event for event in current.events if event.type == "execution_heartbeat"]
+        sleep(0.05)
     record = runner.query(request.call_id)
     assert record is not None and record.status == "running"
-    heartbeats = [event for event in record.events if event.type == "execution_heartbeat"]
     assert len(heartbeats) == 1 and heartbeats[0].payload["elapsed_ms"] >= 5000
     runner.cancel(request.call_id, 1)
     runner.close()
@@ -204,13 +227,12 @@ def test_fixed_progress_chunks_are_archived_and_stop_after_cancel(tmp_path: Path
     params = FakeParameters(duration_ms=1000)
     request = ticket(parameters=params, parameters_hash=parameters_hash(params))
     runner.submit(request)
-    sleep(0.1)
-    live = runner.query(request.call_id)
-    assert live is not None and live.status == "running"
+    live = settled(runner, request.call_id, "running")
     chunks = [event for event in live.events if event.type == "execution_output"]
     assert chunks and chunks[0].payload["offset"] == 0
     cancelled = runner.cancel(request.call_id, 1)
-    sleep(0.6)
+    # Long enough for the original fixed duration to pass: a cancelled call never finishes.
+    sleep(1.2)
     assert runner.query(request.call_id) == cancelled
     assert cancelled.result is not None and cancelled.result.exit_code is None
     archived = tmp_path / "evidence" / cancelled.result.evidence[0].relative_path

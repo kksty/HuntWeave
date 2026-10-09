@@ -58,6 +58,7 @@ def test_checkpoint_runtime_is_isolated_from_business_schema() -> None:
 
 def test_runner_reports_environment_unsupported_through_real_interface() -> None:
     capability = get_capabilities()
+    # P0-C connects the durable fake execution path, so only real execution stays closed.
+    assert capability.fake_execution_ready is True
     assert capability.real_execution_ready is False
-    assert capability.fake_execution_ready is False
     assert capability.reason_code == "environment_unsupported"
