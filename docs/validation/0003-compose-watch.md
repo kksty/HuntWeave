@@ -14,3 +14,5 @@
 同步目录实际由 UID/GID 10001:10001 持有。Compose 配置确认源码/迁移使用 sync+restart 和 initial_sync，依赖文件及 Dockerfile 使用 rebuild；仅监测指定路径，不包含 secrets、runtime、证据或开发技能。基础 Compose 不定义 Watch。
 
 手动 Watch 重启通过日志和 StartedAt 验证；Docker RestartCount 不统计该类手动重启，不能作为本项断言。所有临时注释已恢复，验证用 Watch 进程已退出。开发模式不是进程内无中断热替换，服务重启会中断请求和运行进程；数据库与证据卷保留。
+
+> 2026-10-10 起前端路径改为产物同步（宿主 `npm run build:watch` → `frontend/dist` 同步进容器，不再触发镜像重建或重启）；该修订的实测结果见 [0009](./0009-frontend-watch-sync.md)，上表仍为 2026-10-09 对后端源码、迁移、依赖锁与基础配置的实测结果。

@@ -104,15 +104,23 @@ docker compose --env-file .env -f deploy/compose.yaml up -d --no-build --wait --
 
 ### 开发模式
 
-开发时使用 [Compose Watch](https://docs.docker.com/compose/how-tos/file-watch/)（Compose 2.32+）：
+开发时使用 [Compose Watch](https://docs.docker.com/compose/how-tos/file-watch/)（Compose 2.32+）：前端在宿主上持续构建，容器只消费产物。`frontend/dist` 必须在启动 watch 前存在，否则 `up --watch` 会以 `GetFileAttributesEx ... The system cannot find the file specified.` 退出（exit 1）；首次先跑一次 `npm run build`，或让下面前端终端保持在运行状态。
 
 ```sh
+# 终端 1：前端在宿主上构建（首次先 npm ci）
+cd frontend
+npm ci
+npm run build:watch
+
+# 终端 2：仓库根目录
 docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up --build --watch
 ```
 
-源码变化同步至 app/runner 并重启服务，覆盖 API 和 agentd；迁移变化同步并重启 app，在启动阶段应用迁移。`pyproject.toml`、`uv.lock` 和 Dockerfile 变化触发镜像重建；前端源码/锁文件/构建配置、常用端口 profile 变化重建 app。`initial_sync` 在监测开始时核对已有容器中的后端源码。
+后端源码变化同步至 app/runner 并重启这两个服务，覆盖 API 和 agentd；迁移变化同步并重启 app，在启动阶段应用迁移。`pyproject.toml`、`uv.lock`、`profiles/common-tcp-v1.json` 和 Dockerfile 变化触发镜像重建。`initial_sync` 在监测开始时把宿主已有的后端源码和前端产物同步进容器，因此 watch 附着后不久可能出现一次 app/runner 重启，之后的前端改动不会重启服务（实测见 [0009](./docs/validation/0009-frontend-watch-sync.md)）。
 
-开发构建阶段为非 root 用户提供可写源码目录，开发覆盖配置开放容器根文件系统写入；secret、证据挂载及服务权限沿用基础配置。该模式仅用于本地开发，服务重启会中断正在处理的请求和研究进程。
+前端源码与构建配置变化不再触发镜像重建：`npm run build:watch` 在宿主重建 `frontend/dist`，Compose Watch 只做文件同步（`action: sync`），app 按请求从磁盘读取静态资源，因此改前端既不重启服务，也不在容器内重跑 `npm ci` / `vite build`。前端构建失败时容器继续提供上一次成功产物，不会中断正在运行的服务；改动前端依赖后需在宿主重新 `npm ci`。类型检查与生产构建仍以 `npm run build`（含 `vue-tsc --noEmit`）和 CI 为准。
+
+开发构建阶段为非 root 用户提供可写源码目录，开发覆盖配置开放容器根文件系统写入；secret、证据挂载及服务权限沿用基础配置。该模式仅用于本地开发，服务重启会中断正在处理的请求和研究进程；数据库与证据卷保留。
 
 ### 部署模式
 

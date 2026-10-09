@@ -843,7 +843,7 @@ P2 等待记录至少保存原因、关联任务/调用及状态版本、可验�
 - 原始证据、大日志和工具制品放持久卷，数据库记录结构化事实与文件索引。采用 PostgreSQL 一致性备份与配套文件清单并实测恢复；不在运行中简单复制 PGDATA 当作完整备份。
 - app/runner 使用 Python + Debian slim，工具准备/执行使用 Kali 衍生镜像，PostgreSQL 使用官方镜像；分别锁定 digest。LangGraph 底座保持，P0 验证恢复语义、数据库驱动与 Compose 生命周期。
 - Python 依赖锁文件、前端锁文件、基础镜像 digest、工具版本和模板版本一并管理。开发时选择互相兼容的受支持版本，不在本纲要假定“最新版”即可工作。
-- 本地开发可叠加 deploy/compose.dev.yaml 使用 Compose Watch：源码同步后重启 app/runner，迁移同步后重启 app，依赖锁及 Dockerfile 变化重建。仅开发构建阶段开放可写源码；基础部署保持只读镜像和现有权限边界。
+- 本地开发可叠加 deploy/compose.dev.yaml 使用 Compose Watch：后端源码同步后重启 app/runner，迁移同步后重启 app，依赖锁、profile 及 Dockerfile 变化重建；前端在宿主上构建后只同步 `frontend/dist` 产物，不重启服务也不重建镜像。仅开发构建阶段开放可写源码；基础部署保持只读镜像和现有权限边界。
 - P0-B 的 Vue 业务页面由 app 同源提供，登录使用独立最小资源，业务 JS/CSS 同样鉴权；Node 只参与前端构建。会话与登录限速在业务 PostgreSQL 中持久化。Run 先为 draft，再通过带状态版本的 start 入口进入 queued；P0-C 起 queued 由唯一调度进程领取并派发固定假动作，暂停/取消/恢复按状态版本收敛。
 - 使用 pytest 做核心和集成验证，Playwright 验证关键用户流程；不以真实外网资产作为默认测试目标。
 - 日志采用结构化格式与关联 ID；首版不强制部署完整可观测性集群。

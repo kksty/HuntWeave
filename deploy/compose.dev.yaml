@@ -19,23 +19,18 @@ services:
           target: /opt/huntweave/backend/migrations
           action: sync+restart
           initial_sync: true
+        # 前端在宿主上构建（frontend/ 内运行 npm run build:watch），容器只消费产物：
+        # 静态资源按请求从磁盘读取，所以这里只做文件同步，不重启服务、也不重建镜像。
+        # 因此前端源码、构建配置和锁文件不再保留 rebuild 规则。
+        - path: ../frontend/dist
+          target: /opt/huntweave/frontend/dist
+          action: sync
+          initial_sync: true
         - path: ../backend/pyproject.toml
           action: rebuild
         - path: ../backend/uv.lock
           action: rebuild
         - path: ./Dockerfile
-          action: rebuild
-        - path: ../frontend/src
-          action: rebuild
-        - path: ../frontend/index.html
-          action: rebuild
-        - path: ../frontend/package.json
-          action: rebuild
-        - path: ../frontend/package-lock.json
-          action: rebuild
-        - path: ../frontend/tsconfig.json
-          action: rebuild
-        - path: ../frontend/vite.config.ts
           action: rebuild
         - path: ../profiles/common-tcp-v1.json
           action: rebuild
