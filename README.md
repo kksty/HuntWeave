@@ -72,7 +72,7 @@ docker compose -f deploy/compose.yaml ps
 
 app/runner 共用控制镜像，因此先单独 `build app`，再启动三个服务。本轮 Windows 中文路径下，同时构建两服务触发了 Docker 构建会话错误；以上分步入口已实际验证。
 
-登录后创建项目 → 粘贴并预览 IP → 展开 TCP 端口 → 填写有效期、授权说明和预算 → 保存授权快照 → 创建假 Run → 加入队列。记录能在刷新或服务重启后读取；当前 queued 表示持久化待执行，假执行器由下一切片交付。非法行必须修正或移除；重复 IP 合并；未启用 IPv6 隔离，因此 IPv6 目标可以预览但不能提交任务。页面始终标注“开发演示 / 假执行”。
+登录后创建项目 → 粘贴并预览 IP → 展开 TCP 端口 → 填写有效期、授权说明和预算 → 保存授权快照 → 选择假输出场景 → 创建假 Run → 加入队列。唯一的调度进程会领取 queued Run，按 Collector → Worker → Reviewer 依次派发固定假动作，逐次把决策摘要、实际调用参数、输出、耗时、证据哈希与事件游标写入持久记录，并在“玻璃鱼缸”页面通过 SSE 展示；自动阶段结束后进入 `awaiting_human`，可查看恢复预览、结束演示或取消。记录在刷新或服务重启后读取一致。非法行必须修正或移除；重复 IP 合并；未启用 IPv6 隔离，因此 IPv6 目标可以预览但不能提交任务。页面始终标注“开发演示 / 假执行”，其输出来自固定假动作，不连接授权 IP，也不形成真实漏洞结论。
 
 ### 配置
 
@@ -149,13 +149,19 @@ docker compose -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile ve
 docker compose -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify run --rm --no-deps checks python -m pytest -p no:cacheprovider tests
 ```
 
-身份与 Run 的故障测试会清空其测试数据库中的演示表，只允许在显式的一次性数据库上运行。默认命令跳过这些测试，仍运行现有启动集成和纯单元检查。完整 P0-B 验证使用独立项目；Windows PowerShell 在仓库根目录执行：
+集成检查会清空其测试数据库中的演示表，并真的启动假执行，只允许在显式的一次性数据库上运行。默认命令跳过这些集成项，仍运行启动集成与纯单元检查。完整 P0 验收使用独立项目；Windows PowerShell 在仓库根目录执行：
 
 ```powershell
 $env:HUNTWEAVE_WEB_PORT = "18000"
+$env:HUNTWEAVE_PUBLIC_ORIGIN = "http://127.0.0.1:18000"
 $env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE = "1"
-docker compose --project-name huntweave-p0b-checks -f deploy/compose.yaml up -d --no-build --wait --wait-timeout 150
-docker compose --project-name huntweave-p0b-checks -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify run --rm --no-deps checks python -m pytest -p no:cacheprovider tests
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml build app
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify build checks
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml up -d --no-build --wait --wait-timeout 180
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify run --rm --no-deps checks python -m pytest -p no:cacheprovider tests
+
+python deploy/verify_startup.py --project huntweave-p0-checks --web-port 18000
+python deploy/verify_p0.py --project huntweave-p0-checks --base-url http://127.0.0.1:18000
 
 cd frontend
 npm ci
@@ -164,11 +170,22 @@ $env:HUNTWEAVE_E2E_BASE_URL = "http://127.0.0.1:18000"
 npm run test:e2e
 cd ..
 
-docker compose --project-name huntweave-p0b-checks -f deploy/compose.yaml down -v
-Remove-Item Env:HUNTWEAVE_WEB_PORT, Env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE, Env:HUNTWEAVE_E2E_BASE_URL
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml down -v
+Remove-Item Env:HUNTWEAVE_WEB_PORT, Env:HUNTWEAVE_PUBLIC_ORIGIN, Env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE, Env:HUNTWEAVE_E2E_BASE_URL
 ```
 
-`down -v` 在此只用于删除自己创建的一次性验收项目。测试用文档保留 IP，不连接目标；浏览器截图保存在被忽略的 `runtime/validation/`。前端类型/构建验证为 `cd frontend` 后 `npm run build`。本轮 52 个后端检查、2 个浏览器流程通过，细节见身份与 Run 验证记录。
+`verify_p0.py` 只接受 `huntweave-p0-checks` 项目与回环非 8000 端口，会重启 app/Runner、停止 PostgreSQL、撤销 checkpoint 写权限并临时改名一条证据文件，结束后在 `finally` 中恢复；它不发送任何目标流量。`down -v` 在此只用于删除自己创建的一次性验收项目。测试用文档保留 IP，不连接目标；浏览器截图保存在被忽略的 `runtime/validation/`。
+
+本地纯检查与前端构建（不含容器）：
+
+```sh
+cd backend
+backend/.venv/Scripts/mypy --config-file backend/pyproject.toml backend/src   # 严格类型（Linux 平台设置）
+backend/.venv/Scripts/python -m pytest -m "not integration" -q
+cd ../frontend && npm run build
+```
+
+本轮 P0-C/D 验收结果：一次性栈内 77 项后端检查连续两次全部通过；5 项启动故障探针、6 项恢复故障探针、4 项 Playwright 浏览器流程通过；本地 Ruff、严格 mypy、51 项纯单元检查与前端类型/生产构建通过。细节与限制见 P0-C/D 验证记录。
 
 日常本机开发只保留 `huntweave` 一组服务。浏览器检查默认访问 localhost:8000，追加假项目和 Run，不清空数据库；无需保留验收项目。完整故障验收的独立项目仅临时使用，结束后立即删除其容器/测试卷。
 
@@ -180,18 +197,18 @@ python -m pip install --require-hashes -r deploy/verification-requirements.txt
 python deploy/verify_isolation.py
 ```
 
-故障探针会短暂停止本项目服务；隔离探针创建独立靶场资源，只有可信管理容器获得 Docker API。结果保存在 `runtime/isolation/`。当前 Windows 记录为 39 项探针、18 项回归通过；Linux 容器测试不替代原生 Linux 宿主验收。
+故障探针会短暂停止本项目服务；隔离探针创建独立靶场资源，只有可信管理容器获得 Docker API。结果保存在 `runtime/isolation/`。当前 Windows 记录为 40 项探针全部通过；Linux 容器测试不替代原生 Linux 宿主验收。
 
 ## 项目资料
 
 - [项目总纲](./PROJECT.md) · [P0 规格](./docs/specs/0001-foundation.md)
 - [架构决策](./docs/adr/README.md) · [Agent 开发约定](./AGENTS.md)
 - [启动验证记录](./docs/validation/0001-startup.md) · [隔离验证记录](./docs/validation/0002-windows-isolation.md)
-- [身份与 Run 验证记录](./docs/validation/0004-identity-runs.md)
+- [身份与 Run 验证记录](./docs/validation/0004-identity-runs.md) · [P0-C/D 执行与恢复验证记录](./docs/validation/0005-p0-execution-and-recovery.md)
 - [架构改进研究](./docs/research/2026-10-09-architecture-improvement.md) · [自主规划与持续执行决定](./docs/adr/0009-adaptive-research-and-continuous-execution.md)
 - [GitHub Issues](https://github.com/kksty/HuntWeave/issues)
 
-下一实施项：[运行确定性 Agent 并展示证据时间线 · #4](https://github.com/kksty/HuntWeave/issues/4)。P0 后续完成确定性 Agent、假执行时间线、暂停取消与恢复；P1 接入真实执行，P2 形成含增量规划与单次任务持续自主执行的完整 Agent MVP，P4 验证并优化长时间运行的可靠性。架构研究不扩大当前 P0-C/D 的实施范围。
+P0 的假执行闭环、玻璃鱼缸时间线、故障矩阵与人工控制已交付并验证（见上述验证记录）。产品仍处于假执行阶段：真实执行返回 `environment_unsupported`，未确认调用的操作员核对入口与原生 Linux 宿主验收是 P1 的前置项。P1 接入真实执行，P2 形成含增量规划与单次任务持续自主执行的完整 Agent MVP，P4 验证并优化长时间运行的可靠性。
 
 ## 许可证
 

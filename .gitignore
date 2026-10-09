@@ -34,5 +34,6 @@ node_modules/
 # Personal scratch files; curated specifications live under docs/
 .DS_Store
 Thumbs.db
+.vscode/
 
 # PROJECT.md, AGENTS.md, .agents/, docs/ and lockfiles are tracked.

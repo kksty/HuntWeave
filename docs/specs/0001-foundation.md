@@ -1,6 +1,6 @@
 # P0：工程骨架与运行契约
 
-状态：部分实施，P0-A 与 P0-B 已实施，P0-C/D 待实现。更新日期：2026-10-09。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)。当前成果与限制见 [启动验证记录](../validation/0001-startup.md)、[隔离验证记录](../validation/0002-windows-isolation.md)和 [身份与 Run 验证记录](../validation/0004-identity-runs.md)；下文完整研究闭环仍属于验收要求。
+状态：P0-A 至 P0-D 已实施并验证，真实执行仍未开放。更新日期：2026-10-09。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)。当前成果与限制见 [启动验证记录](../validation/0001-startup.md)、[隔离验证记录](../validation/0002-windows-isolation.md)、[身份与 Run 验证记录](../validation/0004-identity-runs.md) 和 [P0-C/D 执行与恢复验证记录](../validation/0005-p0-execution-and-recovery.md)。
 
 ## 1. 交付目标与范围
 
@@ -32,7 +32,7 @@ P0 不实现动态安装/工具保留、真实模型/联网研究、完整 Findi
 
 创建 Run 使用 `Idempotency-Key`：同键同请求返回同一 Run，同键不同规范化请求 hash 返回 409。暂停、恢复、取消、关闭用状态版本检查避免重复/过期页面覆盖。Run 的 phase/status、任务和 ToolCall 的状态枚举以总纲第 8.2 节为准。
 
-P0-B 的创建顺序为 Project → 不可变 AuthorizationScope → draft Run。Run 创建请求引用 scope_id 与 scope_version，规范化 UUID 后计算请求 hash；授权中的规范化 IP、展开端口、预算、有效期、演示 profile/config 全部复制到 Run。仅有效时间窗内允许创建和排队；同键重放已存在的 Run 可读取原记录。新增 `POST /api/v1/runs/{id}/start`，以请求体 version 将 draft 转为 queued 并递增状态版本；并发或过期版本返回 409。P0-C 交付前 queued 不派发任何动作，页面和响应明确标记执行尚未就绪。
+P0-B 的创建顺序为 Project → 不可变 AuthorizationScope → draft Run。Run 创建请求引用 scope_id 与 scope_version，规范化 UUID 后计算请求 hash；授权中的规范化 IP、展开端口、预算、有效期、演示 profile/config 全部复制到 Run。仅有效时间窗内允许创建和排队；同键重放已存在的 Run 可读取原记录。新增 `POST /api/v1/runs/{id}/start`，以请求体 version 将 draft 转为 queued 并递增状态版本；并发或过期版本返回 409。P0-C 起 queued 由唯一调度进程领取并派发固定假动作，`execution_ready` 只表示假执行链路就绪；P0-C 交付前该字段为 false。
 
 `resume` 返回或使用恢复预览：上次完成步骤、待核对调用、剩余预算、当前授权有效性、预计恢复动作。结果未知且未核对时不可从普通恢复按钮重新派发。暂停等当前受限动作收尾；取消需等待执行端确认回收。关闭仅用于没有活动/未知调用的 awaiting_human 阶段，记录人工决定“结束演示”。
 
@@ -77,7 +77,7 @@ Runner 写入完整输出文件/证据，app 只读归档。先完成文件归�
 
 登录资源与最小存活检查之外，主页/业务静态资源、API、事件、证据与 API 文档统一鉴权。密钥不进入前端构建、URL、日志或 Agent；会话撤销、到期、轮换与已建立 SSE 的失效时限按总纲第 9.3 节实现。localhost 开发 Cookie 与 HTTPS 生产配置分开。
 
-P0-B 公开白名单为 GET `/login`、`/login.js`、`/login.css`、POST `/auth/login`，以及最小存活检查。未认证的 HTML 导航转到登录页，API/文件请求返回 401；业务 Vue 产物不进入登录资源白名单。变更请求必须携带与配置一致的 Origin，登录后的变更还需 X-CSRF-Token。登录请求体上限 4 KiB（含 chunked 请求），其他变更为 1 MiB；默认每直接连接来源 IP 每分钟 5 次、全局 30 次尝试，限速窗口持久化且不被被拒请求无限延长，不信任代理转发头。会话闲置上限 2 小时、绝对上限 24 小时；服务端每次请求重读密钥文件，轮换后下一请求拒绝旧会话。当前尚无 SSE；P0-C 接入流时必须补齐每 60 秒撤销/过期复查，不能仅复用建连鉴权。
+P0-B 公开白名单为 GET `/login`、`/login.js`、`/login.css`、POST `/auth/login`，以及最小存活检查。未认证的 HTML 导航转到登录页，API/文件请求返回 401；业务 Vue 产物不进入登录资源白名单。变更请求必须携带与配置一致的 Origin，登录后的变更还需 X-CSRF-Token。登录请求体上限 4 KiB（含 chunked 请求），其他变更为 1 MiB；默认每直接连接来源 IP 每分钟 5 次、全局 30 次尝试，限速窗口持久化且不被被拒请求无限延长，不信任代理转发头。会话闲置上限 2 小时、绝对上限 24 小时；服务端每次请求重读密钥文件，轮换后下一请求拒绝旧会话。事件流在建立连接时鉴权，并在最长 15 秒内复查会话撤销与到期，不只依赖建连鉴权。
 
 ## 5. 切片顺序与完成证据
 
