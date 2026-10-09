@@ -33,6 +33,21 @@ def test_private_addresses_allowed_and_empty_input_cannot_be_submitted() -> None
     assert not preview_targets("127.0.0.1\n0.0.0.0\n169.254.169.254\n224.0.0.1").valid
 
 
+def test_target_limit_rejects_the_documented_first_over_limit_address() -> None:
+    addresses = [f"192.0.2.{index}" for index in range(1, 101)]
+    assert preview_targets("\n".join(addresses)).valid
+    with pytest.raises(ServiceError) as raised:
+        preview_targets("\n".join([*addresses, "192.0.2.101"]))
+    assert raised.value.reason_code == "target_limit_exceeded"
+    assert raised.value.status_code == 422
+
+
+def test_target_limit_counts_distinct_addresses_rather_than_input_lines() -> None:
+    addresses = [f"192.0.2.{index}" for index in range(1, 101)]
+    repeated = "\n".join([*addresses, *addresses])
+    assert preview_targets(repeated).valid
+
+
 def test_ports_expand_explicit_profile_custom_ranges_and_full_tcp() -> None:
     common = expand_ports(PortInput())
     assert 80 in common and 443 in common and 6379 in common

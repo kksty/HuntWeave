@@ -8,6 +8,10 @@ from huntweave.contracts.runs import PortInput, TargetPreview, TargetRow
 
 PROFILE = Path(__file__).resolve().parents[4] / "profiles" / "common-tcp-v1.json"
 
+# PROJECT.md 第 12 节的保守开发默认值：单 Run 导入上限 100 个 IP。
+# 计数口径是去重后的不同目标，重复行不占额度。
+TARGET_LIMIT = 100
+
 
 def preview_targets(text: str) -> TargetPreview:
     targets: dict[str, int] = {}
@@ -47,7 +51,7 @@ def preview_targets(text: str) -> TargetPreview:
                 duplicate_of=duplicate,
             )
         )
-    if len(targets) > 5000:
+    if len(targets) > TARGET_LIMIT:
         raise ServiceError("target_limit_exceeded", 422)
     return TargetPreview(targets=list(targets), rows=rows, valid=bool(targets) and not invalid)
 
