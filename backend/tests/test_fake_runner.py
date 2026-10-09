@@ -165,7 +165,9 @@ def test_lease_expiry_stops_and_cancel_is_durable(tmp_path: Path) -> None:
     request = ticket(
         parameters=params,
         parameters_hash=parameters_hash(params),
-        lease_expires_at=datetime.now(UTC) + timedelta(milliseconds=50),
+        # Wide enough that a loaded host still accepts the ticket, short enough that the
+        # running action outlives its control lease.
+        lease_expires_at=datetime.now(UTC) + timedelta(milliseconds=250),
     )
     runner.submit(request)
     record = settled(runner, request.call_id, "cancelled")

@@ -132,10 +132,10 @@ P1 引入三个真实动作：`shell.exec`、`discover_tcp_services`、`probe_ht
 第 [#15](https://github.com/kksty/HuntWeave/issues/15) 条 tracer 已按下列实现落地（2026-10-09，验收记录 `docs/validation/0006-p1-reconciliation.md`）：
 
 - 核对记录表 `reconciliation_decisions` 以 `call_id` 为主键，一行一条裁定，绑定操作员会话标识（按值保存，不随会话清理删除）、范围版本、依据证据与作出决定时读取到的执行端观测。重复同一裁定幂等返回；改判拒绝 `reconciliation_conflict`；版本过期拒绝 `version_conflict`。
-- 执行端事实与裁定分开持久化：账本记录新增 `observation`（`started` / `process_active` / `connection_open`，`null` 表示无法确认），业务侧按调用保存最近一次观测。停止确认只由执行端给出：账本无法证明进程与连接结束时报告**未确认**，重启本身不构成停止。
-- 三种裁定的判定：`not_executed` 需受信记录证明动作未开始、停止已确认且原控制租约失效，否则分别以 `reconciliation_evidence_missing`、`execution_stop_unconfirmed`、`reconciliation_lease_active` 拒绝；`executed` 需账本证明动作已开始，调用进入新终态 `incomplete` 且不写 `ToolResult`；`undetermined` 保持调用 `unknown`，只新增记录，阻塞继续但允许受限结束。
-- 重派在同一步骤上进行：复用原 Decision 的内容，新建一条决策记录与新的 `call_id`，并以 `tool_calls.replaces_call_id` 关联原调用；重派前重新校验授权时间窗与预算。票据仍由唯一构造点生成，不复制第二份构造逻辑。
-- 收敛拆成两条独立判断：**结果未裁定**（阻塞继续）与**停止未确认**（阻塞继续与结束）。停止已确认而结果仍缺失时，取消/暂停收敛为受限结束，事件带 `limited` 与 `incomplete_calls`，Run 的 `reason_code` 保留 `execution_unknown`；资源未核清时保留 cancel/查询路径并继续显示 `cancelling`。
+- 执行端事实与裁定分开持久化：账本记录新增 `observation`（`started` / `process_active` / `connection_open` / `lease_active`，`null` 表示无法确认），业务侧按调用保存最近一次观测。停止确认只由执行端给出：账本无法证明进程、连接与旧租约都已了结时报告**未确认**，重启本身不构成停止，操作员裁定也不能代替它。
+- 三种裁定的判定：`not_executed` 需受信记录证明动作未开始、停止已确认且旧租约失效，否则分别以 `reconciliation_evidence_missing`、`reconciliation_evidence_contradicted`、`reconciliation_lease_active`、`execution_stop_unconfirmed` 拒绝；`executed` 需账本证明动作已开始，调用进入新终态 `incomplete` 且不写 `ToolResult`，研究按步骤继续（缺失结果保留在调用历史里）；`undetermined` 保持调用 `unknown`，只新增记录，阻塞继续但允许受限结束。
+- 重派在同一步骤上进行：复用原 Decision 的内容，新建一条决策记录与新的 `call_id`，并以 `tool_calls.replaces_call_id` 关联原调用；重派前重新校验授权时间窗与预算。票据仍由唯一构造点生成，不复制第二份构造逻辑。重派只适用于 `not_executed`：确认已执行不重派、不重跑。
+- 收敛拆成两条独立判断：**结果未裁定**（阻塞继续）与**停止未确认**（阻塞继续与结束）。停止已确认而结果仍缺失时，取消与暂停都收敛为受限结束，事件带 `limited` 与 `incomplete_calls`，Run 的 `reason_code` 记为 `result_incomplete`，不伪装成正常结束；资源未核清时保留 cancel/查询路径并继续显示 `cancelling`/`pausing`。
 
 ### 3.4 就绪门槛与能力契约
 

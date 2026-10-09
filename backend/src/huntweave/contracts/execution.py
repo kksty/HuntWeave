@@ -72,13 +72,15 @@ class ExecutionObservation(Contract):
     """What the durable ledger can prove about one call, separately from its outcome.
 
     ``started`` is written before any side effect, so a ledger that proves it absent proves
-    the action never ran. A ``None`` process or connection state means the ledger cannot
-    confirm either way: reconciliation must read that as "not stopped", never as a stop.
+    the action never ran. A ``None`` process, connection or lease state means the ledger
+    cannot confirm either way: reconciliation must read that as "not stopped", never as a
+    stop, because an operator's verdict never releases the execution side's resources.
     """
 
     started: bool
     process_active: bool | None
     connection_open: bool | None
+    lease_active: bool | None = None
     observed_at: AwareDatetime
 
 

@@ -6,6 +6,7 @@ version, and it never replaces an execution-side fact.
 """
 
 import os
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -87,26 +88,18 @@ def operator(engine: Engine) -> UUID:
     return session_id
 
 
-def expire_control_lease(engine: Engine, call_id: UUID) -> None:
-    """Age the ticket's 15 s control lease, as real operator time does."""
-    lease = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "UPDATE huntweave.tool_calls SET ticket = jsonb_set("
-                "ticket, '{lease_expires_at}', to_jsonb(CAST(:lease AS text))) WHERE id = :id"
-            ),
-            {"lease": lease, "id": call_id},
-        )
-
-
 def observed(
-    *, started: bool, process_active: bool | None, connection_open: bool | None
+    *,
+    started: bool,
+    process_active: bool | None,
+    connection_open: bool | None,
+    lease_active: bool | None = False,
 ) -> ExecutionObservation:
     return ExecutionObservation(
         started=started,
         process_active=process_active,
         connection_open=connection_open,
+        lease_active=lease_active,
         observed_at=datetime.now(UTC),
     )
 
@@ -176,7 +169,6 @@ def test_never_executed_settles_the_call_and_authorises_one_redispatch(business)
     runs, service, run_id, engine = business
     call_id = opened_call(service, run_id)
     service.unknown(run_id, call_id)
-    expire_control_lease(engine, call_id)
     not_executed = observed(started=False, process_active=False, connection_open=False)
 
     result = service.reconcile(
@@ -232,14 +224,66 @@ def test_never_executed_needs_a_record_that_proves_it_and_a_released_lease(busin
         == "reconciliation_evidence_contradicted"
     )
     # The original control lease still authorises the old call, so it cannot be re-dispatched.
-    not_started = observed(started=False, process_active=False, connection_open=False)
+    live_lease = observed(
+        started=False, process_active=False, connection_open=False, lease_active=True
+    )
     assert (
-        refused(service, run_id, call_id, request, operator_id, not_started)
+        refused(service, run_id, call_id, request, operator_id, live_lease)
         == "reconciliation_lease_active"
+    )
+    # A process or connection the ledger cannot account for is not a stop either.
+    unaccounted = observed(started=False, process_active=None, connection_open=None)
+    assert (
+        refused(service, run_id, call_id, request, operator_id, unaccounted)
+        == "execution_stop_unconfirmed"
     )
     # The Run is untouched by every refusal above.
     assert service.snapshot(run_id)["calls"][0]["status"] == "unknown"
     assert events(service, run_id, "reconciliation_recorded") == []
+
+
+def test_a_verdict_may_only_cite_evidence_from_its_own_run(business):
+    runs, service, run_id, engine = business
+    call_id = opened_call(service, run_id)
+    service.unknown(run_id, call_id)
+    answer = observed(started=True, process_active=False, connection_open=False)
+
+    elsewhere = verdict(service, run_id, "executed", evidence_ids=[str(uuid4())])
+    assert (
+        refused(service, run_id, call_id, elsewhere, operator(engine), answer)
+        == "reconciliation_evidence_missing"
+    )
+    assert events(service, run_id, "reconciliation_recorded") == []
+
+
+def test_concurrent_identical_verdicts_record_one_decision(business):
+    runs, service, run_id, engine = business
+    call_id = opened_call(service, run_id)
+    service.unknown(run_id, call_id)
+    request = verdict(service, run_id, "executed")
+    operator_id = operator(engine)
+    answer = observed(started=True, process_active=False, connection_open=False)
+
+    outcomes: list[str] = []
+    failures: list[Exception] = []
+
+    def rule() -> None:
+        try:
+            result = service.reconcile(run_id, call_id, request, operator_id, answer)
+            outcomes.append(result["call"]["status"])
+        except Exception as error:  # noqa: BLE001 - the assertion below reports whatever it was
+            failures.append(error)
+
+    threads = [threading.Thread(target=rule) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert failures == []
+    assert outcomes == ["incomplete"] * 4
+    assert len(events(service, run_id, "reconciliation_recorded")) == 1
+    assert len(service.snapshot(run_id)["calls"]) == 1
 
 
 def test_a_stale_verdict_version_never_rewrites_a_moved_run(business):
@@ -283,11 +327,16 @@ def test_confirmed_execution_ends_the_call_incomplete_without_inventing_a_result
     assert governed_control(service, run_id, "resume")["status"] == "running"
 
 
-def test_confirmed_execution_still_waits_for_a_confirmed_stop(business):
+@pytest.mark.parametrize("process_active", [None, True])
+def test_confirmed_execution_still_waits_for_a_confirmed_stop(business, process_active):
     runs, service, run_id, engine = business
     call_id = opened_call(service, run_id)
     service.unknown(run_id, call_id)
-    unconfirmed = observed(started=True, process_active=None, connection_open=None)
+    # Either the ledger cannot account for the process or it can see it still running: both
+    # are "not stopped", and neither releases the Run.
+    unconfirmed = observed(
+        started=True, process_active=process_active, connection_open=None, lease_active=None
+    )
 
     result = service.reconcile(
         run_id, call_id, verdict(service, run_id, "executed"), operator(engine), unconfirmed
@@ -351,11 +400,37 @@ def test_an_undetermined_outcome_can_only_end_as_a_limited_run(business):
     assert cancelled["limited"] is True and cancelled["incomplete_calls"] == [str(call_id)]
 
 
+def test_a_pausing_run_converges_only_once_the_stop_is_confirmed(business):
+    runs, service, run_id, engine = business
+    call_id = opened_call(service, run_id)
+    # A pause starts while the call is still in flight; the ledger then loses its outcome.
+    assert governed_control(service, run_id, "pause")["status"] == "pausing"
+    service.unknown(run_id, call_id)
+    assert service.snapshot(run_id)["run"]["status"] == "pausing"
+
+    # An unaccounted process keeps the pause unresolved rather than pretending it settled.
+    assert service.snapshot(run_id)["run"]["status"] == "pausing"
+    assert service.preview(run_id)["pending_calls"][0]["conditions"] == [
+        "outcome_unsettled",
+        "stop_unconfirmed",
+    ]
+
+    service.accept(
+        ledger_answer(
+            engine, call_id, observed(started=True, process_active=False, connection_open=False)
+        )
+    )
+    snapshot = service.snapshot(run_id)
+    assert snapshot["run"]["status"] == "paused"
+    assert snapshot["run"]["reason_code"] == "result_incomplete"
+    paused = events(service, run_id, "run_paused")[-1]["payload"]
+    assert paused["limited"] is True and paused["incomplete_calls"] == [str(call_id)]
+
+
 def test_a_proven_never_executed_call_is_dispatched_again_under_a_new_call_id(business):
     runs, service, run_id, engine = business
     call_id = opened_call(service, run_id)
     service.unknown(run_id, call_id)
-    expire_control_lease(engine, call_id)
     service.reconcile(
         run_id,
         call_id,
@@ -408,7 +483,6 @@ def test_the_console_records_a_verdict_as_an_operator_decision(business):
     runs, service, run_id, engine = business
     call_id = opened_call(service, run_id)
     service.unknown(run_id, call_id)
-    expire_control_lease(engine, call_id)
     answer = observed(started=False, process_active=False, connection_open=False)
     client = console(engine, answer)
 

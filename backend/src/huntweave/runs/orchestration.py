@@ -753,7 +753,7 @@ class OrchestrationService:
                 raise ServiceError("invalid_call_state", 409)
             self._check_citations(session, run, verdict.evidence_ids)
             if verdict.outcome == "not_executed":
-                redispatch = self._authorize_redispatch(session, call, observation)
+                redispatch = self._authorize_redispatch(observation)
             elif verdict.outcome == "executed":
                 self._require_executed_basis(observation)
                 redispatch = False
@@ -816,24 +816,21 @@ class OrchestrationService:
         if found != set(evidence_ids):
             raise ServiceError("reconciliation_evidence_missing", 409)
 
-    def _authorize_redispatch(
-        self, session: Session, call: ToolCall, observation: ExecutionObservation | None
-    ) -> bool:
+    def _authorize_redispatch(self, observation: ExecutionObservation | None) -> bool:
         """Whether the trusted record lets the same decision run again on a new call id.
 
         The operator clicks; the execution side proves. Without a record that the action
-        never started, with anything it may have left running still unaccounted for, or while
-        the original control lease still authorises the old call, no verdict re-dispatches.
+        never started, or with a process, connection or lease it cannot account for, no
+        verdict re-dispatches: the old call might still be the one holding the target.
         """
         if observation is None:
             raise ServiceError("reconciliation_evidence_missing", 409)
         if observation.started:
             raise ServiceError("reconciliation_evidence_contradicted", 409)
+        if observation.lease_active is not False:
+            raise ServiceError("reconciliation_lease_active", 409)
         if not self._stop_confirmed(observation.model_dump(mode="json")):
             raise ServiceError("execution_stop_unconfirmed", 409)
-        ticket = ExecutionRequest.model_validate(call.ticket)
-        if ticket.lease_expires_at > database_now(session):
-            raise ServiceError("reconciliation_lease_active", 409)
         return True
 
     @staticmethod
@@ -896,13 +893,16 @@ class OrchestrationService:
     def _stop_confirmed(observation: dict[str, Any] | None) -> bool:
         """A stop is proven by the execution side, never by an operator's verdict.
 
-        A ledger that reports ``None`` for the process or the connection is saying it cannot
-        confirm either way, which is not a stop: a shell may have left descendants behind.
+        The process, the connection and the old control lease are one answer: a ledger that
+        reports ``None`` for any of them is saying it cannot confirm, which is not a stop. A
+        shell may have left descendants behind, and a live lease can still authorise the call
+        the Run is trying to leave behind.
         """
         return bool(
             observation
             and observation.get("process_active") is False
             and observation.get("connection_open") is False
+            and observation.get("lease_active") is False
         )
 
     def _call_conditions(

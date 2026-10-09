@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useWorkspace, ApiFailure, type Run } from './workspace';
 
 interface AuditEvent { cursor: number; type: string; payload: Record<string, unknown>; created_at: string }
-interface Observation { started: boolean; process_active: boolean | null; connection_open: boolean | null; observed_at: string; stop_confirmed: boolean }
+interface Observation { started: boolean; process_active: boolean | null; connection_open: boolean | null; lease_active: boolean | null; observed_at: string; stop_confirmed: boolean }
 interface Reconciliation { call_id: string; outcome: string; operator_session_id: string; scope_version: number; evidence_ids: string[]; note: string; observation: Observation | null; redispatch_authorized: boolean; recorded_at: string }
 interface Call { id: string; session_id: string; decision_id: string; status: string; action: string; parameters: Record<string, unknown>; result: Record<string, unknown> | null; evidence_ids: string[]; created_at: string; replaces_call_id: string | null; observation: Observation | null; reconciliation: Reconciliation | null; conditions: string[] }
 interface Detail {
@@ -102,6 +102,7 @@ const conditionLabels: Record<string, string> = { outcome_unsettled: '结果未�
 const outcomeLabels: Record<string, string> = { not_executed: '确认未执行', executed: '确认已执行', undetermined: '仍未决' };
 const conditionLabel = (value: string) => conditionLabels[value] || value;
 const stateLabel = (value: boolean | null | undefined) => value === true ? '仍在' : value === false ? '已结束' : '无法确认';
+const leaseLabel = (value: boolean | null | undefined) => value === true ? '仍有效' : value === false ? '已失效' : '无法确认';
 async function reconcile(call: Call, outcome: string) {
   busy.value = true; error.value = '';
   const cited = (citations.value[call.id] || '').split(',').map(item => item.trim()).filter(Boolean);
@@ -152,7 +153,7 @@ async function reconcile(call: Call, outcome: string) {
         <article v-for="call in reconcilable" :key="call.id" class="call-card">
           <div class="section-heading"><strong>{{ call.action }}</strong><span class="badge">{{ call.status }}</span></div>
           <small>{{ call.id }} · {{ time(call.created_at) }}</small>
-          <p>执行端事实（来自执行账本）：已开始 {{ call.observation?.started === undefined ? '无法确认' : (call.observation?.started ? '是' : '否') }} · 进程 {{ stateLabel(call.observation?.process_active) }} · 连接 {{ stateLabel(call.observation?.connection_open) }} · 停止确认 {{ call.observation?.stop_confirmed ? '已确认' : '未确认' }}</p>
+          <p>执行端事实（来自执行账本）：已开始 {{ call.observation?.started === undefined ? '无法确认' : (call.observation?.started ? '是' : '否') }} · 进程 {{ stateLabel(call.observation?.process_active) }} · 连接 {{ stateLabel(call.observation?.connection_open) }} · 旧租约 {{ leaseLabel(call.observation?.lease_active) }} · 停止确认 {{ call.observation?.stop_confirmed ? '已确认' : '未确认' }}</p>
           <p>仍缺条件：{{ call.conditions.length ? call.conditions.map(conditionLabel).join('、') : '无，可按预览继续' }}</p>
           <div v-if="call.reconciliation" class="notice">
             <strong>操作员裁定：{{ outcomeLabels[call.reconciliation.outcome] || call.reconciliation.outcome }}</strong>

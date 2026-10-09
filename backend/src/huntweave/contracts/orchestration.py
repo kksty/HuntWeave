@@ -53,6 +53,7 @@ class CallObservationView(Contract):
     started: bool
     process_active: bool | None
     connection_open: bool | None
+    lease_active: bool | None = None
     observed_at: datetime
     stop_confirmed: bool
 

@@ -68,9 +68,10 @@ class ExecutionDispatcher:
                     record = self._maintain(state["status"], ticket)
                     if record is None:
                         continue
-                elif record.status == "unknown" and state["status"] == "cancelling":
-                    # The operator ended the Run: have the execution side confirm what the
-                    # call left running instead of waiting for an outcome it will never give.
+                elif record.status == "unknown" and state["status"] in {"cancelling", "pausing"}:
+                    # The Run is ending: have the execution side confirm what the call left
+                    # running instead of waiting for an outcome it will never give. A pause
+                    # needs it too, or the Run can never leave 停止中/待核对.
                     record = self._confirm_stop(ticket) or record
                 self.business.accept(record)
             except (httpx.HTTPError, OSError, TimeoutError):

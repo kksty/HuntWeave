@@ -261,8 +261,9 @@ def test_ticket_locally_dispatched_but_absent_from_the_ledger_is_unknown():
     assert business.unreachable_calls == []
 
 
-def test_a_cancelling_run_asks_the_ledger_to_confirm_the_stop():
-    # The operator ended the Run while one call's outcome is unconfirmed. Waiting for an
+@pytest.mark.parametrize("run_status", ["cancelling", "pausing"])
+def test_an_ending_run_asks_the_ledger_to_confirm_the_stop(run_status: str):
+    # The operator is ending the Run while one call's outcome is unconfirmed. Waiting for an
     # outcome that will never arrive would wedge the Run, so the dispatcher has the
     # execution side stop what the call left and records that stop as its own fact.
     call = ticket()
@@ -274,6 +275,7 @@ def test_a_cancelling_run_asks_the_ledger_to_confirm_the_stop():
             started=True,
             process_active=None,
             connection_open=None,
+            lease_active=False,
             observed_at=datetime.now(UTC),
         ),
     )
@@ -283,12 +285,13 @@ def test_a_cancelling_run_asks_the_ledger_to_confirm_the_stop():
                 started=True,
                 process_active=False,
                 connection_open=False,
+                lease_active=False,
                 observed_at=datetime.now(UTC),
             )
         }
     )
     runner = Runner(unknown, stopped)
-    business = Business("cancelling", pending(call, "unknown"))
+    business = Business(run_status, pending(call, "unknown"))
     ExecutionDispatcher(business, runner).reconcile(call.run_id)  # type: ignore[arg-type]
     assert runner.cancelled == [(call.call_id, call.lease_generation)]
     assert business.accepted == [stopped]

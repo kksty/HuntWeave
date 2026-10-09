@@ -78,37 +78,45 @@ class FakeRunner:
 
     @staticmethod
     def _observed(
-        started: bool, process_active: bool | None, connection_open: bool | None
+        started: bool,
+        process_active: bool | None,
+        connection_open: bool | None,
+        lease_active: bool | None,
     ) -> ExecutionObservation:
         return ExecutionObservation(
             started=started,
             process_active=process_active,
             connection_open=connection_open,
+            lease_active=lease_active,
             observed_at=datetime.now(UTC),
         )
 
     def _has_started(self, record: ExecutionRecord) -> bool:
         return any(event.type == "execution_started" for event in record.events)
 
-    def _resources(
+    def _observation_after(
         self,
         record: ExecutionRecord,
         status: Literal["accepted", "running", "completed", "failed", "cancelled", "unknown"],
     ) -> ExecutionObservation:
-        """Report what this ledger can prove about the call's process and connection.
+        """Report what this ledger can prove about the call's process, connection and lease.
 
         A ledger that stopped observing an execution cannot prove the process it started is
         gone: a shell may have left descendants behind. Only a record that never started, or
-        one whose executor finished or was stopped, supports claiming a stop.
+        one whose executor finished or was stopped, supports claiming a stop. A lease is live
+        only while the ledger would still renew it.
         """
         if status == "accepted":
-            return self._observed(False, False, False)
+            return self._observed(False, False, False, True)
         if status == "running":
-            return self._observed(True, True, True)
+            return self._observed(True, True, True, True)
         if status == "unknown":
             started = self._has_started(record)
-            return self._observed(started, None if started else False, None if started else False)
-        return self._observed(self._has_started(record), False, False)
+            # An unobserved execution proves nothing about its process or connection, and the
+            # ledger refuses to renew a lease for a call it can no longer account for.
+            unaccounted = None if started else False
+            return self._observed(started, unaccounted, unaccounted, False)
+        return self._observed(self._has_started(record), False, False, False)
 
     def _change(
         self,
@@ -136,7 +144,7 @@ class FakeRunner:
             reason_code=reason,
             result=result,
             events=[*record.events, event],
-            observation=self._resources(record, status),
+            observation=self._observation_after(record, status),
         )
         self.data[str(record.request.call_id)]["record"] = updated.model_dump(mode="json")
         self._persist()
@@ -178,7 +186,9 @@ class FakeRunner:
                     ):
                         raise RunnerRejected("scope_policy_mismatch")
             record = ExecutionRecord(
-                request=request, status="accepted", observation=self._observed(False, False, False)
+                request=request,
+                status="accepted",
+                observation=self._observed(False, False, False, True),
             )
             self.data[str(request.call_id)] = {
                 "fingerprint": fingerprint,
@@ -412,7 +422,7 @@ class FakeRunner:
         stopped = record.model_copy(
             update={
                 "events": [*record.events, event],
-                "observation": self._observed(self._has_started(record), False, False),
+                "observation": self._observed(self._has_started(record), False, False, False),
             }
         )
         self.data[str(record.request.call_id)]["record"] = stopped.model_dump(mode="json")
