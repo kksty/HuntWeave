@@ -22,6 +22,10 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 DISPOSABLE_PROJECT = "huntweave-p0-checks"
 
 
+class ServiceUnavailable(RuntimeError):
+    """A bounded poll may retry a temporary control-plane outage."""
+
+
 class Probe:
     def __init__(self, project: str, base_url: str):
         parsed = urlsplit(base_url)
@@ -63,6 +67,8 @@ class Probe:
         with response:
             payload = response.read()
             if response.status != expected:
+                if response.status == 503:
+                    raise ServiceUnavailable(f"{path}: control plane temporarily unavailable")
                 reason = json.loads(payload).get("reason_code", "unexpected_response")
                 raise AssertionError(f"{path}: expected {expected}, got {response.status}: {reason}")
             return json.loads(payload) if payload else {}
@@ -79,7 +85,7 @@ class Probe:
                 value = get()
                 if condition(value):
                     return value
-            except (URLError, TimeoutError, ConnectionError):
+            except (URLError, TimeoutError, ConnectionError, ServiceUnavailable):
                 pass
             time.sleep(0.25)
         raise AssertionError("Timed out waiting for observable P0 state")
