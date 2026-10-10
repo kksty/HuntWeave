@@ -89,7 +89,7 @@ def _reclaimable(
         removable = [item for item in record.resources if item.kind != "network"]
         if record.state == "reclaimed":
             continue
-        state = stops[record.instance_id].state
+        state = stops.get(record.instance_id, StopFact.of(record)).state
         preview.append(
             {
                 "instance_id": str(record.instance_id),
@@ -107,6 +107,8 @@ def project_run_state(
 ) -> RunRuntimeView:
     """One Run's containers and gateways as the execution side records them right now."""
     instances = sorted(state.instances, key=lambda item: item.created_at)
+    # A state assembled without stop facts still answers: the fact is derivable from the record,
+    # so a caller that omitted them gets the same statement rather than a lookup failure.
     stops = {fact.instance_id: fact for fact in state.stop_facts}
     sessions: list[SessionRuntimeView] = []
     for session in state.sessions:
@@ -114,7 +116,7 @@ def project_run_state(
         view = view.model_copy(
             update={
                 "instances": [
-                    _instance_view(record, stops[record.instance_id])
+                    _instance_view(record, stops.get(record.instance_id, StopFact.of(record)))
                     for record in instances
                     if record.session_id == session.session_id
                 ]

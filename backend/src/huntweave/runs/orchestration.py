@@ -30,7 +30,7 @@ from huntweave.contracts.runs import ScopeSnapshot
 from huntweave.harness.model import DeterministicModel
 from huntweave.runs.events import append_event
 from huntweave.runs.service import RunService
-from huntweave.runs.suspension import Suspension, suspend
+from huntweave.runs.suspension import Suspension, record_interruption, suspend
 from huntweave.storage.database import database_now
 from huntweave.storage.models import (
     AgentSession,
@@ -133,24 +133,6 @@ class OrchestrationService:
     ) -> None:
         append_event(session, run.id, kind, payload, source)
 
-    def _interrupt(self, session: Session, run: Run, reason: str, condition: str) -> None:
-        if run.reason_code != reason:
-            session.add(
-                InterruptionRecord(
-                    run_id=run.id,
-                    reason_code=reason,
-                    recovery_condition=condition,
-                    created_at=database_now(session),
-                )
-            )
-            self._event(
-                session,
-                run,
-                "interrupted",
-                {"reason_code": reason, "recovery_condition": condition},
-            )
-        run.reason_code = reason
-
     def hold_for_readiness(self, run_id: UUID, call_id: UUID, reason: str) -> None:
         """Record why a real call is not being offered to the execution side yet.
 
@@ -164,7 +146,7 @@ class OrchestrationService:
             call = session.get(ToolCall, call_id, with_for_update=True)
             if call is None or call.status not in {"planned", "dispatched"}:
                 return
-            self._interrupt(
+            record_interruption(
                 session,
                 run,
                 reason,
@@ -331,22 +313,23 @@ class OrchestrationService:
             if active is not None:
                 return None
             scope = ScopeSnapshot.model_validate(run.scope_snapshot)
-            agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
-            assert agent is not None
             try:
                 RunService._check_window(scope, now)
             except ServiceError as error:
+                # Only the Run stops here: the window closed, so it is waiting for a new
+                # authorization rather than for this task. Blocking the task would claim
+                # something the authorization's absence does not.
                 suspend(
                     session,
                     run,
-                    task,
-                    agent,
                     Suspension(
                         reason_code=error.reason_code,
                         recovery_condition="A new authorized Run is required after expiry.",
                     ),
                 )
                 return None
+            agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
+            assert agent is not None
             if replacing is None:
                 decision = self.model.decide(task.role, task.step, agent.context)
                 session.add(
@@ -452,13 +435,13 @@ class OrchestrationService:
                 suspend(
                     session,
                     run,
-                    task,
-                    agent,
                     Suspension(
                         reason_code="budget_exhausted",
                         recovery_condition="Create a new Run with a sufficient budget; "
                         "this reservation is not reset.",
                     ),
+                    task=task,
+                    agent=agent,
                 )
                 return {"id": str(decision_id), **decision}
             replaces: UUID | None = None
@@ -478,13 +461,13 @@ class OrchestrationService:
                     suspend(
                         session,
                         run,
-                        task,
-                        agent,
                         Suspension(
                             reason_code=error.reason_code,
                             recovery_condition="Plan an authorized target, or widen the "
                             "authorization snapshot.",
                         ),
+                        task=task,
+                        agent=agent,
                     )
                     self._event(
                         session,
@@ -688,7 +671,7 @@ class OrchestrationService:
                     if run.status not in {"cancelling", "pausing", "waiting"}:
                         run.status = "waiting"
                         run.version += 1
-                    self._interrupt(
+                    record_interruption(
                         session,
                         run,
                         "execution_unknown",
@@ -782,43 +765,43 @@ class OrchestrationService:
                 suspend(
                     session,
                     run,
-                    task,
-                    agent,
                     Suspension(
                         reason_code=record.reason_code or "dependency_failed",
                         recovery_condition="Inspect fixed failure; resume continues without "
                         "repeating its effect.",
                     ),
+                    task=task,
+                    agent=agent,
                 )
             if record.status == "cancelled" and run.status not in {"pausing", "cancelling"}:
                 suspend(
                     session,
                     run,
-                    task,
-                    agent,
                     Suspension(
                         reason_code=record.reason_code or "control_lease_expired",
                         recovery_condition="Previous execution stopped; resume continues "
                         "without replaying its effect.",
                     ),
+                    task=task,
+                    agent=agent,
                 )
             if any(not x["available"] for x in result["evidence"]):
                 if run.status not in {"pausing", "cancelling"}:
                     suspend(
                         session,
                         run,
-                        task,
-                        agent,
                         Suspension(
                             reason_code="evidence_incomplete",
                             recovery_condition="Restore the execution archive; incomplete "
                             "evidence cannot support a finding.",
                         ),
+                        task=task,
+                        agent=agent,
                     )
                 else:
                     # A Run already ending does not change state here, but it still has to
                     # state the reason its evidence cannot support a finding.
-                    self._interrupt(
+                    record_interruption(
                         session,
                         run,
                         "evidence_incomplete",
@@ -853,7 +836,7 @@ class OrchestrationService:
             if run.status not in {"pausing", "cancelling", "waiting"}:
                 run.status = "waiting"
                 run.version += 1
-            self._interrupt(
+            record_interruption(
                 session,
                 run,
                 reason,
@@ -1109,7 +1092,7 @@ class OrchestrationService:
         """Keep the Run's stated reason equal to what its calls actually still need."""
         conditions = {x for _, items in self._outstanding(session, run.id) for x in items}
         if STOP_UNCONFIRMED in conditions:
-            self._interrupt(
+            record_interruption(
                 session,
                 run,
                 "execution_stop_unconfirmed",
@@ -1117,7 +1100,7 @@ class OrchestrationService:
                 "against a session that may still be occupied.",
             )
         elif OUTCOME_UNSETTLED in conditions:
-            self._interrupt(
+            record_interruption(
                 session,
                 run,
                 "execution_unknown",

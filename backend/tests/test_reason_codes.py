@@ -225,8 +225,12 @@ def backend_candidates() -> set[str]:
             r'\(\s*"([a-z][a-z0-9_]*)"',
             re.S,
         ),
-        # `_interrupt(session, run, "reason", "recovery condition")` — the third argument.
-        re.compile(r'_interrupt\(\s*[^,]+,\s*[^,]+,\s*"([a-z][a-z0-9_]*)"'),
+        # `record_interruption(session, run, "reason", "recovery condition")` — the third argument.
+        # Both the suspension paths and the record-only paths record through this one function. The
+        # name is deliberately not `interrupt`: LangGraph's own primitive has that name and
+        # `harness/graph.py` calls it with a payload, so anchoring on the bare word also picked up a
+        # dict key there (`pending_call_ids`) as if it were a reason.
+        re.compile(r'\brecord_interruption\(\s*[^,]+,\s*[^,]+,\s*"([a-z][a-z0-9_]*)"'),
         # A payload that names the reason it is about, or a span that records one beside a status.
         re.compile(r'"reason_code":\s*"([a-z][a-z0-9_]*)"'),
         re.compile(r'"missing_reason":\s*"([a-z][a-z0-9_]*)"'),
