@@ -100,7 +100,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/link-issue-dependencie
 
 1. **`#65` 的阻塞项把 P1 视觉票当成硬门。** [#65](https://github.com/kksty/HuntWeave/issues/65) 登记被 [#34](https://github.com/kksty/HuntWeave/issues/34)/[#35](https://github.com/kksty/HuntWeave/issues/35) 阻塞。视觉系统是「必须遵守」，但不是「必须先交付」；若按硬门执行，整条 P2 前端会串在 P1 视觉换肤后面。建议在 #34 落地视觉系统后即认作可开工。
 2. **`#4` 的编号不一致（仅台账，不影响已发布正文）。** 台账内部键 `C1`/`C2` 与规格的 C1/C2 对调：`C2` 对应标题 `P2-C1`，`C1` 对应 `P2-C2`。已发布的标题与编号与规格一致（[#51](https://github.com/kksty/HuntWeave/issues/51) = C1、[#54](https://github.com/kksty/HuntWeave/issues/54) = C2），**不要按内部键重命名 Issue**。
-3. **P2 里程碑尚未建立。** [issue-tracker](./issue-tracker.md) 约定阶段进度用 milestone 表达，[STATUS](../STATUS.md) 记「P2 里程碑按本文件约定在开工时建立」。本轮发布只加了 `ready-for-agent` 标签。
+3. **切片进度已挂 [里程碑 P2](https://github.com/kksty/HuntWeave/milestone/2)**（发布中断时尚未建立，后补建），成员恰好是 #37–#76 这 40 个切片 Issue。#25–#35（覆盖面 C-A…C-F、突破模式、规模化实测与视觉 V-A/V-B/V-D）**有意不挂里程碑**：它们此前未挂任何里程碑，其阶段归属尚未决定，而 `#76` 的验收标准要求「breach 未切片、扩展宿主与批量导入未决不冒充可用」，挂进 P2 会让 P2 的计数混入未决范围。里程碑只表达切片进度，阶段状态仍以 [STATUS](../STATUS.md) 为准。
 
 ## 6. 关键路径
 
