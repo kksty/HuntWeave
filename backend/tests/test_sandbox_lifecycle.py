@@ -64,6 +64,7 @@ FIXED_OPERATIONS = {
     "remove_container",
     "connect_network",
     "network_facts",
+    "volume_facts",
     "own_networks",
     "apply_gateway_policy",
     "read_gateway_policy",
@@ -71,6 +72,7 @@ FIXED_OPERATIONS = {
     "container_processes",
     "container_logs",
     "exec_in_tool",
+    "volume_usage",
     "list_resources",
     "close",
 }

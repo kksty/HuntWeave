@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 import httpx
@@ -7,6 +8,14 @@ import httpx
 from huntweave.config import runner_token
 from huntweave.contracts.capabilities import Capabilities
 from huntweave.contracts.execution import ExecutionRecord, ExecutionRequest, RunRuntimeView
+from huntweave.contracts.retention import (
+    RetentionReport,
+    RetentionRequest,
+    RetentionView,
+)
+
+RetentionTargetKind = Literal["versions", "artifacts"]
+RetentionAction = Literal["pin", "unpin", "delete"]
 
 
 class RunnerClient:
@@ -47,6 +56,44 @@ class RunnerClient:
     def submit(self, request: ExecutionRequest) -> ExecutionRecord:
         return ExecutionRecord.model_validate(
             self._request("POST", "/v1/calls", request.model_dump(mode="json")).json()
+        )
+
+    def retention(self) -> RetentionView:
+        """The execution side's retention answer: candidates, held artifacts and the preview.
+
+        Read-only. A deployment without management says so in the view instead of failing the read,
+        so the console can state the gap rather than show an empty cache.
+        """
+        return RetentionView.model_validate(self._request("GET", "/v1/retention").json())
+
+    def retention_action(
+        self,
+        *,
+        target_kind: RetentionTargetKind,
+        target: str,
+        action: RetentionAction,
+        request: RetentionRequest,
+    ) -> RetentionView | RetentionReport:
+        """Pin, unpin or delete one version or artifact, and return what the execution side did.
+
+        The reaction is not assumed: a pin answers with the new view, a delete answers with its own
+        report, and either is validated as the contract it claims to be.
+        """
+        response = self._request(
+            "POST",
+            f"/v1/retention/{target_kind}/{target}/{action}",
+            request.model_dump(mode="json"),
+        ).json()
+        if action == "delete":
+            return RetentionReport.model_validate(response)
+        return RetentionView.model_validate(response)
+
+    def sweep_retention(self, request: RetentionRequest) -> RetentionReport:
+        """Apply the reclaim preview on the execution side and report what it did."""
+        return RetentionReport.model_validate(
+            self._request(
+                "POST", "/v1/retention/sweep", request.model_dump(mode="json")
+            ).json()
         )
 
     def query(self, call_id: UUID) -> ExecutionRecord | None:

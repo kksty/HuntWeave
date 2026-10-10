@@ -1,8 +1,15 @@
 FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS probe
+# /workspace is where a tool container's private volume is mounted, and Docker gives a fresh volume
+# the ownership of the image's directory it covers. Without it the volume comes up root-owned and the
+# unprivileged tool user (10001) cannot write into its own workspace — which is what a real call's
+# private reproduction material is. The production tool images provide the same directory; the lab
+# image now does too, so a probe can exercise a workspace that really holds bytes.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends iptables=1.8.9-2 iproute2=6.1.0-3 \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --uid 10001 --create-home --shell /usr/sbin/nologin probe
+    && useradd --uid 10001 --create-home --shell /usr/sbin/nologin probe \
+    && mkdir /workspace \
+    && chown probe:probe /workspace
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY backend/src/huntweave/execution/network_policy.py /lab/network_policy.py
 COPY lab/isolation/network.py lab/isolation/fixture.py /lab/
@@ -39,3 +46,8 @@ FROM lab AS action
 COPY profiles /opt/huntweave/profiles
 COPY lab/isolation/action.py ./action.py
 CMD ["python", "/opt/huntweave/action.py"]
+
+FROM lab AS retention
+COPY profiles /opt/huntweave/profiles
+COPY lab/isolation/retention.py ./retention.py
+CMD ["python", "/opt/huntweave/retention.py"]

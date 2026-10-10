@@ -27,7 +27,7 @@ from huntweave.access.body_limit import BodyLimitMiddleware
 from huntweave.access.service import AccessService, BrowserSession
 from huntweave.api.readiness import CapabilityProbe
 from huntweave.config import CONSOLE_BUILD, AppSettings
-from huntweave.contracts.capabilities import Capabilities
+from huntweave.contracts.capabilities import Capabilities, SandboxManagement
 from huntweave.contracts.errors import ServiceError
 from huntweave.contracts.execution import ExecutionObservation, RunRuntimeView
 from huntweave.contracts.orchestration import (
@@ -37,6 +37,11 @@ from huntweave.contracts.orchestration import (
     ReconciliationVerdict,
     ResumePreview,
     RunSnapshot,
+)
+from huntweave.contracts.retention import (
+    RetentionReport,
+    RetentionRequest,
+    RetentionView,
 )
 from huntweave.contracts.runs import (
     LoginRequest,
@@ -51,10 +56,16 @@ from huntweave.contracts.runs import (
     TargetPreview,
     VersionRequest,
 )
-from huntweave.execution.client import RunnerClient, get_capabilities
+from huntweave.execution.client import (
+    RetentionAction,
+    RetentionTargetKind,
+    RunnerClient,
+    get_capabilities,
+)
 from huntweave.runs.dispatch import read_observation
 from huntweave.runs.inputs import expand_ports, preview_targets
 from huntweave.runs.orchestration import OrchestrationService
+from huntweave.runs.retention import RetentionService
 from huntweave.runs.service import RunService
 from huntweave.storage.database import connect_engine
 
@@ -94,12 +105,49 @@ def unobserved_runtime(run_id: UUID, reason_code: str) -> RunRuntimeView:
     )
 
 
+def unobserved_retention(
+    reason_code: str, management: SandboxManagement = "unavailable"
+) -> RetentionView:
+    """A retention read the platform could not take, with the same honesty as `unobserved_runtime`.
+
+    The limits are still stated — they are the policy this deployment runs under, not the execution
+    side's answer — while every list stays empty, so a reader sees "no answer" rather than "an empty
+    cache".
+    """
+    return RetentionView.unavailable(reason_code, management=management)
+
+
+def runner_reason(error: httpx.HTTPStatusError) -> tuple[str, int]:
+    """The execution side's own refusal, kept as its own reason code and status.
+
+    A refusal is not rewritten into a control-plane reason: 409 is a decision the execution side
+    made about this request, and anything else means it could not answer now. A Runner that does not
+    serve the retention routes at all says exactly that, instead of borrowing the sentence for a
+    missing *read* interface.
+    """
+    reason = "runner_unavailable"
+    try:
+        body = error.response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and isinstance(body.get("reason_code"), str):
+        reason = str(body["reason_code"])
+    elif error.response.status_code in {404, 501}:
+        reason = "retention_unsupported"
+    return reason, 409 if error.response.status_code == 409 else 503
+
+
 def create_app(
     settings: AppSettings | None = None,
     engine: Engine | None = None,
     observation_reader: Callable[[UUID], ExecutionObservation | None] | None = None,
     capability_reader: Callable[[], Capabilities] | None = None,
     runtime_reader: Callable[[UUID], RunRuntimeView] | None = None,
+    retention_reader: Callable[[], RetentionView] | None = None,
+    retention_writer: Callable[
+        [str, str, str, RetentionRequest], RetentionView | RetentionReport
+    ]
+    | None = None,
 ) -> FastAPI:
     settings = settings or AppSettings.from_env()
     app = FastAPI(title="HuntWeave", docs_url=None, redoc_url=None, openapi_url=None)
@@ -141,6 +189,92 @@ def create_app(
             return unobserved_runtime(run_id, "runner_unavailable")
 
     runtime_source = runtime_reader or execution_runtime
+
+    def execution_retention() -> RetentionView:
+        """Ask the execution side what the retention policy currently holds and would reclaim.
+
+        As with the Run runtime read, a refusal or an unreachable side is an observation gap with
+        the reason, never an empty cache: "we could not ask" and "nothing is retained" are different
+        statements and only one of them this process is entitled to make.
+        """
+        try:
+            return RunnerClient().retention()
+        except httpx.HTTPStatusError as failure:
+            reason = (
+                "retention_unsupported"
+                if failure.response.status_code in {404, 501}
+                else "runner_unavailable"
+            )
+            return unobserved_retention(reason)
+        except (httpx.HTTPError, OSError, TimeoutError, ValueError):
+            return unobserved_retention("runner_unavailable")
+
+    retention_source = retention_reader or execution_retention
+
+    def execution_retention_action(
+        kind: str,
+        target: str,
+        action: str,
+        request: RetentionRequest,
+    ) -> RetentionView | RetentionReport:
+        """Send one retention action to the execution side and keep its own answer.
+
+        A refusal travels back as the execution side's reason code and status: this process is not
+        the one that decides whether a volume may be removed.
+        """
+        client = RunnerClient()
+        try:
+            if action == "sweep":
+                return client.sweep_retention(request)
+            # Both halves of the path are named explicitly: a kind or action this process does not
+            # know is refused rather than quietly sent as something else.
+            kinds: dict[str, RetentionTargetKind] = {
+                "versions": "versions",
+                "artifacts": "artifacts",
+            }
+            actions: dict[str, RetentionAction] = {
+                "pin": "pin",
+                "unpin": "unpin",
+                "delete": "delete",
+            }
+            if kind not in kinds or action not in actions:
+                raise ServiceError("invalid_request", 422)
+            return client.retention_action(
+                target_kind=kinds[kind],
+                target=target,
+                action=actions[action],
+                request=request,
+            )
+        except httpx.HTTPStatusError as failure:
+            reason, status = runner_reason(failure)
+            raise ServiceError(reason, status) from None
+        except (httpx.HTTPError, OSError, TimeoutError, ValueError):
+            raise ServiceError("runner_unavailable", 503) from None
+
+    retention_action_source = retention_writer or execution_retention_action
+    retention = RetentionService(database)
+
+    def operator_request(payload: RetentionRequest, browser: BrowserSession) -> RetentionRequest:
+        """The action as this process sends it: the actor is the session, not a caller's text."""
+        return RetentionRequest(note=payload.note, actor=str(browser.id))
+
+    def recorded(
+        result: RetentionView | RetentionReport, operator_session_id: UUID, note: str
+    ) -> RetentionView | RetentionReport:
+        """Keep the business-side trace of a decision the execution side just reported.
+
+        The decision is the execution side's own record — identifier, target, affected Runs and what
+        was really deleted — so nothing here can claim a removal that did not happen. The note stays
+        the operator's own words as this process received them.
+        """
+        decision = (
+            result.decision
+            if isinstance(result, RetentionReport)
+            else (result.decisions[0] if result.decisions else None)
+        )
+        if decision is not None:
+            retention.record(decision, operator_session_id, note)
+        return result
 
     def observed(view: RunView) -> RunView:
         """Report the execution chain this Run would use as it is now, never as assumed.
@@ -432,6 +566,118 @@ def create_app(
         # The execution side's own answer, or an explicit observation gap: never a ready state
         # invented by the control side.
         return capabilities_probe.current()
+
+    @app.get("/api/v1/retention")
+    def retention_state() -> RetentionView:
+        """What the retention policy holds, what counts as a candidate, and what it would reclaim.
+
+        Read-only, and never the control plane's invention: a deployment without management, or a
+        Runner that cannot be reached, answers with the gap instead of an empty cache.
+        """
+        return retention_source()
+
+    @app.post("/api/v1/retention/versions/{environment_key}/pin")
+    def pin_version(
+        environment_key: str, payload: RetentionRequest, request: Request
+    ) -> RetentionView | RetentionReport:
+        return recorded(
+            retention_action_source(
+                "versions",
+                environment_key,
+                "pin",
+                operator_request(payload, request.state.browser),
+            ),
+            request.state.browser.id,
+            payload.note,
+        )
+
+    @app.post("/api/v1/retention/versions/{environment_key}/unpin")
+    def unpin_version(
+        environment_key: str, payload: RetentionRequest, request: Request
+    ) -> RetentionView | RetentionReport:
+        return recorded(
+            retention_action_source(
+                "versions",
+                environment_key,
+                "unpin",
+                operator_request(payload, request.state.browser),
+            ),
+            request.state.browser.id,
+            payload.note,
+        )
+
+    @app.post("/api/v1/retention/versions/{environment_key}/delete")
+    def delete_version(
+        environment_key: str, payload: RetentionRequest, request: Request
+    ) -> RetentionView | RetentionReport:
+        return recorded(
+            retention_action_source(
+                "versions",
+                environment_key,
+                "delete",
+                operator_request(payload, request.state.browser),
+            ),
+            request.state.browser.id,
+            payload.note,
+        )
+
+    @app.post("/api/v1/retention/artifacts/{artifact_id}/pin")
+    def pin_artifact(
+        artifact_id: UUID, payload: RetentionRequest, request: Request
+    ) -> RetentionView | RetentionReport:
+        return recorded(
+            retention_action_source(
+                "artifacts",
+                str(artifact_id),
+                "pin",
+                operator_request(payload, request.state.browser),
+            ),
+            request.state.browser.id,
+            payload.note,
+        )
+
+    @app.post("/api/v1/retention/artifacts/{artifact_id}/unpin")
+    def unpin_artifact(
+        artifact_id: UUID, payload: RetentionRequest, request: Request
+    ) -> RetentionView | RetentionReport:
+        return recorded(
+            retention_action_source(
+                "artifacts",
+                str(artifact_id),
+                "unpin",
+                operator_request(payload, request.state.browser),
+            ),
+            request.state.browser.id,
+            payload.note,
+        )
+
+    @app.post("/api/v1/retention/artifacts/{artifact_id}/delete")
+    def delete_artifact(
+        artifact_id: UUID, payload: RetentionRequest, request: Request
+    ) -> RetentionView | RetentionReport:
+        return recorded(
+            retention_action_source(
+                "artifacts",
+                str(artifact_id),
+                "delete",
+                operator_request(payload, request.state.browser),
+            ),
+            request.state.browser.id,
+            payload.note,
+        )
+
+    @app.post("/api/v1/retention/sweep")
+    def sweep_retention(
+        payload: RetentionRequest, request: Request
+    ) -> RetentionView | RetentionReport:
+        """Apply the reclaim preview the operator just read."""
+        return recorded(
+            retention_action_source(
+                "deployment", "preview", "sweep", operator_request(payload, request.state.browser)
+            ),
+            request.state.browser.id,
+            payload.note,
+        )
 
     @app.get("/openapi.json", include_in_schema=False)
     def schema() -> dict[str, object]:

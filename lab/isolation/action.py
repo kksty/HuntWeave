@@ -18,7 +18,8 @@ What it demonstrates (P1 slice #17):
 * a real failure and a real non-HTTP answer drive a different outcome from a successful one;
 * the same surface still serves the demonstration profile, and a real ticket on a deployment
   without management is refused instead of being served by the demonstration side;
-* every call ends with no instance and no permit left behind.
+* every call ends with no instance, no permit and no container left behind, and its private
+  workspace handed to the retention policy rather than destroyed on the spot (issue #20).
 """
 
 import hashlib
@@ -150,10 +151,19 @@ class ActionCheck:
             changes=[change.reason for change in first.egress_changes],
             instance_state=first.state,
         )
+        # The containers, the session network and the permit are gone. What remains is exactly the
+        # call's private workspace, kept by the retention policy and named by the ledger's `retained`
+        # list (issue #20) — so "nothing left behind" is now "nothing unaccounted for".
+        retained = {
+            resource.id for record in self.instances() for resource in record.retained
+        }
         self.check(
             "the_call_left_no_instance_and_no_permit_behind",
-            manager.resources() == []
+            {item.id for item in manager.resources()} == retained
+            and all(item.kind == "volume" for item in manager.resources())
             and all(item.state == "reclaimed" for item in self.instances()),
+            resources=[f"{item.kind}:{item.name}" for item in manager.resources()],
+            retained=len(retained),
         )
 
         # 2. The directory an action runs in is the profile's workspace mount, stated on the call
@@ -354,12 +364,18 @@ class ActionCheck:
             status_code=refused.status_code,
         )
 
-        # 8. Nothing is left behind by any of it.
+        # 8. Nothing is left behind by any of it — except the private workspaces the retention policy
+        #    is holding on purpose (issue #20). Those are named by the ledger, released in cleanup,
+        #    and no live resource of this run may survive them.
+        leftover = manager.resources(run_id=self.run_id)
+        retained = {item.id for record in self.instances() for item in record.retained}
         self.check(
             "no_labelled_resource_survives_the_calls",
-            manager.resources(run_id=self.run_id) == []
+            {item.id for item in leftover} <= retained
+            and all(item.kind == "volume" for item in leftover)
             and [item.state for item in self.instances() if item.state != "reclaimed"] == [],
             instances=len(self.instances()),
+            resources=[f"{item.kind}:{item.name}" for item in leftover],
         )
         self.report["passed"] = True
 
@@ -530,9 +546,28 @@ class ActionCheck:
 
     def cleanup(self) -> None:
         failures: list[str] = []
+        surviving_project: list[str] = []
         if self.manager is not None:
             try:
                 self.manager.begin_revert(reason="probe_cleanup")
+            except Exception as error:
+                failures.append(type(error).__name__)
+            # A revert deliberately leaves retained workspaces alone: they are the operator's
+            # reproduction material, and withdrawing management is not a reason to delete it. This
+            # probe owns them, so it releases each one through the same ownership and in-use checks
+            # the product uses, and then reports anything of this project still on the host.
+            for record in list(self.manager.instances.values()):
+                for volume in list(record.retained):
+                    try:
+                        self.manager.release_artifact(
+                            instance_id=record.instance_id, volume_id=volume.id
+                        )
+                    except Exception as error:
+                        failures.append(f"{type(error).__name__}:{volume.name}")
+            try:
+                surviving_project = [
+                    f"{item.kind}:{item.name}" for item in self.manager.resources()
+                ]
             except Exception as error:
                 failures.append(type(error).__name__)
             self.manager.close()
@@ -540,8 +575,9 @@ class ActionCheck:
         surviving = self.list_labelled()
         self.report["cleaned"] = cleaned
         self.report["leftovers"] = surviving
+        self.report["surviving_project_resources"] = surviving_project
         self.report["cleanup_failures"] = failures
-        if surviving or failures:
+        if surviving or surviving_project or failures:
             self.report["passed"] = False
         self.report["finished_at"] = datetime.now(UTC).isoformat()
         RESULTS.mkdir(parents=True, exist_ok=True)

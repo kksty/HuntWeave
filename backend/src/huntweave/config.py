@@ -111,6 +111,23 @@ class SandboxSettings:
         )
 
 
+def retention_sweep_seconds() -> int:
+    """How often the Runner applies the retention policy on its own, in seconds.
+
+    Zero means "only when an operator asks": the preview is then the authority and nothing is
+    removed unattended. The default lets the TTL and the capacity actually bound the cache in a
+    deployment nobody is watching, which is what the policy is for.
+    """
+    raw = os.environ.get("HUNTWEAVE_RETENTION_SWEEP_SECONDS", "300")
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError("HUNTWEAVE_RETENTION_SWEEP_SECONDS must be an integer") from None
+    if value < 0:
+        raise ValueError("HUNTWEAVE_RETENTION_SWEEP_SECONDS must not be negative")
+    return value
+
+
 def database_url(role: str = "app") -> URL:
     if role not in {"app", "checkpoint", "migrator"}:
         raise ValueError("Unsupported database role")

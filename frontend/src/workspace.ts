@@ -57,6 +57,56 @@ export interface EvidenceMeta {
   id: string; relative_path: string; sha256: string; size_bytes: number;
   available: boolean; truncated: boolean; redacted: boolean; missing_reason: string | null;
 }
+// -- selective retention (issue #20, spec 0002 section 3.8, PROJECT.md section 10.5) -------------
+// The policy a retention view was computed under, carried with the view so a reader never has to
+// guess which thresholds produced a candidate.
+export interface RetentionLimits { candidate_window_days: number; candidate_runs: number; cache_ttl_days: number; cache_capacity_bytes: number }
+// One private artifact the platform still holds. ``size_bytes: null`` means the engine did not
+// report a size: it is not a zero, and it is never summed as one or claimed against capacity.
+export interface RetainedArtifact {
+  artifact_id: string; environment_key: string; run_id: string; session_id: string; instance_id: string;
+  kind: string; resource_name: string; size_bytes: number | null; retained_at: string; expires_at: string;
+  pinned: boolean; state: string; deleted_at: string | null; delete_reason: string | null;
+}
+// One tool/environment version and how many *distinct* Runs inside the window really used it.
+// `successful_calls` counts retries too, and is shown beside the distinct count so repetitions are
+// visible without ever making a version look high-frequency.
+export interface ToolVersionView {
+  environment_key: string; profile_id: string; profile_version: number;
+  image_digests: Record<string, string>; tool_inventory: string[]; engine: string; architecture: string;
+  successful_runs: number; successful_calls: number; window_days: number; threshold_runs: number;
+  candidate: boolean; last_used_at: string | null; retained_artifacts: number; retained_bytes: number;
+  unmeasured_artifacts: number; pinned: boolean; shared_tool_version: boolean;
+}
+// One artifact a reclaim would refuse to touch, and the rule that protects it.
+export interface ProtectedArtifact { artifact_id: string; resource_name: string; run_id: string; reason_code: string }
+// What a reclaim would delete, what it would leave, and whether capacity can be met at all.
+// `blocked` is the answer when reclaiming everything reclaimable still leaves the cache over: it is
+// a block with a shortfall (`needed_bytes`), never a partial delete dressed up as success.
+export interface RetentionPreview {
+  capacity_bytes: number; ttl_days: number; retained_bytes: number; unmeasured_artifacts: number;
+  to_delete: RetainedArtifact[]; protected: ProtectedArtifact[]; freed_bytes: number;
+  blocked: boolean; reason_code: string | null; needed_bytes: number;
+}
+// One recorded decision: who asked, for what, and which Runs it touched.
+export interface RetentionDecisionView {
+  decision_id: string; action: string; target_kind: string; target: string; at: string;
+  actor: string | null; note: string | null; reason_code: string | null; affected_runs: string[];
+  freed_bytes: number; deleted_artifacts: string[]; failed: string[];
+}
+// Everything the execution side can say about retention right now. `available: false` with a reason
+// is a real answer: a deployment with no management capability, or an unreachable Runner, must not
+// be rendered as a cache with nothing in it.
+export interface RetentionView {
+  available: boolean; reason_code: string | null; sandbox_management: 'disabled' | 'ready' | 'unavailable';
+  observed_at: string; limits: RetentionLimits; versions: ToolVersionView[]; artifacts: RetainedArtifact[];
+  preview: RetentionPreview; decisions: RetentionDecisionView[];
+}
+// What one retention action did, plus the view it leaves behind. The decision is the execution
+// side's own record, so nothing here can claim a removal that did not happen.
+export interface RetentionReport { decision: RetentionDecisionView; deleted: string[]; failed: string[]; view: RetentionView }
+export type RetentionTargetKind = 'versions' | 'artifacts';
+export type RetentionAction = 'pin' | 'unpin' | 'delete';
 
 // Every reason code the backend can actually emit, with one readable sentence each. The map is the
 // console's whole vocabulary for refusals and gaps: a code with no entry here would leave an
@@ -153,6 +203,23 @@ export const messages: Record<string, string> = {
   sandbox_gateway_policy_failed: '向网关下发授权规则失败。', sandbox_platform_networks_unknown: '无法识别平台自身网络，拒绝开放出口。',
   sandbox_stop_unconfirmed: '受信管理组件无法确认该实例已停止，未释放其占用的资源。',
   revocation_failed: '出口撤销失败，该实例的放行状态不可信。', action_command_invalid: '动作命令为空或含非法参数。',
+  // -- selective retention (issue #20, spec 0002 section 3.8) -----------------------------------
+  // Why an artifact left the cache, why an automatic reclaim left one alone, why a preview is
+  // blocked, and why a pin/delete was refused. These are the codes `execution/retention.py`
+  // declares; the same mechanical check keeps the two sets in step.
+  retention_ttl_expired: '该制品超过保留期限（TTL），已按清理策略移除；它不再占用缓存。',
+  retention_capacity_reclaim: '缓存超出容量上限，该制品按最近使用顺序被回收以腾出空间。',
+  retention_operator_deleted: '该制品由操作员显式删除，删除记录进入保留账本。',
+  retention_capacity_insufficient: '即使回收全部可回收制品，缓存仍超出容量上限，回收被阻断并给出缺口。',
+  retention_artifact_pinned: '该制品被显式固定，自动回收不会移除它。',
+  retention_version_pinned: '该制品所属的环境版本被显式固定，自动回收不会移除它。',
+  retention_artifact_in_use: '该制品仍被活动实例引用，删除被拒绝，未移除任何内容。',
+  retention_artifact_unknown: '受信管理组件没有该制品的记录，操作被拒绝。',
+  retention_version_unknown: '受信管理组件没有该环境版本的记录，操作被拒绝。',
+  retention_artifact_not_retained: '该制品已不在保留状态，删除被跳过，未重复移除。',
+  retention_delete_failed: '部分制品未能删除，账本按实际结果记录，未删除的部分仍占用缓存。',
+  retention_not_pinned: '该目标原本没有被固定，取消固定未改变任何状态。',
+  retention_unsupported: '该执行端没有保留策略接口（可能是较早的构建），因此读不到也改不了保留状态。',
   // -- reasons recorded as facts rather than as reason_code ------------------------------------
   // These are the values the execution side writes into `halt_reason`, an egress change's `reason`
   // and an instance's `revocation_reason`. They reach the console through different fields than
@@ -226,6 +293,16 @@ export const useWorkspace = defineStore('workspace', () => {
     return response.status === 204 ? undefined as T : response.json();
   }
   async function loadCapabilities() { capabilities.value = await api<Capabilities>('/api/v1/system/capabilities'); }
+  // Selective retention travels through the same `api` helper as every other request: the session
+  // CSRF token, the same-origin cookie and the POST body shape are not special here, and the
+  // operator's `note` is their own free text. A read answers with the view; pin/unpin answer with
+  // the view they leave behind, while a delete or a sweep answers with the execution side's own
+  // report of what was really removed.
+  async function retention() { return api<RetentionView>('/api/v1/retention'); }
+  async function retentionAction(targetKind: RetentionTargetKind, target: string, action: RetentionAction, note: string) {
+    return api<RetentionView | RetentionReport>(`/api/v1/retention/${targetKind}/${encodeURIComponent(target)}/${action}`, { note });
+  }
+  async function sweepRetention(note: string) { return api<RetentionReport>('/api/v1/retention/sweep', { note }); }
   async function load() {
     const session = await api<{ csrf_token: string }>('/auth/session');
     csrf.value = session.csrf_token;
@@ -233,5 +310,5 @@ export const useWorkspace = defineStore('workspace', () => {
     await loadCapabilities();
   }
   async function logout() { await api('/auth/logout', {}); csrf.value = ''; capabilities.value = null; window.location.replace('/login'); }
-  return { csrf, projects, runs, capabilities, realExecutionReady, fakeExecutionReady, readinessReason, executionMode, api, load, loadCapabilities, logout };
+  return { csrf, projects, runs, capabilities, realExecutionReady, fakeExecutionReady, readinessReason, executionMode, api, load, loadCapabilities, logout, retention, retentionAction, sweepRetention };
 });

@@ -131,6 +131,51 @@ class DockerRuntime:
         except DockerException as error:
             raise RuntimeUnavailable(str(error)) from error
 
+    def volume_facts(self, volume_id: str) -> RuntimeResource:
+        """Read one volume back by name, whatever labels it carries.
+
+        Reclaiming a retained volume asks "is this really ours", and the labels are the answer: a
+        volume that no longer carries this project's labels must be refused, so it has to be
+        readable *without* selecting on those labels first.
+        """
+        try:
+            volume = self.client.volumes.get(volume_id)
+        except NotFound as error:
+            raise ResourceNotFound(volume_id) from error
+        except DockerException as error:
+            raise RuntimeUnavailable(str(error)) from error
+        return RuntimeResource(
+            kind="volume",
+            id=str(volume.name),
+            name=str(volume.name),
+            labels=_labels_of(volume.attrs.get("Labels")),
+        )
+
+    def volume_usage(self, volume_ids: Sequence[str]) -> dict[str, int | None]:
+        """How large the named volumes are, from the daemon's own disk-usage report.
+
+        Docker has no per-volume size API — ``volume inspect`` does not carry one — so this reads
+        the usage report and keeps only the volumes the caller asked about, which the manager has
+        already filtered to this project's ledger. An engine that reports no usage for a volume
+        answers ``None``: unmeasured, never zero.
+        """
+        wanted = set(volume_ids)
+        sizes: dict[str, int | None] = {identifier: None for identifier in wanted}
+        if not wanted:
+            return sizes
+        try:
+            report: dict[str, Any] = self.client.df()
+        except DockerException as error:
+            raise RuntimeUnavailable(str(error)) from error
+        for volume in report.get("Volumes") or []:
+            name = str(volume.get("Name") or "")
+            if name not in wanted:
+                continue
+            usage = volume.get("UsageData") or {}
+            size = usage.get("Size")
+            sizes[name] = int(size) if isinstance(size, int) and size >= 0 else None
+        return sizes
+
     def create_container(
         self, *, name: str, labels: Mapping[str, str], spec: ContainerSpec
     ) -> str:

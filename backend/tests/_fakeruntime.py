@@ -31,6 +31,9 @@ class FakeRuntime:
         self.containers: dict[str, dict[str, Any]] = {}
         self.networks: dict[str, dict[str, Any]] = {}
         self.volumes: dict[str, dict[str, Any]] = {}
+        # What the runtime reports for a volume's size. A volume absent from this map is one the
+        # engine did not measure, which is a real answer and not a zero.
+        self.volume_sizes: dict[str, int] = {}
         self.calls: list[str] = []
         self.fail_on: str | None = None
         self.fail_creates_after: int | None = None
@@ -138,6 +141,26 @@ class FakeRuntime:
         self._record("remove_volume")
         if self.volumes.pop(volume_id, None) is None:
             raise ResourceNotFound(volume_id)
+
+    def volume_facts(self, volume_id: str) -> RuntimeResource:
+        """One volume as the runtime holds it, labels included, read before any ownership test."""
+        self._record("volume_facts")
+        known = self.volumes.get(volume_id)
+        if known is None:
+            raise ResourceNotFound(volume_id)
+        return RuntimeResource(
+            kind="volume",
+            id=volume_id,
+            name=str(known["name"]),
+            labels=dict(known["labels"]),
+        )
+
+    def volume_usage(self, volume_ids: Sequence[str]) -> dict[str, int | None]:
+        """Sizes the runtime reports for the named volumes. A volume nobody sized answers None."""
+        self._record("volume_usage")
+        return {
+            identifier: self.volume_sizes.get(identifier) for identifier in volume_ids
+        }
 
     def create_container(
         self, *, name: str, labels: Mapping[str, str], spec: ContainerSpec

@@ -28,6 +28,7 @@ from huntweave.contracts.execution import (
 from huntweave.contracts.orchestration import ReconciliationVerdict
 from huntweave.contracts.runs import ScopeSnapshot
 from huntweave.harness.model import DeterministicModel
+from huntweave.runs.events import append_event
 from huntweave.runs.service import RunService
 from huntweave.storage.database import database_now
 from huntweave.storage.models import (
@@ -129,32 +130,7 @@ class OrchestrationService:
     def _event(
         session: Session, run: Run, kind: str, payload: dict[str, Any], source: str | None = None
     ) -> None:
-        if (
-            source
-            and session.scalar(
-                select(AuditEvent.cursor).where(
-                    AuditEvent.run_id == run.id, AuditEvent.source_event_id == source
-                )
-            )
-            is not None
-        ):
-            return
-        cursor = session.get(EventCursor, run.id, with_for_update=True)
-        if cursor is None:
-            cursor = EventCursor(run_id=run.id, cursor=0)
-            session.add(cursor)
-        cursor.cursor += 1
-        session.add(
-            AuditEvent(
-                run_id=run.id,
-                cursor=cursor.cursor,
-                type=kind,
-                payload=payload,
-                source_event_id=source,
-                created_at=database_now(session),
-            )
-        )
-        session.flush()
+        append_event(session, run.id, kind, payload, source)
 
     def _interrupt(self, session: Session, run: Run, reason: str, condition: str) -> None:
         if run.reason_code != reason:

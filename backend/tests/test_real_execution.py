@@ -27,6 +27,7 @@ from huntweave.contracts.execution import (
 )
 from huntweave.execution.ledger import RunnerRejected, RunnerUnavailable
 from huntweave.execution.real import RealRunner, action_command
+from huntweave.execution.retention import REASON_OPERATOR, remove_artifact
 from huntweave.execution.sandbox import SandboxManager, SandboxProfile
 from huntweave.execution.server import create_runner
 
@@ -145,9 +146,7 @@ def test_a_real_call_runs_inside_an_instance_authorized_for_its_own_target(
 def test_a_call_leaves_no_instance_and_no_permit_behind(tmp_path: Path) -> None:
     runtime = FakeRuntime()
     runner, manager, _ = build(tmp_path, runtime, command_stdout="ok\n")
-    request = real_ticket("shell_exec_placeholder", {}) if False else real_ticket(
-        "shell.exec", {"command": "true"}
-    )
+    request = real_ticket("shell.exec", {"command": "true"})
     runner.submit(request)
     settled(runner, request.call_id, "completed", "failed")
 
@@ -156,6 +155,26 @@ def test_a_call_leaves_no_instance_and_no_permit_behind(tmp_path: Path) -> None:
     assert record.state == "reclaimed"
     assert record.egress.authorized == []
     assert record.egress.revoked_at is not None
+    # The containers and the session network are gone. The private workspace is not: it became this
+    # call's reproduction material, kept by the retention policy and named by its ledger rather than
+    # left behind unaccounted (issue #20). Letting it go is the manager's act, through the same
+    # ownership checks, and it is the only way this volume disappears.
+    assert [item.kind for item in manager.resources()] == ["volume"]
+    assert [item.kind for item in record.retained] == ["volume"]
+    artifact = runner.retention.retained()[0]
+    assert artifact.state == "retained" and artifact.run_id == request.run_id
+    # The runtime reported no size for this volume, which is an unmeasured artifact and not a zero.
+    assert artifact.size_bytes is None
+    runner.retention.delete_artifacts(
+        [artifact],
+        action="delete",
+        target_kind="artifact",
+        target=str(artifact.artifact_id),
+        actor="check",
+        note="",
+        remove=remove_artifact(manager),
+        reason=REASON_OPERATOR,
+    )
     assert manager.resources() == []
 
 

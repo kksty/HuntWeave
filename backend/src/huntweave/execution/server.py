@@ -1,16 +1,17 @@
-import hmac
+﻿import hmac
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, Response
 
-from huntweave.config import SandboxSettings, runner_token
+from huntweave.config import SandboxSettings, retention_sweep_seconds, runner_token
 from huntweave.contracts.capabilities import Capabilities, SandboxManagement
 from huntweave.contracts.execution import (
     CallCancellation,
@@ -19,11 +20,21 @@ from huntweave.contracts.execution import (
     LeaseRenewal,
     RunRuntimeView,
 )
+from huntweave.contracts.retention import (
+    RetentionReport,
+    RetentionRequest,
+    RetentionView,
+)
 from huntweave.execution.capabilities import evaluate
 from huntweave.execution.fake import FakeRunner
 from huntweave.execution.ledger import CallLedger, RunnerRejected, RunnerUnavailable
 from huntweave.execution.operator import project_run_state, unavailable_run_state
 from huntweave.execution.real import RealRunner
+from huntweave.execution.retention import (
+    REASON_OPERATOR,
+    RetentionStore,
+    remove_artifact,
+)
 from huntweave.execution.sandbox import RuntimeUnavailable, SandboxManager, SandboxRejected
 
 
@@ -60,6 +71,83 @@ def create_runner(
     sandbox_failure: str | None = None
     sandbox_lock = threading.Lock()
     ledgers: dict[str, CallLedger] = {}
+    # The retention ledger lives beside the sandbox ledger and outlives any one call: pins and the
+    # cache are deployment state, not a Run's (issue #20). It is opened on first use, so a
+    # deployment whose state directory is unwritable still starts and reports the gap.
+    retention_state: dict[str, RetentionStore] = {}
+    retention_failure: list[str] = []
+    retention_watchdog: dict[str, Any] = {}
+
+    def retention_store() -> RetentionStore | None:
+        if retention_state:
+            return retention_state["store"]
+        if retention_failure:
+            return None
+        try:
+            retention_state["store"] = RetentionStore(settings.state_dir)
+        except OSError:
+            retention_failure.append("sandbox_state_unwritable")
+            return None
+        # Opening the ledger is what makes the policy live: from here on the TTL and the capacity
+        # bound the cache whether or not anybody is watching the console.
+        start_retention_watchdog()
+        return retention_state["store"]
+
+    def opened_retention() -> RetentionStore:
+        store = retention_store()
+        if store is None:
+            raise RunnerRejected(retention_failure[0])
+        return store
+
+    def sweep_retention_now(
+        store: RetentionStore, manager: SandboxManager
+    ) -> RetentionReport | None:
+        """Apply the retention policy once, measuring sizes only if something is actually due.
+
+        The cheap decision is taken from the sizes the ledger already recorded; a fresh reading of
+        the runtime is worth taking only when that decision selects something. Nothing at all is
+        written when nothing is due — a policy that records a decision every tick would push the
+        operator's own decisions out of the trace.
+        """
+        if not store.preview().to_delete:
+            return None
+        sizes = manager.volume_usage([record.resource_id for record in store.retained()])
+        return store.sweep(
+            actor=None,
+            note="",
+            remove=remove_artifact(manager),
+            sizes=sizes,
+            in_use=manager.in_use_volumes(),
+        )
+
+    def start_retention_watchdog() -> None:
+        """Let the policy bound the cache on its own, unless the deployment turned that off.
+
+        The TTL and the capacity are what keep a deployment's disk from filling with one-off
+        environments (PROJECT.md section 10.5); a policy that only runs when somebody opens the
+        console is a suggestion. Pinned material and material an instance still holds are protected
+        by the same preview the operator reads, so an unattended sweep cannot take either.
+        """
+        interval = retention_sweep_seconds()
+        if interval <= 0 or retention_watchdog:
+            return
+        stopping = threading.Event()
+
+        def watch() -> None:
+            while not stopping.wait(interval):
+                try:
+                    manager, store = sandbox_manager(), retention_store()
+                    if manager is None or store is None:
+                        continue
+                    sweep_retention_now(store, manager)
+                except Exception:
+                    # A tick that could not run is not a reason to stop bounding the cache: the
+                    # next one reads the ledger again.
+                    continue
+
+        thread = threading.Thread(target=watch, name="retention-watchdog", daemon=True)
+        thread.start()
+        retention_watchdog.update({"stop": stopping, "thread": thread})
 
     def execution() -> FakeRunner:
         fake = ledger_for("fake-p0-v1")
@@ -96,6 +184,7 @@ def create_runner(
                     settings.evidence_dir,
                     manager=manager,
                     profile=manager.profile,
+                    retention=retention_store(),
                 )
             else:
                 raise RunnerRejected("execution_profile_unknown")
@@ -151,6 +240,9 @@ def create_runner(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
+        stopping = retention_watchdog.get("stop")
+        if stopping is not None:
+            stopping.set()
         for ledger in ledgers.values():
             ledger.close()
         if sandbox is not None:
@@ -228,6 +320,137 @@ def create_runner(
     def submit(request: ExecutionRequest) -> ExecutionRecord:
         # The ticket names the side that serves it, and only that side accepts it.
         return ledger_for(request.execution_profile).submit(request)
+
+    # -- selective retention (issue #20) ------------------------------------------------------
+
+    def retention_targets() -> tuple[
+        SandboxManager, RetentionStore, dict[str, int | None], frozenset[str]
+    ]:
+        """The trusted manager a retention action needs, plus the facts a preview is computed from.
+
+        Without management there is nothing this deployment owns to reclaim, so a retention write is
+        refused rather than answered with an empty success.
+        """
+        manager = sandbox_manager()
+        if manager is None:
+            raise RunnerRejected("sandbox_management_disabled")
+        store = opened_retention()
+        sizes = manager.volume_usage([record.resource_id for record in store.retained()])
+        return manager, store, sizes, manager.in_use_volumes()
+
+    def retention_read() -> RetentionView:
+        """The current retention answer: candidates, held artifacts, preview and trace."""
+        management, reason = sandbox_state()
+        manager = sandbox_manager()
+        store = retention_store()
+        if manager is None or store is None:
+            return RetentionView.unavailable(
+                reason or (retention_failure[0] if retention_failure else None)
+                or "sandbox_management_disabled",
+                management=management,
+            )
+        sizes = manager.volume_usage([record.resource_id for record in store.retained()])
+        return store.view(
+            sizes=sizes,
+            in_use=manager.in_use_volumes(),
+            available=True,
+            sandbox_management=management,
+        )
+
+    @app.get("/v1/retention")
+    def retention_view() -> RetentionView:
+        return retention_read()
+
+    @app.post("/v1/retention/versions/{environment_key}/pin")
+    def pin_version(environment_key: str, request: RetentionRequest) -> RetentionView:
+        _, store, sizes, in_use = retention_targets()
+        return store.pin(
+            target_kind="version",
+            target=environment_key,
+            actor=request.actor,
+            note=request.note,
+            sizes=sizes,
+            in_use=in_use,
+        )
+
+    @app.post("/v1/retention/versions/{environment_key}/unpin")
+    def unpin_version(environment_key: str, request: RetentionRequest) -> RetentionView:
+        _, store, sizes, in_use = retention_targets()
+        return store.unpin(
+            target_kind="version",
+            target=environment_key,
+            actor=request.actor,
+            note=request.note,
+            sizes=sizes,
+            in_use=in_use,
+        )
+
+    @app.post("/v1/retention/versions/{environment_key}/delete")
+    def delete_version(environment_key: str, request: RetentionRequest) -> RetentionReport:
+        manager, store, sizes, in_use = retention_targets()
+        return store.delete_artifacts(
+            store.by_version(environment_key),
+            action="delete",
+            target_kind="version",
+            target=environment_key,
+            actor=request.actor,
+            note=request.note,
+            remove=remove_artifact(manager),
+            reason=REASON_OPERATOR,
+            sizes=sizes,
+            in_use=in_use,
+        )
+
+    @app.post("/v1/retention/artifacts/{artifact_id}/pin")
+    def pin_artifact(artifact_id: UUID, request: RetentionRequest) -> RetentionView:
+        _, store, sizes, in_use = retention_targets()
+        return store.pin(
+            target_kind="artifact",
+            target=str(artifact_id),
+            actor=request.actor,
+            note=request.note,
+            sizes=sizes,
+            in_use=in_use,
+        )
+
+    @app.post("/v1/retention/artifacts/{artifact_id}/unpin")
+    def unpin_artifact(artifact_id: UUID, request: RetentionRequest) -> RetentionView:
+        _, store, sizes, in_use = retention_targets()
+        return store.unpin(
+            target_kind="artifact",
+            target=str(artifact_id),
+            actor=request.actor,
+            note=request.note,
+            sizes=sizes,
+            in_use=in_use,
+        )
+
+    @app.post("/v1/retention/artifacts/{artifact_id}/delete")
+    def delete_artifact(artifact_id: UUID, request: RetentionRequest) -> RetentionReport:
+        manager, store, sizes, in_use = retention_targets()
+        return store.delete_artifacts(
+            [store.artifact(artifact_id)],
+            action="delete",
+            target_kind="artifact",
+            target=str(artifact_id),
+            actor=request.actor,
+            note=request.note,
+            remove=remove_artifact(manager),
+            reason=REASON_OPERATOR,
+            sizes=sizes,
+            in_use=in_use,
+        )
+
+    @app.post("/v1/retention/sweep")
+    def sweep_retention(request: RetentionRequest) -> RetentionReport:
+        manager, store, sizes, in_use = retention_targets()
+        return store.sweep(
+            actor=request.actor,
+            note=request.note,
+            remove=remove_artifact(manager),
+            sizes=sizes,
+            in_use=in_use,
+        )
 
     @app.get("/v1/calls/{call_id}", response_model=None)
     def query(call_id: UUID) -> ExecutionRecord | JSONResponse:

@@ -258,7 +258,7 @@ def backend_candidates() -> set[str]:
     # `reason_code`: a halted instance's `halt_reason`, an egress change's `reason`, and an
     # authorization verdict. They are mapped in the console so the isolation panel reads in the same
     # language, so they count as candidates for the "no dead entries" direction too.
-    literals = ("execution/sandbox.py", "execution/real.py")
+    literals = ("execution/sandbox.py", "execution/real.py", "execution/retention.py")
     found: set[str] = set()
     for path in sorted(SOURCE.rglob("*.py")):
         text = path.read_text(encoding="utf-8")

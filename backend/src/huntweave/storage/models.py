@@ -160,6 +160,32 @@ class ReconciliationDecision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class RetentionDecisionRecord(Base):
+    """The control plane's trace of one retention decision.
+
+    The execution side keeps what it really removed; this row is the operator-facing record: who
+    asked, for which version or artifact, what the execution side answered, and which Runs it
+    concerns. The identifier is the execution side's own decision id, so a retried request cannot
+    become a second decision.
+    """
+
+    __tablename__ = "retention_decisions"
+    decision_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    action: Mapped[str] = mapped_column(String(20))
+    target_kind: Mapped[str] = mapped_column(String(20))
+    target: Mapped[str] = mapped_column(String(128))
+    # Kept by value, without a foreign key: expired sessions are housekeeping data, while this
+    # record is durable audit history naming who decided (same reasoning as reconciliation).
+    operator_session_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    note: Mapped[str] = mapped_column(Text)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    affected_runs: Mapped[list[str]] = mapped_column(JSONB)
+    deleted_artifacts: Mapped[list[str]] = mapped_column(JSONB)
+    failed: Mapped[list[str]] = mapped_column(JSONB)
+    freed_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ToolResult(Base):
     __tablename__ = "tool_results"
     call_id: Mapped[uuid.UUID] = mapped_column(

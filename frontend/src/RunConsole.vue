@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { useWorkspace, ApiFailure, managementLabels, reasonText, statusText, type CallProgress, type CallRuntime, type EvidenceMeta, type Run, type RunRuntime } from './workspace';
+import { useWorkspace, ApiFailure, managementLabels, reasonText, reasonWithCode, statusText, type CallProgress, type CallRuntime, type EvidenceMeta, type RetentionAction, type RetentionReport, type RetentionTargetKind, type RetentionView, type Run, type RunRuntime } from './workspace';
 
 interface AuditEvent { cursor: number; type: string; payload: Record<string, unknown>; created_at: string }
 interface Observation { started: boolean; process_active: boolean | null; connection_open: boolean | null; lease_active: boolean | null; observed_at: string; stop_confirmed: boolean }
@@ -26,6 +26,10 @@ const workspace = useWorkspace();
 const detail = ref<Detail | null>(null), events = ref<AuditEvent[]>([]), error = ref(''), busy = ref(false);
 const connection = ref('正在连接'), lastHeartbeat = ref<string | null>(null), preview = ref<ResumePreview | null>(null);
 const evidence = ref<EvidenceView | null>(null), evidenceId = ref(''), evidenceOffset = ref(0);
+// Selective retention (issue #20). Declared here because the Run watch below runs immediately and
+// reads it; a missing answer stays `null` rather than becoming an empty cache.
+const retentionView = ref<RetentionView | null>(null), retentionReport = ref<RetentionReport | null>(null);
+const retentionNote = ref(''), retentionError = ref(''), retentionBusy = ref(false), sweepArmed = ref(false);
 let source: EventSource | null = null, timer: ReturnType<typeof setInterval> | null = null, generation = 0;
 // A ticking clock so "running for 42s" advances between polls without inventing progress. It only
 // re-reads elapsed time; it never estimates how much of the action is done.
@@ -111,9 +115,62 @@ async function refresh(epoch = generation) {
   } catch (e) { if (epoch === generation) error.value = e instanceof Error ? e.message : '状态读取失败。'; }
 }
 function stop() { source?.close(); source = null; if (timer) clearInterval(timer); timer = null; if (clock) clearInterval(clock); clock = null; }
+// -- selective retention (issue #20, spec 0002 section 3.8) --------------------------------------
+// A deployment-wide read rather than a per-Run one, shown here because this is where an operator
+// decides what to keep. Everything rendered below is the execution side's own record: no candidate,
+// size or reclaim set is derived by the console, and a size the engine did not measure stays 未知
+// instead of becoming zero. Action and target names are the contract's literals, labelled here the
+// same way the call statuses are.
+const retentionActionLabels: Record<string, string> = { pin: '固定', unpin: '取消固定', delete: '删除', sweep: '回收' };
+const retentionTargetLabels: Record<string, string> = { version: '环境版本', artifact: '制品', deployment: '部署范围' };
+const retentionActionLabel = (value: string) => retentionActionLabels[value] || value;
+const retentionTargetLabel = (value: string) => retentionTargetLabels[value] || value;
+const retentionKeyPrefix = (value: string) => value.length > 8 ? `${value.slice(0, 8)}…` : value;
+// `null` is "the engine did not report a size", which is neither 0 B nor a claim about capacity.
+const retentionSize = (value: number | null | undefined) => value === null || value === undefined ? '未知' : `${value} B`;
+const retentionId = (value: string) => `${value.slice(0, 8)}…`;
+// A failed removal travels as `<reason_code>:<artifact_id>`, so both halves are shown.
+function retentionFailure(item: string) {
+  const at = item.lastIndexOf(':');
+  return at < 0 ? { code: item, artifact: '' } : { code: item.slice(0, at), artifact: item.slice(at + 1) };
+}
+async function loadRetention(epoch = generation) {
+  try {
+    const result = await workspace.retention();
+    if (epoch !== generation) return;
+    retentionView.value = result; retentionError.value = '';
+  } catch (e) { if (epoch === generation) retentionError.value = e instanceof Error ? e.message : '保留策略状态读取失败。'; }
+}
+async function retentionAct(kind: RetentionTargetKind, target: string, action: RetentionAction) {
+  retentionBusy.value = true; retentionError.value = '';
+  try {
+    const result = await workspace.retentionAction(kind, target, action, retentionNote.value);
+    // Pin/unpin answer with the view they leave behind; a delete answers with the report it kept.
+    if ('view' in result) { retentionReport.value = result; retentionView.value = result.view; }
+    else { retentionReport.value = null; retentionView.value = result; }
+    sweepArmed.value = false; retentionNote.value = '';
+  } catch (e) {
+    // A refusal is the execution side's: it is shown as its own sentence, and the view is read
+    // again so the operator acts on the state that really exists.
+    retentionError.value = e instanceof Error ? e.message : '保留操作失败。';
+    await loadRetention();
+  } finally { retentionBusy.value = false; }
+}
+async function applySweep() {
+  retentionBusy.value = true; retentionError.value = '';
+  try {
+    const report = await workspace.sweepRetention(retentionNote.value);
+    retentionReport.value = report; retentionView.value = report.view;
+    sweepArmed.value = false; retentionNote.value = '';
+  } catch (e) {
+    retentionError.value = e instanceof Error ? e.message : '回收失败。';
+    await loadRetention();
+  } finally { retentionBusy.value = false; }
+}
 watch(() => props.run.id, async () => {
   stop(); const epoch = ++generation; detail.value = null; events.value = []; preview.value = null; evidence.value = null; error.value = ''; connection.value = '正在连接';
-  await refresh(epoch); if (epoch !== generation) return;
+  retentionView.value = null; retentionReport.value = null; retentionError.value = ''; sweepArmed.value = false; retentionNote.value = '';
+  await Promise.all([refresh(epoch), loadRetention(epoch)]); if (epoch !== generation) return;
   try {
     let cursor = 0;
     // Page through committed history before connecting from its final cursor.
@@ -382,6 +439,125 @@ async function reconcile(call: Call, outcome: string) {
         <button v-if="evidenceOffset > 0" class="quiet" @click="readEvidence(evidenceId, Math.max(0, evidenceOffset - 65536))">上一段</button><button v-if="evidence.content && evidence.content.length >= 65536" class="quiet" @click="readEvidence(evidenceId, evidenceOffset + 65536)">下一段</button>
       </div>
       <h3>事件时间线</h3><ol class="event-list"><li v-for="event in events" :key="event.cursor"><div><span class="muted">#{{ event.cursor }} · {{ time(event.created_at) }}</span> <strong>{{ event.type }}</strong></div><pre>{{ JSON.stringify(event.payload, null, 2) }}</pre></li></ol>
+    </div>
+    <div class="retention" role="region" aria-label="选择性保留" data-testid="retention">
+      <div class="section-heading"><h3>选择性保留</h3><span class="badge">候选统计 · 手动固定/删除 · 回收预览</span></div>
+      <p class="muted">只陈述执行端保留账本记录的事实：控制台不推断候选、不估算体积，也不替操作员决定保留什么。手动固定保护私有复现制品，但不会把私有工作区提升为共享工具版本（共享发布随 P2 洁净准备路径交付）。</p>
+      <p v-if="retentionError" class="error" role="alert">{{ retentionError }}</p>
+      <p v-if="!retentionView" class="notice" data-testid="retention-unasked">尚未取得保留策略的执行端结论；这不等于「没有保留任何制品」。</p>
+      <template v-else-if="!retentionView.available">
+        <p class="notice" role="alert" data-testid="retention-unavailable">
+          无法读取保留策略状态：{{ reasonWithCode(retentionView.reason_code) || '执行端未给出原因码' }}（容器管理能力：{{ managementLabels[retentionView.sandbox_management] || retentionView.sandbox_management }}）。
+          这是观测缺口，不是「缓存为空」：候选、制品与回收预览在取得执行端答案之前都为空集，而空集只能表示「没有问到」。
+        </p>
+        <p class="muted">策略参数仍按本部署的运行配置列出（它们不是执行端的观察结果）：{{ retentionView.limits.candidate_window_days }} 天内 ≥ {{ retentionView.limits.candidate_runs }} 个独立 Run 为候选 · TTL {{ retentionView.limits.cache_ttl_days }} 天 · 容量上限 {{ retentionView.limits.cache_capacity_bytes }} B。观测于 {{ stamp(retentionView.observed_at) }}。</p>
+        <div class="control-actions"><button class="secondary" :disabled="retentionBusy" @click="loadRetention()">重新读取保留状态</button></div>
+      </template>
+      <template v-else>
+        <p class="muted">观测于 {{ stamp(retentionView.observed_at) }} · 容器管理能力 {{ managementLabels[retentionView.sandbox_management] || retentionView.sandbox_management }} · 策略：{{ retentionView.limits.candidate_window_days }} 天内 ≥ {{ retentionView.limits.candidate_runs }} 个独立 Run 为候选，TTL {{ retentionView.limits.cache_ttl_days }} 天，容量上限 {{ retentionView.limits.cache_capacity_bytes }} B。重试不累计为高频。</p>
+        <label>本次操作说明<input v-model="retentionNote" maxlength="500" aria-label="保留操作说明" placeholder="固定或删除这次操作的理由（可留空，最多 500 字）"></label>
+
+        <h4>候选版本</h4>
+        <p v-if="!retentionView.versions.length" class="notice" data-testid="retention-versions-empty">执行端还没有记录任何环境版本：本部署尚未创建过会话容器。</p>
+        <article v-for="version in retentionView.versions" :key="version.environment_key" class="call-card" data-testid="retention-version">
+          <div class="section-heading">
+            <strong>环境版本 {{ retentionKeyPrefix(version.environment_key) }}</strong>
+            <span>
+              <span v-if="version.candidate" class="badge">候选</span>
+              <span v-if="version.pinned" class="badge">已固定</span>
+              <span class="badge">{{ version.shared_tool_version ? '已发布为共享工具版本' : '未发布为共享工具版本' }}</span>
+            </span>
+          </div>
+          <dl>
+            <dt>环境键</dt><dd class="hash-list">{{ version.environment_key }}</dd>
+            <dt>profile</dt><dd>{{ version.profile_id }} v{{ version.profile_version }}</dd>
+            <dt>独立 Run</dt><dd>{{ version.successful_runs }} / {{ version.threshold_runs }} 个独立 Run 在 {{ version.window_days }} 天内成功使用（达到阈值才成为候选）</dd>
+            <dt>成功调用</dt><dd>{{ version.successful_calls }} 次（含同一 Run 内的重试，重试不计入独立 Run）</dd>
+            <dt>最近使用</dt><dd>{{ stamp(version.last_used_at) }}</dd>
+            <dt>已保留制品</dt><dd>{{ version.retained_artifacts }} 个 · {{ version.retained_bytes }} B<template v-if="version.unmeasured_artifacts">，其中 {{ version.unmeasured_artifacts }} 个未测量（不计入字节，也不计入容量判断）</template></dd>
+            <dt>引擎 / 架构</dt><dd>{{ version.engine }} / {{ version.architecture }}</dd>
+            <dt>工具清单</dt><dd>{{ version.tool_inventory.join('、') || '该环境未声明工具（生命周期检查）' }}</dd>
+          </dl>
+          <div class="control-actions">
+            <button v-if="!version.pinned" :disabled="retentionBusy" @click="retentionAct('versions', version.environment_key, 'pin')">固定</button>
+            <button v-else class="secondary" :disabled="retentionBusy" @click="retentionAct('versions', version.environment_key, 'unpin')">取消固定</button>
+            <button class="secondary" :disabled="retentionBusy" @click="retentionAct('versions', version.environment_key, 'delete')">删除该版本的制品</button>
+          </div>
+        </article>
+
+        <h4>已保留制品</h4>
+        <p v-if="!retentionView.artifacts.length" class="notice" data-testid="retention-artifacts-empty">执行端账本当前没有持有任何制品。</p>
+        <article v-for="artifact in retentionView.artifacts" :key="artifact.artifact_id" class="call-card" data-testid="retention-artifact">
+          <div class="section-heading">
+            <strong>{{ artifact.resource_name }}</strong>
+            <span>
+              <span v-if="artifact.pinned" class="badge">已固定</span>
+              <span class="badge">{{ artifact.state === 'retained' ? '保留中' : artifact.state }}</span>
+            </span>
+          </div>
+          <p class="muted">Run {{ retentionId(artifact.run_id) }} · 大小 {{ retentionSize(artifact.size_bytes) }} · 保留于 {{ stamp(artifact.retained_at) }} · 到期 {{ stamp(artifact.expires_at) }}</p>
+          <p class="muted">环境版本 {{ retentionKeyPrefix(artifact.environment_key) }} · 实例 {{ retentionId(artifact.instance_id) }} · 会话 {{ retentionId(artifact.session_id) }} · 制品 {{ artifact.artifact_id }}</p>
+          <div class="control-actions">
+            <button v-if="!artifact.pinned" :disabled="retentionBusy" @click="retentionAct('artifacts', artifact.artifact_id, 'pin')">固定</button>
+            <button v-else class="secondary" :disabled="retentionBusy" @click="retentionAct('artifacts', artifact.artifact_id, 'unpin')">取消固定</button>
+            <button class="secondary" :disabled="retentionBusy" @click="retentionAct('artifacts', artifact.artifact_id, 'delete')">删除</button>
+          </div>
+        </article>
+
+        <h4>回收预览</h4>
+        <p class="muted">回收按 TTL 与容量选择可回收项；被固定、以及活动实例仍引用的制品不在其中。以下是执行端现在会回收的集合，不是控制台的推断。</p>
+        <p v-if="retentionView.preview.blocked" class="error" role="alert" data-testid="retention-blocked">
+          容量阻断：即使回收上面列出的 {{ retentionView.preview.to_delete.length }} 项，缓存仍会超出容量上限 {{ retentionView.preview.needed_bytes }} B。
+          原因：{{ reasonWithCode(retentionView.preview.reason_code) }}。这条回收不会得出「已降到容量以内」的结论，界面也不会把它显示成部分成功。
+        </p>
+        <div class="state-grid" data-testid="retention-preview">
+          <div class="state-cell"><small>当前保留</small><strong>{{ retentionView.preview.retained_bytes }} B</strong></div>
+          <div class="state-cell"><small>容量上限</small><strong>{{ retentionView.preview.capacity_bytes }} B</strong></div>
+          <div class="state-cell"><small>本次回收可释放</small><strong>{{ retentionView.preview.freed_bytes }} B</strong></div>
+          <div class="state-cell"><small>保留期限（TTL）</small><strong>{{ retentionView.preview.ttl_days }} 天</strong></div>
+          <div class="state-cell"><small>未测量制品</small><strong>{{ retentionView.preview.unmeasured_artifacts }} 个未测量</strong></div>
+        </div>
+        <p class="muted">未测量制品既不是 0 B，也没有被计入上面的字节与容量判断。</p>
+        <p><strong>将删除（{{ retentionView.preview.to_delete.length }} 项）</strong></p>
+        <ul>
+          <li v-for="item in retentionView.preview.to_delete" :key="item.artifact_id">{{ item.resource_name }} · Run {{ retentionId(item.run_id) }} · 大小 {{ retentionSize(item.size_bytes) }} · 到期 {{ stamp(item.expires_at) }}</li>
+        </ul>
+        <p v-if="!retentionView.preview.to_delete.length" class="muted">当前没有可回收的制品。</p>
+        <p><strong>受保护（{{ retentionView.preview.protected.length }} 项）</strong></p>
+        <ul>
+          <li v-for="item in retentionView.preview.protected" :key="item.artifact_id">{{ item.resource_name }} · Run {{ retentionId(item.run_id) }} · {{ reasonWithCode(item.reason_code) }}</li>
+        </ul>
+        <p v-if="!retentionView.preview.protected.length" class="muted">当前没有受保护的制品。</p>
+        <div class="control-actions">
+          <button v-if="!sweepArmed" :disabled="retentionBusy" data-testid="retention-sweep" @click="sweepArmed = true">回收预览所列内容</button>
+          <template v-else>
+            <button :disabled="retentionBusy || !retentionView.preview.to_delete.length" data-testid="retention-sweep-apply" @click="applySweep()">确认回收（删除 {{ retentionView.preview.to_delete.length }} 项{{ retentionView.preview.blocked ? '，仍不足以降到容量以内' : '' }}）</button>
+            <button class="secondary" :disabled="retentionBusy" @click="sweepArmed = false">取消</button>
+          </template>
+        </div>
+        <p v-if="sweepArmed" class="notice" data-testid="retention-sweep-confirm">
+          这一步只删除上面「将删除」列出的 {{ retentionView.preview.to_delete.length }} 项，释放 {{ retentionView.preview.freed_bytes }} B；受保护项不会被删除。
+          <template v-if="retentionView.preview.blocked">回收完成后仍会超出容量上限 {{ retentionView.preview.needed_bytes }} B，容量阻断会继续显示。</template>
+        </p>
+        <div v-if="retentionReport" class="notice" data-testid="retention-report">
+          <strong>上次保留操作的结果（执行端账本）</strong>
+          <p>{{ retentionActionLabel(retentionReport.decision.action) }} · {{ retentionTargetLabel(retentionReport.decision.target_kind) }} {{ retentionReport.decision.target }} · 已删除 {{ retentionReport.deleted.length }} 项 · 释放 {{ retentionReport.decision.freed_bytes }} B</p>
+          <p v-if="!retentionReport.deleted.length && !retentionReport.failed.length">本次操作没有删除任何制品。</p>
+          <p v-if="retentionReport.failed.length" class="error">
+            未能删除（{{ retentionReport.failed.length }} 项，仍占用缓存）：{{ retentionReport.failed.map(item => `${retentionFailure(item).artifact ? retentionId(retentionFailure(item).artifact) : ''} ${reasonWithCode(retentionFailure(item).code)}`).join('；') }}
+          </p>
+        </div>
+
+        <h4>最近决定</h4>
+        <p v-if="!retentionView.decisions.length" class="notice" data-testid="retention-decisions-empty">执行端还没有记录任何保留决定。</p>
+        <article v-for="decision in retentionView.decisions" :key="decision.decision_id" class="call-card" data-testid="retention-decision">
+          <div class="section-heading"><strong>{{ retentionActionLabel(decision.action) }} · {{ retentionTargetLabel(decision.target_kind) }}</strong><span class="badge">{{ stamp(decision.at) }}</span></div>
+          <p>目标 {{ decision.target }} · 操作员 {{ decision.actor ? retentionId(decision.actor) : '未记录' }} · 释放 {{ decision.freed_bytes }} B · 删除 {{ decision.deleted_artifacts.length }} 项 · 影响 {{ decision.affected_runs.length }} 个 Run</p>
+          <p>说明：{{ decision.note || '（未填写说明）' }}</p>
+          <p v-if="decision.reason_code" class="notice">原因：{{ reasonWithCode(decision.reason_code) }}</p>
+          <p v-if="decision.failed.length" class="error">未能删除：{{ decision.failed.map(item => `${retentionFailure(item).artifact ? retentionId(retentionFailure(item).artifact) : ''} ${reasonWithCode(retentionFailure(item).code)}`).join('；') }}</p>
+        </article>
+      </template>
     </div>
   </section>
 </template>

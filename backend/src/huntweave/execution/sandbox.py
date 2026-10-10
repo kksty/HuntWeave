@@ -241,6 +241,8 @@ class ContainerRuntime(Protocol):
 
     def network_facts(self, network_id: str) -> NetworkFacts: ...
 
+    def volume_facts(self, volume_id: str) -> RuntimeResource: ...
+
     def own_networks(self) -> tuple[NetworkFacts, ...]: ...
 
     def apply_gateway_policy(self, gateway_id: str, payload: str) -> None: ...
@@ -263,6 +265,8 @@ class ContainerRuntime(Protocol):
     def container_logs(
         self, container_id: str, *, tail_lines: int, tail_bytes: int
     ) -> LogRead: ...
+
+    def volume_usage(self, volume_ids: Sequence[str]) -> dict[str, int | None]: ...
 
     def list_resources(self, labels: Mapping[str, str]) -> tuple[RuntimeResource, ...]: ...
 
@@ -350,6 +354,10 @@ class InstanceRecord(Contract):
     stop_confirmed_at: AwareDatetime | None = None
     reclaimed_at: AwareDatetime | None = None
     resources: list[ManagedResource] = Field(default_factory=list)
+    # Resources deliberately kept after reclamation, under the retention policy (issue #20). They
+    # are no longer part of the live instance, and they are not unaccounted for either: the ledger
+    # names them until the retention side releases them through the same ownership checks.
+    retained: list[ManagedResource] = Field(default_factory=list)
 
 
 class SessionRecord(Contract):
@@ -427,6 +435,8 @@ class ReclamationReport(Contract):
     instance_ids: list[UUID]
     removed: list[ManagedResource]
     failed: list[str]
+    # What was deliberately left in place for the retention policy to decide about later.
+    retained: list[ManagedResource] = Field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -445,6 +455,11 @@ class RevertReport(Contract):
     reason_code: str | None = None
     halted: list[UUID] = Field(default_factory=list)
     reclaimed: list[ManagedResource] = Field(default_factory=list)
+    # Private artifacts the retention policy is holding. They are accounted for, so they do not
+    # block the withdrawal — but they are *not* removed by it either, and an operator withdrawing
+    # management has to see what is still on the host: deleting reproduction material is never a
+    # side effect of reverting a deployment.
+    retained: list[ManagedResource] = Field(default_factory=list)
     # Where the reconciliation record of this revert was archived.
     archived: list[str] = Field(default_factory=list)
     outstanding: list[str] = Field(default_factory=list)
@@ -1314,8 +1329,12 @@ class SandboxManager:
             halted: list[UUID] = []
             reclaimed: list[ManagedResource] = []
             outstanding: list[str] = []
+            kept: list[ManagedResource] = []
             for record in list(self.instances.values()):
                 if record.state == "reclaimed":
+                    # Already reclaimed, but the retention policy may still be holding this
+                    # instance's private workspace: that is reported, not removed.
+                    kept.extend(item for item in record.retained if item.kind == "volume")
                     continue
                 record = self._revoke_if_permitted(record, "revert")
                 if record.state == "ready":
@@ -1331,6 +1350,11 @@ class SandboxManager:
                 report = self.reclaim_instance(record.instance_id)
                 reclaimed.extend(report.removed)
                 outstanding.extend(f"{failure}:{record.instance_id}" for failure in report.failed)
+                kept.extend(
+                    item
+                    for item in self.instances[str(record.instance_id)].retained
+                    if item.kind == "volume"
+                )
             audit = self.audit()
             outstanding.extend(
                 f"sandbox_resources_unaccounted:{item.name}" for item in audit.unaccounted
@@ -1346,6 +1370,9 @@ class SandboxManager:
                 "at": datetime.now(UTC).isoformat(),
                 "halted": [str(value) for value in halted],
                 "reclaimed": [item.name for item in reclaimed],
+                # What the retention policy is still holding on this host after the revert. Named
+                # so a withdrawal is never read as "the host is empty again".
+                "retained": [item.name for item in kept],
                 "outstanding": outstanding,
             }
             try:
@@ -1360,13 +1387,22 @@ class SandboxManager:
                 reason_code="sandbox_revert_blocked" if outstanding else None,
                 halted=halted,
                 reclaimed=reclaimed,
+                retained=kept,
                 archived=archived,
                 outstanding=outstanding,
                 withdrew=not outstanding,
             )
 
-    def reclaim_instance(self, instance_id: UUID) -> ReclamationReport:
-        """Remove every resource this instance owns, selected only by this project's labels."""
+    def reclaim_instance(
+        self, instance_id: UUID, *, retain_volumes: bool = False
+    ) -> ReclamationReport:
+        """Remove every resource this instance owns, selected only by this project's labels.
+
+        ``retain_volumes`` keeps the private workspace volume alive and records it as *retained*
+        rather than removed: that volume is the one-off environment the retention policy owns
+        (PROJECT.md section 10.5, issue #20). It is not a leftover — the ledger names it, and the
+        only way it goes is back through this manager, which re-checks ownership and use.
+        """
         with self.lock:
             record = self._instance(instance_id)
             if record.state in {"creating", "ready"}:
@@ -1378,17 +1414,111 @@ class SandboxManager:
                     f"{LABEL_NAMESPACE}.instance_id": str(record.instance_id),
                 }
             )
-            removed, failed = self._remove(selector, lambda item: _owned_by(item, record))
+            kinds: tuple[ResourceKind, ...] = (
+                ("container", "network") if retain_volumes else ("container", "network", "volume")
+            )
+            removed, failed = self._remove(selector, lambda item: _owned_by(item, record), kinds)
+            gone = {item.id for item in removed}
+            # The resource history stays whole — #16's ledger keeps every resource an instance ever
+            # had — and `retained` names the subset that outlived reclamation by policy.
+            kept = (
+                [
+                    item
+                    for item in record.resources
+                    if item.kind == "volume" and item.id not in gone
+                ]
+                if retain_volumes
+                else []
+            )
             self._store(
                 record.model_copy(
                     update={
                         "state": "reclaimed" if not failed else record.state,
                         "reclaimed_at": datetime.now(UTC) if not failed else record.reclaimed_at,
                         "resources": _without_running(record.resources),
+                        "retained": [*record.retained, *kept],
                     }
                 )
             )
-            return ReclamationReport(instance_ids=[instance_id], removed=removed, failed=failed)
+            return ReclamationReport(
+                instance_ids=[instance_id], removed=removed, failed=failed, retained=kept
+            )
+
+    def in_use_volumes(self) -> frozenset[str]:
+        """Volumes an instance still holds, so a retention reclaim leaves them alone.
+
+        This is the manager's own question about its own ledger, asked again at every reclaim rather
+        than remembered: an instance that has not confirmed its stop may still have its workspace
+        mounted, whatever a retention record from an earlier round says.
+        """
+        with self.lock:
+            return frozenset(
+                resource.id
+                for record in self.instances.values()
+                if record.state in {"creating", "ready", "interrupted"}
+                for resource in [*record.resources, *record.retained]
+                if resource.kind == "volume"
+            )
+
+    def volume_usage(self, volume_ids: Sequence[str]) -> dict[str, int | None]:
+        """How many bytes each of this project's volumes holds, where the runtime reports it.
+
+        The read is bounded to volumes the ledger already names: a caller cannot use it to ask the
+        runtime about anything else. A volume the engine does not report a size for answers
+        ``None``, which the retention side shows as unmeasured instead of summing it as zero.
+        """
+        with self.lock:
+            known = {
+                resource.id
+                for record in self.instances.values()
+                for resource in [*record.resources, *record.retained]
+                if resource.kind == "volume"
+            }
+        wanted = [identifier for identifier in volume_ids if identifier in known]
+        if not wanted:
+            return {}
+        try:
+            return dict(self.runtime.volume_usage(wanted))
+        except (ResourceNotFound, RuntimeUnavailable):
+            # A volume the runtime lost is not proof of its size; the retention side keeps the last
+            # recorded value and says so rather than dropping the artifact from the accounting.
+            return {}
+
+    def release_artifact(self, *, instance_id: UUID, volume_id: str) -> None:
+        """Remove one retained volume, after proving this project owns it and nothing holds it.
+
+        The retention ledger's word is not enough: the volume is re-read from the runtime, its
+        labels and name are matched against the identities the ledger recorded, and an instance
+        that still has it mounted refuses the removal. A volume that is already gone is a no-op —
+        the outcome the caller wanted is the one that holds.
+        """
+        with self.lock:
+            record = self._instance(instance_id)
+            if record.state in {"creating", "ready", "interrupted"}:
+                # An instance that never reached a confirmed stop may still have this volume
+                # mounted: removing it would pull the ground out from under a running action.
+                raise SandboxRejected("retention_artifact_in_use")
+            if not any(item.id == volume_id for item in record.retained):
+                raise SandboxRejected("retention_artifact_not_retained")
+            try:
+                # The volume is read back by name first, without selecting on this project's
+                # labels: a volume that stopped carrying them is exactly what the ownership check
+                # has to catch, and it would be invisible to a label selector.
+                item: ManagedResource | None = _as_resource(self.runtime.volume_facts(volume_id))
+            except ResourceNotFound:
+                # Already gone is the outcome the caller wanted; nothing is claimed about why.
+                item = None
+            if item is not None:
+                if not _owned_by(item, record):
+                    raise SandboxRejected("ownership_mismatch")
+                self.runtime.remove_volume(volume_id)
+            self._store(
+                record.model_copy(
+                    update={
+                        "retained": [value for value in record.retained if value.id != volume_id]
+                    }
+                )
+            )
 
     def reclaim_session(self, session_id: UUID) -> ReclamationReport:
         """Reclaim every instance of a session, then sweep the session's labels.
@@ -1615,13 +1745,16 @@ class SandboxManager:
         return _without_running(record.resources)
 
     def _remove(
-        self, selector: Mapping[str, str], owned: Callable[[ManagedResource], bool]
+        self,
+        selector: Mapping[str, str],
+        owned: Callable[[ManagedResource], bool],
+        kinds: Sequence[ResourceKind] = ("container", "network", "volume"),
     ) -> tuple[list[ManagedResource], list[str]]:
         """Remove labeled resources, containers first, and never one this project does not own."""
         live = {item.id: _as_resource(item) for item in self.runtime.list_resources(selector)}
         removed: list[ManagedResource] = []
         failed: list[str] = []
-        for kind in ("container", "network", "volume"):
+        for kind in kinds:
             for identifier, item in sorted(live.items()):
                 if item.kind != kind:
                     continue

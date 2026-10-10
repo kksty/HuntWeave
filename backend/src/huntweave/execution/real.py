@@ -35,9 +35,11 @@ from huntweave.execution.ledger import (
     RunnerUnavailable,
     StopOutcome,
 )
+from huntweave.execution.retention import RetentionStore
 from huntweave.execution.sandbox import (
     AuthorizedEndpoint,
     CommandResult,
+    EnvironmentManifest,
     HaltRequest,
     InstanceRecord,
     LeaseRenewal,
@@ -120,9 +122,15 @@ class RealRunner(CallLedger):
         *,
         manager: SandboxManager,
         profile: SandboxProfile,
+        retention: RetentionStore | None = None,
     ):
         self.manager = manager
         self.profile = profile
+        # The retention ledger this executor hands a call's private workspace to (issue #20). One
+        # ledger per state directory, opened on first use: a Runner whose state directory cannot be
+        # written still reports its readiness instead of failing to start.
+        self._retention = retention
+        self._retention_dir = state_dir
         super().__init__(
             state_dir,
             evidence_dir,
@@ -134,6 +142,13 @@ class RealRunner(CallLedger):
         )
 
     # -- submission ---------------------------------------------------------------------------
+
+    @property
+    def retention(self) -> RetentionStore:
+        """The retention ledger, opened the first time a workspace is handed to it."""
+        if self._retention is None:
+            self._retention = RetentionStore(self._retention_dir)
+        return self._retention
 
     def submit(self, request: ExecutionRequest) -> ExecutionRecord:
         if request.action_id not in REAL_ACTIONS:
@@ -161,6 +176,7 @@ class RealRunner(CallLedger):
         argv = action_command(request, timeout)
         began = datetime.now(UTC)
         instance_id: UUID | None = None
+        environment: EnvironmentManifest | None = None
         try:
             session = self.manager.open_session(
                 SandboxSessionRequest(
@@ -182,6 +198,7 @@ class RealRunner(CallLedger):
                 )
             )
             instance_id = instance.instance_id
+            environment = instance.environment
             self._note(call_id, "instance_id", str(instance_id))
             # The call's own control lease bounds the instance too: if the control plane stops
             # renewing, the manager's watchdog revokes and stops this execution instead of letting
@@ -203,7 +220,7 @@ class RealRunner(CallLedger):
             return
         finally:
             if instance_id is not None:
-                self._release(instance_id)
+                self._release(instance_id, environment)
 
         with self.lock:
             current = self._record(call_id)
@@ -258,6 +275,31 @@ class RealRunner(CallLedger):
             # The end of the command is recorded with the end of the call, so a reader that sees
             # the terminal status already sees the whole call rather than racing the last event.
             self._announce_completion(finished, began, result)
+            if finished.status == "completed" and environment is not None:
+                # A version is credited with a use only when the call really finished well: the
+                # candidate rule counts successful uses, and a retry must not be able to look like
+                # a second Run (PROJECT.md section 10.5).
+                self._record_use(finished, request, environment)
+
+    def _record_use(
+        self, record: ExecutionRecord, request: ExecutionRequest, environment: EnvironmentManifest
+    ) -> None:
+        """Credit the environment version this call ran in, without letting that fail the call.
+
+        The command already succeeded and its evidence is archived; a retention ledger that cannot
+        be written is a bookkeeping gap, not a reason to rewrite the call's outcome. It is reported
+        as its own event so the gap is visible instead of being inferred from a missing count.
+        """
+        try:
+            self.retention.record_use(
+                environment,
+                run_id=request.run_id,
+                call_id=request.call_id,
+                action_id=request.action_id,
+                at=datetime.now(UTC),
+            )
+        except OSError:
+            self._emit(record, "retention_use_unrecorded", {"call_id": str(request.call_id)})
 
     def _halt_requested(self, call_id: UUID) -> bool:
         """Whether an operator ended this call while it was still being prepared."""
@@ -417,8 +459,16 @@ class RealRunner(CallLedger):
                 return
             self._failure(current, reason_code)
 
-    def _release(self, instance_id: UUID) -> None:
-        """Revoke, stop and reclaim the instance this call used, whatever the outcome was.
+    def _release(self, instance_id: UUID, environment: EnvironmentManifest | None) -> None:
+        """Revoke, stop and settle the instance this call used, whatever the outcome was.
+
+        The private workspace of a call that ran in a real environment is handed to the retention
+        ledger instead of being destroyed on the spot: it is that call's private reproduction
+        material, and its cleanup follows the policy (TTL, capacity, pins) rather than this method
+        (issue #20). A volume is kept only once the ledger names it: a ledger that cannot be written
+        gives the volume back to the manager instead of leaving behind something nothing accounts
+        for, and a volume that cannot even be given back is reclaimed like any other resource rather
+        than left on the host unnamed.
 
         The call keeps naming that instance afterwards, even when the release failed: the note is
         how any later stop finds it, and erasing it would turn "this call still has an instance
@@ -428,10 +478,54 @@ class RealRunner(CallLedger):
             halt = self.manager.halt_instance(
                 HaltRequest(instance_id=instance_id, reason="operator_cancelled")
             )
-            self.manager.reclaim_instance(halt.instance_id)
+        except (SandboxRejected, RuntimeUnavailable, ValueError):
+            return
+        try:
+            report = self.manager.reclaim_instance(
+                halt.instance_id, retain_volumes=environment is not None
+            )
         except (SandboxRejected, RuntimeUnavailable, ValueError):
             # A release that could not complete stays visible on the instance record and in the
             # manager's ledger; the call's own outcome is not rewritten to hide it.
+            return
+        if environment is None:
+            return
+        record = self.manager.instances.get(str(instance_id))
+        if record is None:
+            return
+        sizes = self.manager.volume_usage([item.id for item in report.retained])
+        for volume in report.retained:
+            try:
+                self.retention.record_artifact(
+                    environment,
+                    run_id=record.run_id,
+                    session_id=record.session_id,
+                    instance_id=record.instance_id,
+                    resource_id=volume.id,
+                    resource_name=volume.name,
+                    size_bytes=sizes.get(volume.id),
+                )
+            except OSError:
+                self._discard(halt.instance_id, volume.id)
+
+    def _discard(self, instance_id: UUID, volume_id: str) -> None:
+        """Remove a volume the retention ledger could not name, so nothing stays unnamed.
+
+        The first attempt gives the volume back to the manager (which re-checks ownership), which is
+        the ordinary "already gone" outcome. If even that refuses, the instance is reclaimed without
+        the retention policy: this call's reproduction material is lost, which is the honest
+        degradation, but the host does not keep a resource that nothing can name or reclaim.
+        """
+        try:
+            self.manager.release_artifact(instance_id=instance_id, volume_id=volume_id)
+            return
+        except (SandboxRejected, RuntimeUnavailable, ValueError):
+            pass
+        try:
+            self.manager.reclaim_instance(instance_id, retain_volumes=False)
+        except (SandboxRejected, RuntimeUnavailable, ValueError):
+            # The volume stays in the manager's retained list, where its ledger names it and the
+            # Run's own resource view still reports it.
             return
 
     def _archive_result(
