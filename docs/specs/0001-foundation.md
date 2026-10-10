@@ -69,7 +69,7 @@ Runner 写入完整输出文件/证据，app 只读归档。先完成文件归�
 | Run 配置与状态 | `POST /api/v1/runs`、`GET /api/v1/runs/{id}` |
 | P0-B 列表与排队 | `GET /api/v1/runs`、`POST /api/v1/runs/{id}/start` |
 | 控制与恢复 | `POST /api/v1/runs/{id}/pause`、`/resume`、`/cancel`、`/close`，`GET /api/v1/runs/{id}/resume-preview` |
-| 玻璃鱼缸 | `GET /api/v1/runs/{id}/events`（SSE）、`/event-history`（分页）与任务状态快照 |
+| 透明控制台 | `GET /api/v1/runs/{id}/events`（SSE）、`/event-history`（分页）与任务状态快照 |
 | 输出与证据 | `GET /api/v1/evidence/{id}`，按权限提供元数据/分段内容 |
 | 环境状态 | `GET /api/v1/system/capabilities`，展示演示能力与真实执行未就绪原因 |
 
@@ -89,7 +89,7 @@ P0-B 公开白名单为 GET `/login`、`/login.js`、`/login.css`、POST `/auth/
 | --- | --- | --- |
 | P0-A 工程启动与执行可行性 | 最小三服务、配置/迁移/预检，以及隔离靶场探针 | 全新卷可启动；必需密钥缺失时无业务访问；形成宿主网络/进程回收验证记录 |
 | P0-B 身份与 Run | 登录、IP 预览、授权快照、幂等创建和状态读取 | 会话访问门槛、非法输入、过期范围、重复请求、版本冲突 |
-| P0-C 假动作与玻璃鱼缸 | 真实 LangGraph、固定模型/执行 Adapter、outbox、证据与 SSE | 同初始条件遇不同结果产生不同下一步；来源/命令标签真实；并发预算和事件补拉 |
+| P0-C 假动作与透明控制台 | 真实 LangGraph、固定模型/执行 Adapter、outbox、证据与 SSE | 同初始条件遇不同结果产生不同下一步；来源/命令标签真实；并发预算和事件补拉 |
 | P0-D 故障与人工控制 | 暂停、取消、恢复预览、进程重启与结束演示 | 重放不重复执行/扣费；未知调用不盲目重试；旧租约拒绝；重启后证据与 UI 一致 |
 
 P0-A 的首个候选宿主 profile 为 Windows 11 + WSL2 NAT + Docker Desktop Linux containers。受支持宿主验证至少使用两个自行创建的目标容器，分别模拟授权/未授权 IP 与端口。验证无规则时不能发包、只允许配置目的地址、不能访问控制网络/宿主管理/元数据、已有连接可被撤销、子进程可全部回收；IPv6 若未通过即禁用。只在 Runner 管理的专用测试网络施加规则，不修改 Windows 全局防火墙、无关 Docker 网络或测试外部目标。探针全部通过前该 profile 保持候选状态，真实执行返回 `environment_unsupported`。

@@ -70,4 +70,6 @@ tracer 顺序（实现切片）：
 
 视觉语言约束已确定（[ADR-0024](./adr/0024-nasa-punk-visual-language.md)、[视觉设计系统 0009](./specs/0009-visual-design-system.md)），前端换肤**未实施**：当前控制台仍是绿调浅色、圆角卡片与 Inter 字体，且**没有设计 token 层**，色值散落在 `frontend/src/style.css` 与 `RunConsole.vue`。切片 Issue：[#33](https://github.com/kksty/HuntWeave/issues/33) V-A token 层与字体自托管 → [#34](https://github.com/kksty/HuntWeave/issues/34) V-B 既有控制台换肤（依赖 #33）；[#35](https://github.com/kksty/HuntWeave/issues/35) V-D 模式标注与覆盖状态视图（依赖 #33 与 #25）。V-A/V-B 不依赖双模式后端。前端变更触发浏览器验收（[ADR-0018](./adr/0018-backend-first-and-layered-validation.md)）。
 
+术语已于 2026-10-10 统一：原「玻璃鱼缸」改称**执行可观测性**，界面称**透明控制台**（[GLOSSARY](./../GLOSSARY.md)）。**文档已改名，界面文案未改名**——`frontend/src/RunConsole.vue` 的 aria-label 与标题、`frontend/tests/authorized-run.spec.ts` 的断言仍用旧称，随 [#34](https://github.com/kksty/HuntWeave/issues/34) 一并改并跑浏览器验收；历史 ADR 与验证记录按既有约定保留旧称。
+
 研究过程可视化与调度政策的设计已确定（[ADR-0015](./adr/0015-graph-semantics-and-projection-boundary.md)、[ADR-0016](./adr/0016-scheduling-and-resource-policy.md) 与 [0005 能力类判据规格](./specs/0005-capability-claim-criteria.md)），但能力同样未实现：研究图页面与图投影查询、主张契约与前提门判据、槽位分池与公平调度、队列解释面板均未开工。这些设计不改变上述 P1 切片顺序，也不表示任何验收已经完成；其验收要求见 [P2 规格](./specs/0003-agent-research.md) 第 9 节，实施归属见 ADR-0015/0016 各节的实施归属。
