@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple
 from uuid import UUID, uuid4, uuid5
 
+from pydantic import ValidationError
 from sqlalchemy import Engine, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from huntweave.contracts.errors import ServiceError
 from huntweave.contracts.execution import (
     ExecutionObservation,
+    ExecutionProfile,
     ExecutionRecord,
     ExecutionRequest,
     FakeParameters,
@@ -172,6 +174,27 @@ class OrchestrationService:
             )
         run.reason_code = reason
 
+    def hold_for_readiness(self, run_id: UUID, call_id: UUID, reason: str) -> None:
+        """Record why a real call is not being offered to the execution side yet.
+
+        The call keeps its place and its reservation: nothing ran, nothing is lost, and the Run
+        states what it is waiting for. Switching the call to the demonstration side would answer
+        with fixed output a question that was asked about a real target, which is the one thing
+        this must never do.
+        """
+        with Session(self.engine()) as session, session.begin():
+            run = self._run(session, run_id)
+            call = session.get(ToolCall, call_id, with_for_update=True)
+            if call is None or call.status not in {"planned", "dispatched"}:
+                return
+            self._interrupt(
+                session,
+                run,
+                reason,
+                "Wait for the execution side to report every readiness gate again.",
+            )
+            self._event(session, run, "tool_held", {"call_id": str(call_id), "reason_code": reason})
+
     def _new_task(self, session: Session, run: Run, role: str) -> ResearchTask:
         task_id = stable(run.id, "task:" + role)
         task = session.get(ResearchTask, task_id)
@@ -192,9 +215,20 @@ class OrchestrationService:
                 for x in session.scalars(select(Evidence.id).where(Evidence.run_id == run.id))
             ]
             # Reviewer only receives evidence references, never another role's transcript.
-            context = {"evidence_ids": evidence_ids, "demonstration": True}
+            real = run.execution_profile != "fake-p0-v1"
+            context = {
+                "evidence_ids": evidence_ids,
+                "demonstration": not real,
+                "execution_profile": run.execution_profile,
+            }
             if role != "reviewer":
-                context["scenario"] = run.demonstration_scenario
+                if real:
+                    # What a real plan may look at comes from this Run's own authorized snapshot.
+                    context["candidate_ports"] = list(
+                        ScopeSnapshot.model_validate(run.scope_snapshot).ports
+                    )[:8]
+                else:
+                    context["scenario"] = run.demonstration_scenario
             session.add(
                 AgentSession(
                     id=stable(run.id, "session:" + role),
@@ -209,7 +243,7 @@ class OrchestrationService:
                 session,
                 run,
                 "task_created",
-                {"task_id": str(task.id), "role": role, "demonstration": True},
+                {"task_id": str(task.id), "role": role, "demonstration": not real},
             )
         return task
 
@@ -400,9 +434,15 @@ class OrchestrationService:
                         run,
                         "automatic_stage_finished",
                         {
-                            "demonstration": True,
+                            "demonstration": run.execution_profile == "fake-p0-v1",
+                            "execution_profile": run.execution_profile,
                             "version": run.version,
-                            "summary": "Fixed fake execution; no real vulnerability conclusion.",
+                            "summary": (
+                                "Fixed fake execution; no real vulnerability conclusion."
+                                if run.execution_profile == "fake-p0-v1"
+                                else "Real execution against the real authorized targets; "
+                                "conclusions still need review."
+                            ),
                         },
                     )
                 return {"id": str(decision_id), **decision}
@@ -492,10 +532,22 @@ class OrchestrationService:
                     int(replaced.ticket["target_port"]),
                 )
             reservation_id = stable(call_id, "reservation")
-            parameters = FakeParameters(
-                scenario=SCENARIOS[run.demonstration_scenario],
-                duration_ms=run.demonstration_duration_ms,
+            # The Run's own mode, narrowed to the profiles this build serves: a Run reads its
+            # profile once and every ticket it produces belongs to it.
+            profile: ExecutionProfile = (
+                "real-lab-v1" if run.execution_profile == "real-lab-v1" else "fake-p0-v1"
             )
+            if profile == "fake-p0-v1":
+                fake = FakeParameters(
+                    scenario=SCENARIOS[run.demonstration_scenario],
+                    duration_ms=run.demonstration_duration_ms,
+                )
+                parameters = fake.model_dump()
+            else:
+                # A real plan carries the parameters of the action it named, and the ticket's own
+                # contract validates them against that action's schema. A plan that cannot be
+                # expressed is refused rather than passed on as something else.
+                parameters = dict(decision.get("parameters") or {})
             deadline = min(
                 scope.expires_at,
                 now + timedelta(seconds=45),
@@ -503,25 +555,31 @@ class OrchestrationService:
                 if run.started_at
                 else scope.expires_at,
             )
-            ticket = ExecutionRequest(
-                call_id=call_id,
-                run_id=run.id,
-                session_id=agent.id,
-                decision_id=decision_id,
-                scope_id=run.scope_id,
-                budget_reservation_id=reservation_id,
-                action_id=decision["action"],
-                parameters=parameters.model_dump(),
-                parameters_hash=parameters_hash(parameters),
-                scope_version=run.scope_version,
-                policy_version=scope.policy_version,
-                lease_generation=generation,
-                lease_expires_at=task.lease_expires_at,
-                deadline_at=deadline,
-                authorized_until=scope.expires_at,
-                target_ip=ip_address(bound_ip),
-                target_port=bound_port,
-            )
+            try:
+                ticket = ExecutionRequest(
+                    call_id=call_id,
+                    run_id=run.id,
+                    session_id=agent.id,
+                    decision_id=decision_id,
+                    scope_id=run.scope_id,
+                    budget_reservation_id=reservation_id,
+                    action_id=decision["action"],
+                    parameters=parameters,
+                    parameters_hash=parameters_hash(parameters),
+                    scope_version=run.scope_version,
+                    policy_version=scope.policy_version,
+                    lease_generation=generation,
+                    lease_expires_at=task.lease_expires_at,
+                    deadline_at=deadline,
+                    authorized_until=scope.expires_at,
+                    execution_profile=profile,
+                    target_ip=ip_address(bound_ip),
+                    target_port=bound_port,
+                )
+            except ValidationError:
+                # The plan named an action this Run's profile does not serve, or parameters its
+                # schema does not accept: that call never runs, and the Run says why.
+                raise ServiceError("action_not_in_profile", 409) from None
             session.add(
                 ToolCall(
                     id=call_id,
@@ -548,8 +606,9 @@ class OrchestrationService:
                 {
                     "call_id": str(call_id),
                     "action": decision["action"],
-                    "parameters": parameters.model_dump(),
-                    "demonstration": True,
+                    "parameters": parameters,
+                    "execution_profile": run.execution_profile,
+                    "demonstration": run.execution_profile == "fake-p0-v1",
                 },
             )
             return {"id": str(decision_id), **decision}
@@ -706,6 +765,15 @@ class OrchestrationService:
                 **agent.context,
                 "last_output": result["output"],
                 "last_status": call.status,
+                # What the tool really reported is what the next decision reads. An action that
+                # declares no summary leaves this empty rather than inventing facts.
+                "last_summary": result.get("summary") or {},
+                # Where it reported it from: a plan that wants to look at what it just found
+                # names this endpoint, and the authorization decides whether that is allowed.
+                "last_target": {
+                    "ip": str(record.request.target_ip),
+                    "port": record.request.target_port,
+                },
                 "evidence_ids": [x["id"] for x in result["evidence"]],
             }
             self._event(
@@ -716,7 +784,8 @@ class OrchestrationService:
                     "call_id": str(call.id),
                     "status": call.status,
                     "result": result,
-                    "demonstration": True,
+                    "execution_profile": run.execution_profile,
+                    "demonstration": run.execution_profile == "fake-p0-v1",
                 },
             )
             if record.status == "failed" and run.status not in {"pausing", "cancelling"}:
@@ -1394,12 +1463,16 @@ class OrchestrationService:
             record = session.get(Evidence, evidence_id)
             if record is None:
                 raise ServiceError("evidence_not_found", 404)
+            run = session.get(Run, record.run_id)
             metadata = dict(record.metadata_json)
             metadata.update(
                 {
                     "run_id": str(record.run_id),
                     "call_id": str(record.call_id),
-                    "demonstration": True,
+                    # Evidence says which side produced it, so a report never presents a fixed
+                    # fixture as a real observation or the reverse.
+                    "execution_profile": run.execution_profile if run is not None else "fake-p0-v1",
+                    "demonstration": run is None or run.execution_profile == "fake-p0-v1",
                     "offset": offset,
                 }
             )

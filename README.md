@@ -230,6 +230,7 @@ python -m pip install --require-hashes -r deploy/verification-requirements.txt
 python deploy/verify_isolation.py
 python deploy/verify_lifecycle.py
 python deploy/verify_egress.py
+python deploy/verify_action.py
 ```
 
 故障探针会短暂停止本项目服务；隔离探针创建独立靶场资源，只有可信管理容器获得 Docker API。结果保存在 `runtime/isolation/`，Windows 当前的探针计数、实际宿主版本与报告 hash 见[隔离验证记录](./docs/validation/0002-windows-isolation.md)；Linux 容器测试不替代原生 Linux 宿主验收。
@@ -237,6 +238,8 @@ python deploy/verify_egress.py
 沙箱生命周期探针只跑**无目标网络**的固定生命周期检查：它在同样只有 Docker API 的容器里驱动产品自己的受信管理组件，创建一轮会话容器后读回事实、停止并回收，不创建目标网络、不发起任何目标流量，也不为跑测试把产品就绪门槛改成 true。结果保存在 `runtime/sandbox/`，计数、限制与待确认项见[验证记录 `0011`](./docs/validation/0011-p1-sandbox-lifecycle.md)。
 
 出口探针 `deploy/verify_egress.py` 走同一条路，但它会在**本机靶场桥接网络**上创建三个固定回显容器（授权、未授权、控制网络各一个），验证默认拒绝、只放行授权 IPv4/TCP、平台地址与桥接宿主地址被拒、撤销在 profile 时限内生效、取消与租约到期后进程与连接回收、回退序列与对账归档。它不接触任何外部地址，也不改产品就绪门槛；结果见[验证记录 `0012`](./docs/validation/0012-p1-egress-and-cancel.md)。探针创建的资源按自己的标签与本轮 Run 身份回收，结束后报告 `leftovers` 必须为空。
+
+动作探针 `deploy/verify_action.py` 构建产品自己的 Runner（启用受信管理），向它的 HTTP 表面提交真实票据，让真实执行器在靶场容器里跑 `shell.exec`、`discover_tcp_services` 与 `probe_http`，并用 Docker SDK 与证据目录读回事实：命令以普通用户执行、stdout/stderr 与退出码按先文件后 hash 归档、放行只含票据的目标端点、调用结束后实例与许可都不残留，以及**按工具真实返回决定下一个动作并真的执行**（有端口的发现引出 HTTP 请求，无端口则结束研究）。它同样只用 `lab/` 靶场与回环入口，不接触外部地址；结果见[验证记录 `0013`](./docs/validation/0013-p1-real-actions.md)。
 
 ## 项目资料
 
@@ -255,7 +258,7 @@ python deploy/verify_egress.py
 
 验证记录
 
-- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突 · `0011` P1 受信管理组件与真实容器生命周期 · `0012` P1 出口控制与取消/回收
+- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突 · `0011` P1 受信管理组件与真实容器生命周期 · `0012` P1 出口控制与取消/回收 · `0013` P1 真实动作最小闭环
 
 开发协作
 

@@ -39,6 +39,7 @@ from huntweave.config import SandboxSettings
 from huntweave.contracts.execution import ExecutionRequest, parameters_hash
 from huntweave.execution.dockerruntime import open_sandbox_manager
 from huntweave.execution.sandbox import SandboxManager
+from huntweave.harness.model import DeterministicModel
 from huntweave.execution.server import create_runner
 
 RESULTS = Path("/results")
@@ -222,7 +223,64 @@ class ActionCheck:
             status=failure["status"],
         )
 
-        # 5. Evidence is real bytes: every entry's hash matches the file that was written.
+        # 5. What the tool really reported decides the next action, and that action really runs.
+        #    Two different observations lead to two different executed calls: one service answers
+        #    HTTP, and the echo target does not.
+        http_discovery = self.call(
+            client,
+            "discover_tcp_services",
+            {"ports": [8080], "timeout_seconds": 30},
+            target=addresses["http"],
+            port=8080,
+        )
+        http_summary = http_discovery["result"]["summary"] if http_discovery.get("result") else {}
+        model = DeterministicModel()
+        planned = model.decide(
+            "reviewer",
+            1,
+            {
+                "execution_profile": "real-lab-v1",
+                "last_summary": http_summary,
+                "candidate_ports": [8080],
+                "last_target": {"ip": addresses["http"], "port": 8080},
+            },
+        )
+        self.check(
+            "a_real_return_selects_the_next_action",
+            planned["action"] == "probe_http"
+            and planned.get("target_port") == 8080
+            and planned.get("target_ip") == addresses["http"],
+            discovery=http_summary,
+            decision=planned,
+        )
+        followed = self.call(
+            client,
+            planned["action"],
+            planned["parameters"],
+            target=planned.get("target_ip") or addresses["http"],
+            port=planned.get("target_port") or 8080,
+        )
+        followed_summary = followed["result"]["summary"] if followed.get("result") else {}
+        self.check(
+            "the_selected_action_really_runs_and_reports_the_target",
+            followed["status"] == "completed" and followed_summary.get("status_code") == 200,
+            summary=followed_summary,
+        )
+        empty = model.decide(
+            "reviewer",
+            1,
+            {
+                "execution_profile": "real-lab-v1",
+                "last_summary": {"open_ports": [], "closed_ports": [7000, 7001]},
+            },
+        )
+        self.check(
+            "nothing_listening_selects_a_different_action_instead",
+            empty["action"] == "finish_research",
+            decision=empty,
+        )
+
+        # 6. Evidence is real bytes: every entry's hash matches the file that was written.
         mismatches = [
             entry["relative_path"]
             for call in self.report["calls"]
@@ -231,7 +289,7 @@ class ActionCheck:
         ]
         self.check("every_evidence_file_matches_its_recorded_hash", not mismatches, mismatches=mismatches)
 
-        # 6. One surface, two executors: the demonstration profile still works, and a deployment
+        # 7. One surface, two executors: the demonstration profile still works, and a deployment
         #    without management refuses a real ticket instead of faking it.
         demonstration = client.post(
             "/v1/calls", headers=HEADERS, json=self.fake_ticket().model_dump(mode="json")
@@ -268,7 +326,7 @@ class ActionCheck:
             status_code=refused.status_code,
         )
 
-        # 7. Nothing is left behind by any of it.
+        # 8. Nothing is left behind by any of it.
         self.check(
             "no_labelled_resource_survives_the_calls",
             manager.resources(run_id=self.run_id) == []

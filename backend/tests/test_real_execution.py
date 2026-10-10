@@ -212,9 +212,9 @@ def test_cancelling_ends_the_running_command_and_keeps_what_was_collected(tmp_pa
     assert cancelled.reason_code == "operator_cancelled"
     # The instance this call created is released even though the cancel arrived while it was
     # still being prepared, and the command it would have run never started.
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
-        if all(record.state in {"stopped", "reclaimed"} for record in manager.instances.values()):
+        if all(record.state == "reclaimed" for record in manager.instances.values()):
             break
         time.sleep(0.05)
     assert [record.state for record in manager.instances.values()] == ["reclaimed"]

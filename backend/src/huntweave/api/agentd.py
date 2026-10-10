@@ -4,10 +4,12 @@ import threading
 from types import FrameType
 from uuid import UUID, uuid4
 
+import httpx
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from huntweave.contracts.errors import ServiceError
-from huntweave.execution.client import RunnerClient
+from huntweave.execution.client import RunnerClient, get_capabilities
 from huntweave.harness.checkpoints import verify_checkpoint_schema
 from huntweave.harness.graph import ResearchHarness
 from huntweave.runs.dispatch import ExecutionDispatcher
@@ -24,13 +26,27 @@ def main() -> int:
     def stop(signum: int, frame: FrameType | None) -> None:
         stopping.set()
 
+    def real_execution_ready() -> bool:
+        """Ask the execution side now whether it may still act for real.
+
+        A gate that closed after the Run was opened (the socket went away, the profile stopped
+        validating) must stop new real calls and stop renewing running ones; the answer is read
+        here rather than remembered from Run creation.
+        """
+        try:
+            return get_capabilities().real_execution_ready
+        except (httpx.HTTPError, ValidationError, ValueError):
+            return False
+
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     engine = connect_engine()
     instance_id = uuid4()
     business = OrchestrationService(lambda: engine)
     harness = ResearchHarness(business)
-    dispatcher = ExecutionDispatcher(business, RunnerClient())
+    dispatcher = ExecutionDispatcher(
+        business, RunnerClient(), real_ready=real_execution_ready
+    )
     sweep_offset = 0
     try:
         verify_business_schema(engine)

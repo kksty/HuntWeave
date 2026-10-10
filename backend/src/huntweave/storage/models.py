@@ -74,6 +74,9 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     demonstration_scenario: Mapped[str] = mapped_column(String(20), default="positive")
     demonstration_duration_ms: Mapped[int] = mapped_column(Integer, default=1500)
+    # Fixed when the Run is created: a Run never switches between demonstration and real
+    # execution, so its calls can never be answered by the wrong side (issue #17, criterion 6).
+    execution_profile: Mapped[str] = mapped_column(String(20), default="fake-p0-v1")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
 

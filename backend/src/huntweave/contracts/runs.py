@@ -2,7 +2,14 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    computed_field,
+)
 
 
 class Contract(BaseModel):
@@ -70,8 +77,10 @@ class ScopeCreate(Contract):
     expires_at: AwareDatetime
     authorization: str = Field(min_length=1, max_length=2000)
     budget: Budget = Field(default_factory=Budget)
-    mode: Literal["demonstration"] = "demonstration"
-    execution_profile: Literal["fake-p0-v1"] = "fake-p0-v1"
+    # The authorization itself says whether it permits real execution. A Run inherits this and is
+    # refused if it asks for a different side than the scope it acts under.
+    mode: Literal["demonstration", "real"] = "demonstration"
+    execution_profile: Literal["fake-p0-v1", "real-lab-v1"] = "fake-p0-v1"
     config_version: Literal["p0-b-v1"] = "p0-b-v1"
 
 
@@ -84,8 +93,8 @@ class ScopeSnapshot(Contract):
     expires_at: datetime
     authorization: str
     budget: Budget
-    mode: Literal["demonstration"] = "demonstration"
-    execution_profile: Literal["fake-p0-v1"] = "fake-p0-v1"
+    mode: Literal["demonstration", "real"] = "demonstration"
+    execution_profile: Literal["fake-p0-v1", "real-lab-v1"] = "fake-p0-v1"
     config_version: Literal["p0-b-v1"] = "p0-b-v1"
     # Recorded at authorization, never re-read from the current build: an active Run must not
     # silently change policy while it still holds tickets minted under the old one.
@@ -103,6 +112,10 @@ class ScopeView(Contract):
 class RunCreate(Contract):
     scope_id: UUID
     scope_version: int = Field(ge=1, strict=True)
+    # What this Run will really do. Demonstration is the default, and asking for real execution is
+    # only accepted while the execution side reports it is ready (ADR-0010's four gates); a Run
+    # fixes its mode here and never switches sides afterwards.
+    execution_profile: Literal["fake-p0-v1", "real-lab-v1"] = "fake-p0-v1"
     demonstration_scenario: Literal["positive", "negative", "failure"] = "positive"
     demonstration_duration_ms: int = Field(default=1500, ge=0, le=30000, strict=True)
 
@@ -133,7 +146,14 @@ class RunView(Contract):
     phase: Literal["collecting", "researching", "reviewing", "awaiting_human"] | None = None
     version: int
     created_at: datetime
-    demonstration: Literal[True] = True
+    # Derived from the Run's own execution profile, never assumed: a real Run is not a
+    # demonstration, and the interface says which one this is.
+    execution_profile: Literal["fake-p0-v1", "real-lab-v1"] = "fake-p0-v1"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def demonstration(self) -> bool:
+        return self.execution_profile == "fake-p0-v1"
     # Observed per response, never assumed: a view that has not asked the execution side must not
     # claim its chain is ready.
     execution_ready: bool = False

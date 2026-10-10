@@ -23,8 +23,19 @@ from huntweave.storage.models import AuthorizationScope, Project, Run
 
 
 class RunService:
-    def __init__(self, engine: Callable[[], Engine]):
+    def __init__(
+        self,
+        engine: Callable[[], Engine],
+        readiness: Callable[[], bool] | None = None,
+    ):
         self.engine = engine
+        # Read fresh when a Run asks to act for real: the four gates are a precondition of opening
+        # the Run, not a label the deployment keeps once and never checks again.
+        self.readiness = readiness
+
+    def _require_real_readiness(self) -> None:
+        if self.readiness is None or not self.readiness():
+            raise ServiceError("real_execution_not_ready", 409)
 
     def create_project(self, request: ProjectCreate) -> ProjectView:
         name = request.name.strip()
@@ -88,6 +99,8 @@ class RunService:
             return self._scope(record)
 
     def create_run(self, request: RunCreate, key: str) -> RunView:
+        if request.execution_profile != "fake-p0-v1":
+            self._require_real_readiness()
         if not 1 <= len(key) <= 128 or not key.isascii() or any(ord(c) < 33 for c in key):
             raise ServiceError("invalid_idempotency_key", 422)
         canonical = json.dumps(
@@ -108,6 +121,10 @@ class RunService:
             if scope.version != request.scope_version:
                 raise ServiceError("version_conflict", 409)
             snapshot = ScopeSnapshot.model_validate(scope.snapshot)
+            if snapshot.execution_profile != request.execution_profile:
+                # The authorization decides what may be done with its targets. A Run cannot act
+                # for real under a demonstration authorization, or the reverse.
+                raise ServiceError("execution_profile_mismatch", 409)
             now = database_now(session)
             self._check_window(snapshot, now)
             record = Run(
@@ -123,6 +140,7 @@ class RunService:
                 created_at=now,
                 demonstration_scenario=request.demonstration_scenario,
                 demonstration_duration_ms=request.demonstration_duration_ms,
+                execution_profile=request.execution_profile,
             )
             session.add(record)
             session.flush()

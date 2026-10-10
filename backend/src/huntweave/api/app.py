@@ -113,7 +113,11 @@ def create_app(
         return view.model_copy(update={"execution_ready": ready})
 
     access = AccessService(database, settings)
-    runs = RunService(database)
+    # Opening a Run that acts for real asks the execution side *now*: ADR-0010's gates are a
+    # precondition of that Run, not a value this process remembers from a previous answer.
+    runs = RunService(
+        database, readiness=lambda: capabilities_probe.current().real_execution_ready
+    )
     orchestration = OrchestrationService(
         database, Path(os.environ.get("HUNTWEAVE_EVIDENCE_ROOT", "/evidence"))
     )

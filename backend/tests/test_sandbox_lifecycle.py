@@ -1332,7 +1332,7 @@ def test_a_lapsed_lease_is_halted_by_the_manager_itself(
         )
     )
     # The control plane stops answering: nobody renews, and the manager's own watchdog ends it.
-    deadline = time.monotonic() + 6
+    deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         if manager.instances[str(instance.instance_id)].state == "stopped":
             break

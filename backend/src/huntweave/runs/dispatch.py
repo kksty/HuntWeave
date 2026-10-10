@@ -1,5 +1,6 @@
 """Outbox dispatcher and Runner reconciliation outside database transactions."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -28,9 +29,23 @@ def read_observation(runner: RunnerClient, call_id: UUID) -> ExecutionObservatio
 
 
 class ExecutionDispatcher:
-    def __init__(self, business: OrchestrationService, runner: RunnerClient):
+    def __init__(
+        self,
+        business: OrchestrationService,
+        runner: RunnerClient,
+        *,
+        real_ready: Callable[[], bool] | None = None,
+    ):
         self.business = business
         self.runner = runner
+        # Read fresh from the execution side: a real Run whose readiness lapsed stops offering new
+        # calls and stops renewing what is running, instead of hardening into a fake one.
+        self.real_ready = real_ready
+
+    def _ready_for(self, ticket: ExecutionRequest) -> bool:
+        if ticket.execution_profile == "fake-p0-v1":
+            return True
+        return self.real_ready is not None and self.real_ready()
 
     def reconcile(self, run_id: UUID) -> None:
         """Converge every pending call with the Runner's authenticated durable ledger.
@@ -51,6 +66,13 @@ class ExecutionDispatcher:
                         # The durable ledger answers for a call the control plane already
                         # dispatched; that verdict is recorded, never second-guessed.
                         self.business.unknown(run_id, ticket.call_id)
+                        continue
+                    if not self._ready_for(ticket):
+                        # A real Run does not fall back to the demonstration side: the call keeps
+                        # its reservation and its place, and the Run says what it is waiting for.
+                        self.business.hold_for_readiness(
+                            run_id, ticket.call_id, "real_execution_not_ready"
+                        )
                         continue
                     if state["status"] in {"pausing", "cancelling"} or (
                         ticket.lease_expires_at <= datetime.now(UTC)
@@ -150,6 +172,11 @@ class ExecutionDispatcher:
         try:
             if run_status == "cancelling":
                 return self.runner.cancel(ticket.call_id, ticket.lease_generation)
+            if not self._ready_for(ticket):
+                # Readiness lapsed while this call was running: stop renewing its lease, so the
+                # execution side's own watchdog ends it and says so, rather than the control plane
+                # pretending it is still a healthy real execution.
+                return None
             return self.runner.renew(
                 ticket.call_id,
                 ticket.lease_generation,
