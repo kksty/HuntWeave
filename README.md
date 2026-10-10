@@ -138,6 +138,8 @@ docker compose -f deploy/compose.yaml -f deploy/compose.sandbox.yaml up -d --bui
 
 启用管理**不等于**开放真实执行：`real_execution_ready` 仍由 ADR-0010 的四项门槛决定，`/api/v1/system/capabilities` 会把它作为独立的 `sandbox_management`（`disabled`/`ready`/`unavailable` 加原因码）报出。恢复默认部署用基础文件重启即可（`docker compose -f deploy/compose.yaml up -d --no-build runner`）。
 
+所选 profile 同时决定出口：网关加入的目标网络、安装与回读放行规则的固定命令与执行用户、网关的就绪检查、以及就绪与撤销时限。管理器在网关报告就绪后才放行，并在每次放行后回读内核规则核对；平台自身网络、所用桥的宿主侧地址与固定保留网段一律拒绝，部署额外的宿主网段需写进该 profile 的 `network.protected`。回退由执行端的 `begin_revert` 顺序执行（拒绝新实例 → 撤销 → 停止 → 回收 → 对账归档），只有在没有未核清项时才报告可以撤除管理能力；面向操作员的入口随窗口控制台（#19）提供。
+
 ### 部署模式
 
 ```sh
@@ -227,11 +229,14 @@ python deploy/verify_startup.py
 python -m pip install --require-hashes -r deploy/verification-requirements.txt
 python deploy/verify_isolation.py
 python deploy/verify_lifecycle.py
+python deploy/verify_egress.py
 ```
 
 故障探针会短暂停止本项目服务；隔离探针创建独立靶场资源，只有可信管理容器获得 Docker API。结果保存在 `runtime/isolation/`，Windows 当前的探针计数、实际宿主版本与报告 hash 见[隔离验证记录](./docs/validation/0002-windows-isolation.md)；Linux 容器测试不替代原生 Linux 宿主验收。
 
 沙箱生命周期探针只跑**无目标网络**的固定生命周期检查：它在同样只有 Docker API 的容器里驱动产品自己的受信管理组件，创建一轮会话容器后读回事实、停止并回收，不创建目标网络、不发起任何目标流量，也不为跑测试把产品就绪门槛改成 true。结果保存在 `runtime/sandbox/`，计数、限制与待确认项见[验证记录 `0011`](./docs/validation/0011-p1-sandbox-lifecycle.md)。
+
+出口探针 `deploy/verify_egress.py` 走同一条路，但它会在**本机靶场桥接网络**上创建三个固定回显容器（授权、未授权、控制网络各一个），验证默认拒绝、只放行授权 IPv4/TCP、平台地址与桥接宿主地址被拒、撤销在 profile 时限内生效、取消与租约到期后进程与连接回收、回退序列与对账归档。它不接触任何外部地址，也不改产品就绪门槛；结果见[验证记录 `0012`](./docs/validation/0012-p1-egress-and-cancel.md)。探针创建的资源按自己的标签与本轮 Run 身份回收，结束后报告 `leftovers` 必须为空。
 
 ## 项目资料
 
@@ -250,7 +255,7 @@ python deploy/verify_lifecycle.py
 
 验证记录
 
-- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突 · `0011` P1 受信管理组件与真实容器生命周期
+- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突 · `0011` P1 受信管理组件与真实容器生命周期 · `0012` P1 出口控制与取消/回收
 
 开发协作
 
