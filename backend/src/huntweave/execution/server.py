@@ -19,7 +19,9 @@ from huntweave.contracts.execution import (
     LeaseRenewal,
 )
 from huntweave.execution.capabilities import evaluate
-from huntweave.execution.fake import FakeRunner, RunnerRejected
+from huntweave.execution.fake import FakeRunner
+from huntweave.execution.ledger import CallLedger, RunnerRejected, RunnerUnavailable
+from huntweave.execution.real import RealRunner
 from huntweave.execution.sandbox import RuntimeUnavailable, SandboxManager, SandboxRejected
 
 
@@ -43,8 +45,6 @@ def create_runner(
     sandbox_factory: Callable[[SandboxSettings], SandboxManager] | None = None,
 ) -> FastAPI:
     token_bytes = (token or runner_token()).encode("utf-8")
-    ledger: FakeRunner | None = None
-    creation_lock = threading.Lock()
     settings = sandbox_settings or SandboxSettings.from_env()
     if state_dir is not None or evidence_dir is not None:
         # The directories this process uses for its ledgers are the same ones a sandbox ledger
@@ -57,27 +57,63 @@ def create_runner(
     sandbox: SandboxManager | None = None
     sandbox_failure: str | None = None
     sandbox_lock = threading.Lock()
+    ledgers: dict[str, CallLedger] = {}
 
     def execution() -> FakeRunner:
-        nonlocal ledger
-        with creation_lock:
-            if ledger is None:
-                ledger = FakeRunner(
+        fake = ledger_for("fake-p0-v1")
+        assert isinstance(fake, FakeRunner)
+        return fake
+
+    def ledger_for(profile: str) -> CallLedger:
+        """The executor that owns this profile's calls.
+
+        Both executors share the call ledger's rules but not its file, and a ticket chooses its
+        side by naming an execution profile. A real profile with no management enabled is refused
+        rather than served by the demonstration side: a deployment that cannot act for real does
+        not get to pretend it did (issue #17, criterion 6).
+
+        The trusted manager is opened *outside* this lock: the manager's own construction takes
+        that lock, and needing it twice in one thread is a deadlock, not a cache.
+        """
+        with sandbox_lock:
+            known = ledgers.get(profile)
+        if known is not None:
+            return known
+        manager = sandbox_manager() if profile == "real-lab-v1" else None
+        with sandbox_lock:
+            existing = ledgers.get(profile)
+            if existing is not None:
+                return existing
+            if profile == "fake-p0-v1":
+                ledgers[profile] = FakeRunner(settings.state_dir, settings.evidence_dir)
+            elif profile == "real-lab-v1":
+                if manager is None:
+                    raise RunnerRejected("real_execution_disabled")
+                ledgers[profile] = RealRunner(
                     settings.state_dir,
                     settings.evidence_dir,
+                    manager=manager,
+                    profile=manager.profile,
                 )
-            return ledger
+            else:
+                raise RunnerRejected("execution_profile_unknown")
+            return ledgers[profile]
 
-    def sandbox_state() -> tuple[SandboxManagement, str | None]:
-        """Open the trusted manager on first use and report what it can really do.
+    def known_ledgers() -> list[CallLedger]:
+        """Every executor this deployment can route a query to, real side first."""
+        found: list[CallLedger] = []
+        for profile in ("real-lab-v1", "fake-p0-v1"):
+            try:
+                found.append(ledger_for(profile))
+            except (RunnerRejected, RunnerUnavailable, SandboxRejected, RuntimeUnavailable):
+                continue
+        return found
 
-        Enabled is not the same as usable: a Runner whose socket is missing, whose profile is not
-        in the image or whose state directory cannot be written reports `unavailable` with the
-        reason instead of presenting management as ready.
-        """
+    def sandbox_manager() -> SandboxManager | None:
+        """Open the trusted manager on first use, or explain why this deployment has none."""
         nonlocal sandbox, sandbox_failure
         if not settings.enabled:
-            return "disabled", None
+            return None
         with sandbox_lock:
             if sandbox is None and sandbox_failure is None:
                 opener = sandbox_factory or _open_sandbox_manager
@@ -91,9 +127,21 @@ def create_runner(
                     sandbox_failure = "sandbox_runtime_unreachable"
                 except (OSError, ValueError):
                     sandbox_failure = "sandbox_state_unwritable"
-            if sandbox is None:
-                return "unavailable", sandbox_failure
-        observation = sandbox.observe()
+        return sandbox
+
+    def sandbox_state() -> tuple[SandboxManagement, str | None]:
+        """Report whether this deployment can really manage sandboxes right now.
+
+        Enabled is not the same as usable: a Runner whose socket is missing, whose profile is not
+        in the image or whose state directory cannot be written reports `unavailable` with the
+        reason instead of presenting management as ready.
+        """
+        manager = sandbox_manager()
+        if manager is None:
+            if sandbox_failure is None:
+                return "disabled", None
+            return "unavailable", sandbox_failure
+        observation = manager.observe()
         if observation.available:
             return "ready", None
         return "unavailable", observation.reason_code
@@ -101,7 +149,7 @@ def create_runner(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
-        if ledger is not None:
+        for ledger in ledgers.values():
             ledger.close()
         if sandbox is not None:
             sandbox.close()
@@ -113,6 +161,12 @@ def create_runner(
     @app.exception_handler(RunnerRejected)
     async def rejected(request: Request, exc: RunnerRejected) -> JSONResponse:
         return JSONResponse({"reason_code": exc.reason_code}, status_code=409)
+
+    @app.exception_handler(RunnerUnavailable)
+    async def unavailable(request: Request, exc: RunnerUnavailable) -> JSONResponse:
+        # 503 keeps the intent with the control plane: this side cannot take work *now*, and a
+        # call must not be settled as denied because the runtime blipped.
+        return JSONResponse({"reason_code": exc.reason_code}, status_code=503)
 
     @app.middleware("http")
     async def authenticate(
@@ -151,24 +205,43 @@ def create_runner(
 
     @app.post("/v1/calls")
     def submit(request: ExecutionRequest) -> ExecutionRecord:
-        return execution().submit(request)
+        # The ticket names the side that serves it, and only that side accepts it.
+        return ledger_for(request.execution_profile).submit(request)
 
     @app.get("/v1/calls/{call_id}", response_model=None)
     def query(call_id: UUID) -> ExecutionRecord | JSONResponse:
-        record = execution().query(call_id)
-        return (
-            record
-            if record is not None
-            else JSONResponse({"reason_code": "call_not_found"}, status_code=404)
-        )
+        for candidate in known_ledgers():
+            record = candidate.query(call_id)
+            if record is not None:
+                return record
+        return JSONResponse({"reason_code": "call_not_found"}, status_code=404)
 
     @app.post("/v1/calls/{call_id}/renew")
     def renew(call_id: UUID, request: LeaseRenewal) -> ExecutionRecord:
-        return execution().renew(call_id, request.lease_generation, request.lease_expires_at)
+        return route(
+            call_id,
+            lambda ledger: ledger.renew(
+                call_id, request.lease_generation, request.lease_expires_at
+            ),
+        )
 
     @app.post("/v1/calls/{call_id}/cancel")
     def cancel(call_id: UUID, request: CallCancellation) -> ExecutionRecord:
-        return execution().cancel(call_id, request.lease_generation)
+        return route(call_id, lambda ledger: ledger.cancel(call_id, request.lease_generation))
+
+    def route(call_id: UUID, call: Callable[[CallLedger], ExecutionRecord]) -> ExecutionRecord:
+        """Ask each executor that could own this call; the one that knows it answers.
+
+        Only "no such call" moves on to the next executor: any other refusal is that executor's
+        verdict on a call it does own, and is reported as itself.
+        """
+        for candidate in known_ledgers():
+            try:
+                return call(candidate)
+            except RunnerRejected as refusal:
+                if refusal.reason_code != "call_not_found":
+                    raise
+        raise RunnerRejected("call_not_found")
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"])
     def unsupported(path: str) -> JSONResponse:

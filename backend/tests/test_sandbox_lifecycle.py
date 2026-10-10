@@ -10,7 +10,7 @@ import inspect
 import json
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Network
 from pathlib import Path
@@ -28,6 +28,7 @@ from huntweave.execution.sandbox import (
     LABEL_NAMESPACE,
     PROJECT_NAME,
     AuthorizedEndpoint,
+    CommandResult,
     ContainerFacts,
     ContainerRuntime,
     ContainerSpec,
@@ -75,6 +76,7 @@ FIXED_OPERATIONS = {
     "container_facts",
     "container_processes",
     "container_logs",
+    "exec_in_tool",
     "list_resources",
     "close",
 }
@@ -119,6 +121,13 @@ class FakeRuntime:
         self.drifted_policy: str | None = None
         self.reject_policy = False
         self.health = "healthy"
+        # What running a command inside the tool container produces.
+        self.commands: list[list[str]] = []
+        self.command_stdout = ""
+        self.command_stderr = ""
+        self.command_exit_code = 0
+        self.command_timed_out = False
+        self.command_gate: threading.Event | None = None
 
     # -- recording ----------------------------------------------------------------------------
 
@@ -319,6 +328,23 @@ class FakeRuntime:
             text=self.log_text[-tail_bytes:],
             lines_returned=self.log_lines_returned,
             line_bound=tail_lines,
+        )
+
+    def exec_in_tool(
+        self, container_id: str, argv: Sequence[str], timeout_seconds: int
+    ) -> CommandResult:
+        self._record("exec_in_tool")
+        if container_id not in self.containers:
+            raise ResourceNotFound(container_id)
+        self.commands.append(list(argv))
+        if self.command_gate is not None:
+            # Stands in for a command that is still running while the control plane reacts.
+            self.command_gate.wait(timeout=10)
+        return CommandResult(
+            exit_code=self.command_exit_code,
+            stdout=self.command_stdout,
+            stderr=self.command_stderr,
+            timed_out=self.command_timed_out,
         )
 
     def list_resources(self, labels: Mapping[str, str]) -> tuple[RuntimeResource, ...]:

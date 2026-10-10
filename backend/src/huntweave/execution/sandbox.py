@@ -169,6 +169,21 @@ class LogRead:
 
 
 @dataclass(frozen=True)
+class CommandResult:
+    """What running one command inside the tool container produced.
+
+    ``exit_code`` is the command's own status (124, the shell's "timed out", is reported as a
+    timeout instead), and both streams come back whole so the caller can archive them as evidence
+    rather than summarising them away.
+    """
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+
+
+@dataclass(frozen=True)
 class RuntimeResource:
     kind: ResourceKind
     id: str
@@ -233,6 +248,10 @@ class ContainerRuntime(Protocol):
     def container_facts(self, container_id: str) -> ContainerFacts: ...
 
     def container_processes(self, container_id: str, limit: int) -> tuple[str, ...]: ...
+
+    def exec_in_tool(
+        self, container_id: str, argv: Sequence[str], timeout_seconds: int
+    ) -> CommandResult: ...
 
     def container_logs(
         self, container_id: str, *, tail_lines: int, tail_bytes: int
@@ -717,6 +736,27 @@ class SandboxManager:
         container = self._container_of(self._instance(instance_id), "tool")
         try:
             return list(self.runtime.container_processes(container.id, limit))
+        except ResourceNotFound:
+            raise SandboxRejected("sandbox_resource_missing") from None
+
+    def run_command(
+        self, instance_id: UUID, argv: Sequence[str], timeout_seconds: int
+    ) -> CommandResult:
+        """Run one command inside this instance's tool container, as the tool user.
+
+        This is the only place a target action happens: inside the container the profile created,
+        under the permit the gateway holds, as the unprivileged user the profile names. The
+        command itself is the caller's — that is the product's purpose — and everything else about
+        where and how it runs was decided before the call arrived.
+        """
+        record = self._instance(instance_id)
+        if record.state != "ready":
+            raise SandboxRejected("sandbox_instance_not_running")
+        container = self._container_of(record, "tool")
+        if not argv or not all(isinstance(part, str) and part for part in argv):
+            raise SandboxRejected("action_command_invalid")
+        try:
+            return self.runtime.exec_in_tool(container.id, list(argv), timeout_seconds)
         except ResourceNotFound:
             raise SandboxRejected("sandbox_resource_missing") from None
 

@@ -8,7 +8,7 @@ become a container option. There is no generic request method and no ``**options
 """
 
 import socket
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import docker
@@ -21,6 +21,7 @@ from huntweave.execution.sandbox import (
     HEALTHCHECK_TIMEOUT_NS,
     LABEL_NAMESPACE,
     PROJECT_NAME,
+    CommandResult,
     ContainerFacts,
     LogRead,
     NetworkFacts,
@@ -37,13 +38,20 @@ from huntweave.execution.sandboxprofile import ContainerSpec, EgressProfile, San
 class DockerRuntime:
     """A narrow Docker client: fixed operations, and a refusal reported as a named reason."""
 
-    def __init__(self, client: Any | None = None, *, egress: EgressProfile | None = None) -> None:
+    def __init__(
+        self,
+        client: Any | None = None,
+        *,
+        egress: EgressProfile | None = None,
+        tool_user: str | None = None,
+    ) -> None:
         # The client is built here and nowhere else. `from_env` negotiates the API version with the
         # daemon as it is constructed, so a missing or unreadable socket fails here rather than at
         # import: that failure is reported as an unreachable runtime, never as a broken request.
-        # The policy commands and their user come from the fixed profile as one value, so no
-        # caller can name a program and there is no second source for either decision.
+        # The policy commands, their user and the tool user come from the fixed profile, so no
+        # caller can name a program or an identity.
         self.egress = egress
+        self.tool_user = tool_user
         try:
             self.client: Any = docker.from_env(timeout=15) if client is None else client
         except DockerException as error:
@@ -273,6 +281,40 @@ class DockerRuntime:
         output: bytes = result.output
         return output.decode("utf-8", errors="replace")
 
+    def exec_in_tool(
+        self, container_id: str, argv: Sequence[str], timeout_seconds: int
+    ) -> CommandResult:
+        """Run one command inside this project's tool container, as the profile's tool user.
+
+        The command is wrapped in a bounded supervisor inside the container, so an action that
+        hangs cannot outlive its ticket even if this process is busy: the timeout belongs to the
+        call, not to the caller's patience.
+        """
+        container = self._container(container_id, require_project=True)
+        user = self._tool_user()
+        supervised = ["timeout", "-k", str(TOOL_KILL_GRACE_SECONDS), str(timeout_seconds), *argv]
+        try:
+            result = container.exec_run(supervised, user=user, demux=True)
+        except DockerException as error:
+            raise RuntimeUnavailable(str(error)) from error
+        streams = result.output if isinstance(result.output, tuple) else (result.output, None)
+        raw_stdout, raw_stderr = streams
+        stdout = (raw_stdout or b"").decode("utf-8", errors="replace")
+        stderr = (raw_stderr or b"").decode("utf-8", errors="replace")
+        exit_code = int(result.exit_code or 0)
+        return CommandResult(
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            # 124 is what `timeout` returns when the deadline was reached.
+            timed_out=exit_code == 124,
+        )
+
+    def _tool_user(self) -> str:
+        if self.tool_user is None:
+            raise RuntimeUnavailable("no tool user is configured")
+        return self.tool_user
+
     def _egress(self) -> EgressProfile:
         if self.egress is None or not self.egress.policy_command:
             # Without a fixed program there is nothing this adapter may run, and running the
@@ -442,6 +484,10 @@ def _gateway_of(attrs: Mapping[str, Any]) -> str | None:
     return None
 
 
+# How long a command may keep running after its timeout before it is killed outright.
+TOOL_KILL_GRACE_SECONDS = 5
+
+
 def open_sandbox_manager(settings: SandboxSettings) -> SandboxManager:
     """Build the trusted manager from deployment settings.
 
@@ -451,7 +497,7 @@ def open_sandbox_manager(settings: SandboxSettings) -> SandboxManager:
     """
     profile = SandboxProfile.load(settings.profile_id, settings.profile_dir)
     return SandboxManager(
-        runtime=DockerRuntime(egress=profile.egress),
+        runtime=DockerRuntime(egress=profile.egress, tool_user=profile.tool.user),
         profile=profile,
         state_dir=settings.state_dir,
         evidence_dir=settings.evidence_dir,
