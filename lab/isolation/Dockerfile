@@ -29,3 +29,8 @@ FROM lab AS sandbox
 COPY profiles /opt/huntweave/profiles
 COPY lab/isolation/lifecycle.py ./lifecycle.py
 CMD ["python", "/opt/huntweave/lifecycle.py"]
+
+FROM lab AS egress
+COPY profiles /opt/huntweave/profiles
+COPY lab/isolation/egress.py ./egress.py
+CMD ["python", "/opt/huntweave/egress.py"]

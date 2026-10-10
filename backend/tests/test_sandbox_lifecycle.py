@@ -9,8 +9,10 @@ reclaim is allowed to remove.
 import inspect
 import json
 import threading
+import time
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from ipaddress import IPv4Network
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -21,13 +23,19 @@ from pydantic import ValidationError
 
 from huntweave.config import SandboxSettings
 from huntweave.contracts.capabilities import Capabilities
+from huntweave.execution.network_policy import NetworkPolicy
 from huntweave.execution.sandbox import (
     LABEL_NAMESPACE,
     PROJECT_NAME,
+    AuthorizedEndpoint,
     ContainerFacts,
     ContainerRuntime,
     ContainerSpec,
+    EgressUpdate,
+    HaltRequest,
+    LeaseRenewal,
     LogRead,
+    NetworkFacts,
     ResourceNotFound,
     RuntimeFacts,
     RuntimeResource,
@@ -44,6 +52,7 @@ from huntweave.execution.server import create_runner
 REPOSITORY = Path(__file__).resolve().parents[2]
 PROFILES = REPOSITORY / "profiles"
 LIFECYCLE_PROFILE = "sandbox-lifecycle-v1"
+EGRESS_PROFILE = "sandbox-egress-v1"
 
 # Every operation the trusted component may reach the runtime with (spec 0002 section 3.1). A
 # name added to the protocol without this list changing is a widening of the Docker surface.
@@ -58,6 +67,11 @@ FIXED_OPERATIONS = {
     "start_container",
     "stop_container",
     "remove_container",
+    "connect_network",
+    "network_facts",
+    "own_networks",
+    "apply_gateway_policy",
+    "read_gateway_policy",
     "container_facts",
     "container_processes",
     "container_logs",
@@ -85,6 +99,26 @@ class FakeRuntime:
         self.log_lines_returned = 1
         self.process_lines = ("1 python /lab/fixture.py hold",)
         self.sequence = 0
+        # The manager's view of the platform: the runner container is attached to this network,
+        # so a launch refuses to proceed unless it is discoverable. The deployment's target
+        # network exists before a launch, which is how its host-side address is known in time.
+        self.platform = [
+            NetworkFacts(id="net-control", name="control", subnet="172.28.0.0/16", internal=True)
+        ]
+        self.networks = {
+            "net-target": {
+                "name": "huntweave-lab-egress-targets",
+                "labels": {},
+                "internal": False,
+            }
+        }
+        self.network_subnets: dict[str, str] = {"net-target": "172.29.0.0/16"}
+        self.network_gateways: dict[str, str] = {"huntweave-lab-egress-targets": "172.29.0.1"}
+        self.policies: list[str] = []
+        self.policy_output = ""
+        self.drifted_policy: str | None = None
+        self.reject_policy = False
+        self.health = "healthy"
 
     # -- recording ----------------------------------------------------------------------------
 
@@ -187,6 +221,61 @@ class FakeRuntime:
         if self.containers.pop(container_id, None) is None:
             raise ResourceNotFound(container_id)
 
+    def connect_network(self, container_id: str, network_name: str) -> None:
+        self._record("connect_network")
+        if container_id not in self.containers:
+            raise ResourceNotFound(container_id)
+        self.containers[container_id]["target_network"] = network_name
+
+    def network_facts(self, network_id: str) -> NetworkFacts:
+        self._record("network_facts")
+        entry = self.networks.get(network_id)
+        if entry is None:
+            # The manager also asks by name for the deployment's target network.
+            entry = next(
+                (item for item in self.networks.values() if item["name"] == network_id), None
+            )
+        if entry is None:
+            raise ResourceNotFound(network_id)
+        return NetworkFacts(
+            id=network_id,
+            name=entry["name"],
+            subnet=self.network_subnets.get(network_id, "172.29.0.0/16"),
+            internal=bool(entry.get("internal")),
+            gateway=self.network_gateways.get(entry["name"], "172.29.0.1"),
+        )
+
+    def own_networks(self) -> tuple[NetworkFacts, ...]:
+        self._record("own_networks")
+        return tuple(self.platform)
+
+    def apply_gateway_policy(self, gateway_id: str, payload: str) -> None:
+        self._record("apply_gateway_policy")
+        if gateway_id not in self.containers:
+            raise ResourceNotFound(gateway_id)
+        if self.reject_policy:
+            raise RuntimeUnavailable("gateway policy rejected")
+        self.policies.append(payload)
+        # A gateway that installed exactly what it was told, as `iptables-save` would print it.
+        permissions = json.loads(payload)["permissions"]
+        lines = ["*filter", ":INPUT DROP [0:0]", ":FORWARD DROP [0:0]", ":OUTPUT DROP [0:0]"]
+        for item in permissions:
+            lines.append(
+                f"[0:0] -A OUTPUT -d {item['address']}/32 -p tcp --dport {item['port']} "
+                "-m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"
+            )
+            lines.append(
+                f"[0:0] -A INPUT -s {item['address']}/32 -p tcp --sport {item['port']} "
+                "-m conntrack --ctstate ESTABLISHED -j ACCEPT"
+            )
+        self.policy_output = "\n".join([*lines, "COMMIT", ""])
+
+    def read_gateway_policy(self, gateway_id: str) -> str:
+        self._record("read_gateway_policy")
+        if gateway_id not in self.containers:
+            raise ResourceNotFound(gateway_id)
+        return self.drifted_policy or self.policy_output
+
     def container_facts(self, container_id: str) -> ContainerFacts:
         self._record("container_facts")
         entry = self.containers.get(container_id)
@@ -207,12 +296,17 @@ class FakeRuntime:
             security_options=spec.security_options,
             read_only_rootfs=spec.read_only_rootfs,
             mounts=spec.mounts,
+            health=self.health,
         )
 
     def container_processes(self, container_id: str, limit: int) -> tuple[str, ...]:
         self._record("container_processes")
-        if container_id not in self.containers:
+        entry = self.containers.get(container_id)
+        if entry is None:
             raise ResourceNotFound(container_id)
+        if not entry["running"]:
+            # Docker refuses to list processes in a container that is not running.
+            return ()
         return self.process_lines[:limit]
 
     def container_logs(
@@ -280,6 +374,17 @@ def manager(tmp_path: Path, runtime: FakeRuntime, profile: SandboxProfile) -> Sa
     return SandboxManager(
         runtime=runtime,
         profile=profile,
+        state_dir=tmp_path / "state",
+        evidence_dir=tmp_path / "evidence",
+    )
+
+
+@pytest.fixture
+def egress_manager(tmp_path: Path, runtime: FakeRuntime) -> SandboxManager:
+    """The profile that declares a target network: the one egress control is checked against."""
+    return SandboxManager(
+        runtime=runtime,
+        profile=SandboxProfile.load(EGRESS_PROFILE, PROFILES),
         state_dir=tmp_path / "state",
         evidence_dir=tmp_path / "evidence",
     )
@@ -975,6 +1080,500 @@ def test_concurrent_session_open_returns_one_session(tmp_path: Path) -> None:
     for thread in threads:
         thread.join()
     assert len(set(seen)) == 1
+
+
+# --------------------------------------------------------------------------------------------
+# Egress: rules before the process, scope, revocation
+# --------------------------------------------------------------------------------------------
+
+
+def endpoint(address: str, port: int = 7000) -> AuthorizedEndpoint:
+    return AuthorizedEndpoint(address=address, port=port)
+
+
+def test_the_rules_exist_before_the_tool_process_does(
+    egress_manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = egress_manager.open_session(_session_request())
+    egress_manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    calls = runtime.calls
+    gateway_created = calls.index("create_container")
+    attached = calls.index("connect_network")
+    gateway_started = calls.index("start_container")
+    policy_applied = calls.index("apply_gateway_policy")
+    tool_created = calls.index("create_container", gateway_created + 1)
+    # Attach, start, wait for the gateway to report ready, apply the authorization — and only
+    # then may a tool container exist whose process could send anything.
+    assert gateway_created < attached < gateway_started
+    assert gateway_started < policy_applied < tool_created
+    assert "container_facts" in calls[gateway_started:policy_applied]
+
+
+def test_a_gateway_that_never_reports_ready_ends_the_launch(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    runtime.health = "unhealthy"
+    session = manager.open_session(_session_request())
+    with pytest.raises(SandboxRejected) as raised:
+        manager.launch_instance(SandboxInstanceRequest(session_id=session.session_id))
+    assert raised.value.reason_code == "sandbox_gateway_not_ready"
+    assert runtime.calls.count("create_container") == 1, "the tool container was never created"
+    runtime.health = "healthy"
+    assert manager.reclaim_session(session.session_id).complete
+
+
+def test_the_policy_carries_the_authorization_and_the_platform_protection(
+    egress_manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = egress_manager.open_session(_session_request())
+    egress_manager.launch_instance(
+        SandboxInstanceRequest(
+            session_id=session.session_id,
+            authorized=[endpoint("10.20.0.5"), endpoint("10.20.0.6", 443)],
+        )
+    )
+    payload = json.loads(runtime.policies[-1])
+    assert payload["permissions"] == [
+        {"address": "10.20.0.5", "port": 7000},
+        {"address": "10.20.0.6", "port": 443},
+    ]
+    # The platform's own network is protected, and so is the host's address on each bridge the
+    # session uses — that address is the host's own interface, not a target.
+    protected = payload["protected"]
+    assert "172.28.0.0/16" in protected
+    assert "172.29.0.1/32" in protected
+    rules = NetworkPolicy(
+        (), tuple(IPv4Network(item) for item in protected)
+    ).gateway_rules()
+    for network in ("169.254.0.0/16", "127.0.0.0/8", "0.0.0.0/8"):
+        assert f"-A OUTPUT -d {network} -j DROP" in rules
+
+
+@pytest.mark.parametrize(
+    ("authorized", "reason_code"),
+    [
+        ([endpoint("172.28.0.9")], "scope_denied"),  # inside the platform's own control network
+        ([endpoint("172.29.0.1")], "scope_denied"),  # the host's own address on the target bridge
+        ([endpoint("169.254.169.254")], "scope_denied"),  # the metadata address
+        ([endpoint("127.0.0.1")], "scope_denied"),  # loopback
+        ([endpoint("::1")], "endpoint_not_expressible"),  # IPv6 is not a scope this profile holds
+        ([endpoint("example.invalid")], "endpoint_not_expressible"),  # a name is not an endpoint
+    ],
+)
+def test_an_authorization_that_names_infrastructure_is_refused(
+    egress_manager: SandboxManager,
+    runtime: FakeRuntime,
+    authorized: list[AuthorizedEndpoint],
+    reason_code: str,
+) -> None:
+    session = egress_manager.open_session(_session_request())
+    with pytest.raises(SandboxRejected) as raised:
+        egress_manager.launch_instance(
+            SandboxInstanceRequest(session_id=session.session_id, authorized=authorized)
+        )
+    assert raised.value.reason_code == reason_code
+    # Refused before anything exists: an authorization naming infrastructure never becomes a
+    # container that has to be cleaned up afterwards.
+    assert runtime.containers == {}
+
+
+def test_a_platform_whose_networks_are_unknown_is_refused_a_launch(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    runtime.platform = []
+    session = manager.open_session(_session_request())
+    with pytest.raises(SandboxRejected) as raised:
+        manager.launch_instance(SandboxInstanceRequest(session_id=session.session_id))
+    assert raised.value.reason_code == "sandbox_platform_networks_unknown"
+    assert runtime.containers == {}
+
+
+def test_a_narrower_scope_replaces_the_previous_one(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(
+        SandboxInstanceRequest(
+            session_id=session.session_id, authorized=[endpoint("10.20.0.5"), endpoint("10.20.0.7")]
+        )
+    )
+    shrunk = manager.authorize_egress(
+        EgressUpdate(
+            instance_id=instance.instance_id,
+            authorized=[endpoint("10.20.0.7")],
+            reason="scope_shrunk",
+        )
+    )
+    assert json.loads(runtime.policies[-1])["permissions"] == [
+        {"address": "10.20.0.7", "port": 7000}
+    ]
+    assert [item.address for item in shrunk.egress.authorized] == ["10.20.0.7"]
+    assert shrunk.egress.applied_at is not None
+    assert shrunk.egress.revoked_at is None
+    # Both changes are kept, in order, with the reason each one happened.
+    assert [change.reason for change in shrunk.egress_changes] == ["initial", "scope_shrunk"]
+    assert shrunk.egress_changes[0].at <= shrunk.egress_changes[1].at
+
+
+def test_revocation_closes_egress_without_stopping_the_containers(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    revoked = manager.revoke_egress(instance.instance_id, "scope_revoked")
+    assert json.loads(runtime.policies[-1])["permissions"] == []
+    assert revoked.egress.authorized == []
+    assert revoked.egress.revoked_at is not None
+    assert revoked.egress.revocation_reason == "scope_revoked"
+    # The containers are still there: revocation is not a stop, and the stop is its own fact.
+    assert revoked.state == "ready"
+    running = [
+        runtime.containers[item.id]["running"]
+        for item in revoked.resources
+        if item.kind == "container"
+    ]
+    assert all(running)
+
+
+def test_halting_revokes_before_it_stops(manager: SandboxManager, runtime: FakeRuntime) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    before = len(runtime.calls)
+    halted = manager.halt_instance(
+        HaltRequest(instance_id=instance.instance_id, reason="operator_cancelled")
+    )
+    assert halted.state == "stopped"
+    assert halted.halt_reason == "operator_cancelled"
+    sequence = [
+        call
+        for call in runtime.calls[before:]
+        if call in {"apply_gateway_policy", "stop_container"}
+    ]
+    assert sequence == ["apply_gateway_policy", "stop_container", "stop_container"]
+    assert json.loads(runtime.policies[-1])["permissions"] == []
+
+
+# --------------------------------------------------------------------------------------------
+# Control lease
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_lease_beyond_the_documented_bound_is_refused(
+    manager: SandboxManager,
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(SandboxInstanceRequest(session_id=session.session_id))
+    now = datetime.now(UTC)
+    with pytest.raises(SandboxRejected) as raised:
+        manager.renew_instance_lease(
+            LeaseRenewal(
+                instance_id=instance.instance_id,
+                lease_expires_at=now + timedelta(seconds=30),
+            )
+        )
+    assert raised.value.reason_code == "control_lease_too_long"
+    with pytest.raises(SandboxRejected) as raised:
+        manager.renew_instance_lease(
+            LeaseRenewal(
+                instance_id=instance.instance_id,
+                lease_expires_at=now - timedelta(seconds=1),
+            )
+        )
+    assert raised.value.reason_code == "invalid_control_lease"
+    renewed = manager.renew_instance_lease(
+        LeaseRenewal(instance_id=instance.instance_id, lease_expires_at=now + timedelta(seconds=10))
+    )
+    assert renewed.lease_expires_at is not None
+
+
+def test_a_lapsed_lease_is_halted_by_the_manager_itself(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    manager.renew_instance_lease(
+        LeaseRenewal(
+            instance_id=instance.instance_id,
+            lease_expires_at=datetime.now(UTC) + timedelta(seconds=1),
+        )
+    )
+    # The control plane stops answering: nobody renews, and the manager's own watchdog ends it.
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        if manager.instances[str(instance.instance_id)].state == "stopped":
+            break
+        time.sleep(0.2)
+    halted = manager.instances[str(instance.instance_id)]
+    assert halted.state == "stopped"
+    assert halted.halt_reason == "control_lease_expired"
+    assert json.loads(runtime.policies[-1])["permissions"] == []
+    assert all(
+        runtime.containers[item.id]["running"] is False
+        for item in halted.resources
+        if item.kind == "container"
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# Revert
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_revert_revokes_stops_reclaims_and_then_allows_withdrawal(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    report = manager.begin_revert()
+    assert report.state == "complete"
+    assert report.withdrew is True
+    assert report.halted == [instance.instance_id]
+    assert sorted(item.kind for item in report.reclaimed) == [
+        "container",
+        "container",
+        "network",
+        "volume",
+    ]
+    assert manager.instances[str(instance.instance_id)].state == "reclaimed"
+    assert manager.resources() == []
+    # Asking again is a no-op, not a second teardown.
+    again = manager.begin_revert()
+    assert again.state == "complete" and again.halted == []
+    # New executions are refused from the moment the revert began, and stay refused.
+    with pytest.raises(SandboxRejected) as raised:
+        manager.launch_instance(SandboxInstanceRequest(session_id=session.session_id))
+    assert raised.value.reason_code == "sandbox_reverting"
+
+
+def test_a_revert_that_cannot_confirm_a_stop_keeps_management_in_place(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(SandboxInstanceRequest(session_id=session.session_id))
+    runtime.refuse_stop = True
+    report = manager.begin_revert()
+    assert report.state == "blocked"
+    assert report.withdrew is False
+    assert report.reason_code == "sandbox_revert_blocked"
+    assert any(item.startswith("sandbox_stop_unconfirmed") for item in report.outstanding)
+    # The containers are not removed while the stop is unconfirmed, and the instance is still
+    # there for the operator to reconcile.
+    assert manager.resources(session_id=session.session_id) != []
+    runtime.refuse_stop = False
+    resolved = manager.begin_revert()
+    assert resolved.state == "complete" and resolved.withdrew is True
+    assert manager.instances[str(instance.instance_id)].state == "reclaimed"
+
+
+def test_a_policy_the_gateway_did_not_really_take_ends_the_launch(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    runtime.reject_policy = True
+    session = manager.open_session(_session_request())
+    with pytest.raises(SandboxRejected) as raised:
+        manager.launch_instance(
+            SandboxInstanceRequest(
+                session_id=session.session_id, authorized=[endpoint("10.20.0.5")]
+            )
+        )
+    assert raised.value.reason_code == "sandbox_gateway_policy_failed"
+    assert runtime.calls.count("create_container") == 1, "no tool container was created"
+    runtime.reject_policy = False
+    assert manager.reclaim_session(session.session_id).complete
+
+
+def test_a_permit_the_gateway_no_longer_holds_is_not_renewed(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    # The kernel's rules changed under the manager: the ledger's claim is no longer true, so
+    # neither a renewal nor a running execution may be assumed.
+    runtime.drifted_policy = (
+        "*filter\n:INPUT DROP [0:0]\n:FORWARD DROP [0:0]\n:OUTPUT DROP [0:0]\n"
+        "[0:0] -A OUTPUT -d 10.20.0.9/32 -p tcp --dport 7000 -j ACCEPT\n"
+        "[0:0] -A INPUT -s 10.20.0.9/32 -p tcp --sport 7000 -j ACCEPT\nCOMMIT\n"
+    )
+    with pytest.raises(SandboxRejected) as raised:
+        manager.renew_instance_lease(
+            LeaseRenewal(
+                instance_id=instance.instance_id,
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+            )
+        )
+    assert raised.value.reason_code == "sandbox_egress_unverified"
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        if manager.instances[str(instance.instance_id)].state == "stopped":
+            break
+        time.sleep(0.3)
+    drifted = manager.instances[str(instance.instance_id)]
+    assert drifted.state == "stopped"
+    assert drifted.halt_reason == "egress_unverified"
+    assert drifted.egress.authorized == []
+
+
+def test_a_stop_withdraws_the_permit_and_the_lease(
+    manager: SandboxManager,
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    manager.renew_instance_lease(
+        LeaseRenewal(
+            instance_id=instance.instance_id,
+            lease_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+        )
+    )
+    stopped = manager.stop_instance(instance.instance_id)
+    assert stopped.egress.authorized == []
+    assert stopped.egress.revoked_at is not None
+    assert stopped.lease_expires_at is None, "a stopped instance holds no live claim"
+
+
+def test_a_revert_archives_what_it_reconciled(
+    manager: SandboxManager, tmp_path: Path
+) -> None:
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(SandboxInstanceRequest(session_id=session.session_id))
+    report = manager.begin_revert()
+    assert report.state == "complete"
+    assert len(report.archived) == 1
+    archived = json.loads((tmp_path / "evidence" / report.archived[0]).read_text(encoding="utf-8"))
+    assert archived["reason"] == "operator_revert"
+    assert archived["halted"] == [str(instance.instance_id)]
+    assert archived["outstanding"] == []
+
+
+def test_the_adapter_refuses_to_run_a_program_anywhere_it_does_not_own() -> None:
+    from huntweave.execution.dockerruntime import DockerRuntime
+    from huntweave.execution.sandboxprofile import EgressProfile
+
+    class Container:
+        labels: dict[str, str] = {}
+
+    class Containers:
+        def get(self, identifier: str) -> Container:
+            return Container()
+
+    class Client:
+        containers = Containers()
+
+    runtime = DockerRuntime(
+        client=Client(),
+        egress=EgressProfile(
+            policy_command=("python", "/lab/network.py", "policy"),
+            read_command=("iptables-save", "-c"),
+            policy_user="0:0",
+        ),
+    )
+    for call in (
+        lambda: runtime.apply_gateway_policy("someone-elses-container", "{}"),
+        lambda: runtime.read_gateway_policy("someone-elses-container"),
+    ):
+        with pytest.raises(ResourceNotFound):
+            call()
+    # And a runtime configured with no program at all runs nothing, rather than treating a
+    # caller's payload as the program.
+    unconfigured = DockerRuntime(client=Client())
+    with pytest.raises(RuntimeUnavailable):
+        unconfigured.apply_gateway_policy("any", "{}")
+
+
+def test_a_revert_that_cannot_account_for_a_resource_blocks(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    manager.begin_revert()
+    runtime.create_container(
+        name="huntweave-deadbeef-deadbeef-deadbeef-tool",
+        labels={
+            f"{LABEL_NAMESPACE}.project": PROJECT_NAME,
+            f"{LABEL_NAMESPACE}.instance_id": str(uuid4()),
+        },
+        spec=_dummy_spec(),
+    )
+    report = manager.begin_revert()
+    assert report.state == "blocked" and report.withdrew is False
+    assert any(
+        item.startswith("sandbox_resources_unaccounted") for item in report.outstanding
+    ), report.outstanding
+
+
+def test_a_rebuild_after_a_halt_starts_from_an_empty_session(
+    egress_manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    session = egress_manager.open_session(_session_request())
+    first = egress_manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    egress_manager.halt_instance(
+        HaltRequest(instance_id=first.instance_id, reason="operator_cancelled")
+    )
+    second = egress_manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    assert second.instance_id != first.instance_id
+    assert second.state == "ready"
+    assert second.egress.applied_at is not None
+    # The halted instance's resources are still recorded — stopping is not reclaiming — and the
+    # rebuild has its own four.
+    assert sorted(item.kind for item in second.resources) == [
+        "container",
+        "container",
+        "network",
+        "volume",
+    ]
+    assert egress_manager.instances[str(first.instance_id)].state == "stopped"
+
+
+def test_a_whole_lifecycle_only_ever_asks_the_runtime_for_fixed_operations(
+    manager: SandboxManager, runtime: FakeRuntime
+) -> None:
+    """The check that keeps the Docker surface narrow: whatever a full round does, the runtime is
+    only ever asked for operations that are named in the fixed set."""
+    session = manager.open_session(_session_request())
+    instance = manager.launch_instance(
+        SandboxInstanceRequest(session_id=session.session_id, authorized=[endpoint("10.20.0.5")])
+    )
+    manager.authorize_egress(
+        EgressUpdate(
+            instance_id=instance.instance_id,
+            authorized=[endpoint("10.20.0.6")],
+            reason="scope_shrunk",
+        )
+    )
+    manager.processes(instance.instance_id)
+    manager.logs(instance.instance_id, "tool")
+    manager.audit()
+    manager.halt_instance(
+        HaltRequest(instance_id=instance.instance_id, reason="operator_cancelled")
+    )
+    manager.reclaim_instance(instance.instance_id)
+    manager.close()
+
+    assert set(runtime.calls) <= FIXED_OPERATIONS
+    # And the round really did use the operations this slice added, rather than the set being
+    # asserted from a list nobody exercises.
+    assert {
+        "connect_network" if manager.profile.target_network else "create_network",
+        "apply_gateway_policy",
+        "read_gateway_policy",
+        "own_networks",
+        "network_facts",
+    } <= set(runtime.calls)
 
 
 def _session_request(

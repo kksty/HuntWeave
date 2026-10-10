@@ -7,6 +7,7 @@ takes a spec the manager already composed out of the fixed profile, so nothing a
 become a container option. There is no generic request method and no ``**options`` passthrough.
 """
 
+import socket
 from collections.abc import Mapping
 from typing import Any
 
@@ -15,8 +16,14 @@ from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 
 from huntweave.config import SandboxSettings
 from huntweave.execution.sandbox import (
+    HEALTHCHECK_INTERVAL_NS,
+    HEALTHCHECK_RETRIES,
+    HEALTHCHECK_TIMEOUT_NS,
+    LABEL_NAMESPACE,
+    PROJECT_NAME,
     ContainerFacts,
     LogRead,
+    NetworkFacts,
     ResourceNotFound,
     RuntimeFacts,
     RuntimeResource,
@@ -24,16 +31,19 @@ from huntweave.execution.sandbox import (
     SandboxManager,
     VolumeMount,
 )
-from huntweave.execution.sandboxprofile import ContainerSpec, SandboxProfile
+from huntweave.execution.sandboxprofile import ContainerSpec, EgressProfile, SandboxProfile
 
 
 class DockerRuntime:
     """A narrow Docker client: fixed operations, and a refusal reported as a named reason."""
 
-    def __init__(self, client: Any | None = None) -> None:
+    def __init__(self, client: Any | None = None, *, egress: EgressProfile | None = None) -> None:
         # The client is built here and nowhere else. `from_env` negotiates the API version with the
         # daemon as it is constructed, so a missing or unreadable socket fails here rather than at
         # import: that failure is reported as an unreachable runtime, never as a broken request.
+        # The policy commands and their user come from the fixed profile as one value, so no
+        # caller can name a program and there is no second source for either decision.
+        self.egress = egress
         try:
             self.client: Any = docker.from_env(timeout=15) if client is None else client
         except DockerException as error:
@@ -131,6 +141,15 @@ class DockerRuntime:
             "nano_cpus": int(spec.cpu_limit * 1_000_000_000),
             "tmpfs": dict(spec.tmpfs),
         }
+        if spec.healthcheck:
+            # The profile's readiness command becomes the container's health probe, which is how
+            # the manager learns that the gateway finished installing its rules.
+            options["healthcheck"] = {
+                "test": list(spec.healthcheck),
+                "interval": HEALTHCHECK_INTERVAL_NS,
+                "timeout": HEALTHCHECK_TIMEOUT_NS,
+                "retries": HEALTHCHECK_RETRIES,
+            }
         if spec.command is not None:
             options["command"] = list(spec.command)
         if spec.network_name is not None:
@@ -175,6 +194,92 @@ class DockerRuntime:
         except DockerException as error:
             raise RuntimeUnavailable(str(error)) from error
 
+    # -- network attachment and egress policy -------------------------------------------------
+
+    def connect_network(self, container_id: str, network_name: str) -> None:
+        try:
+            network = self.client.networks.get(network_name)
+            network.connect(container_id)
+        except NotFound as error:
+            raise ResourceNotFound(network_name) from error
+        except DockerException as error:
+            raise RuntimeUnavailable(str(error)) from error
+
+    def network_facts(self, network_id: str) -> NetworkFacts:
+        return _network_facts(self._network(network_id))
+
+    def own_networks(self) -> tuple[NetworkFacts, ...]:
+        """The networks this Runner container is attached to.
+
+        Discovered from the container itself rather than passed in, so a deployment cannot forget
+        to protect the control plane it is part of. An unrecognisable container id yields no
+        networks, and the manager refuses the launch instead of assuming they are unreachable.
+        """
+        try:
+            container = self.client.containers.get(socket.gethostname())
+            container.reload()
+        except (NotFound, DockerException):
+            return ()
+        found = []
+        attached = (container.attrs.get("NetworkSettings", {}).get("Networks") or {})
+        for name, record in attached.items():
+            network_id = record.get("NetworkID")
+            facts = (
+                _network_facts(self._network(str(network_id)))
+                if network_id
+                else NetworkFacts(id=name, name=str(name), subnet=None, internal=False)
+            )
+            ipam = record.get("IPAMConfig") or {}
+            found.append(
+                NetworkFacts(
+                    id=facts.id,
+                    name=str(name),
+                    subnet=ipam.get("Subnet") or facts.subnet,
+                    internal=facts.internal,
+                    gateway=facts.gateway,
+                )
+            )
+        return tuple(found)
+
+    def apply_gateway_policy(self, gateway_id: str, payload: str) -> None:
+        """Run the profile's fixed policy command inside the gateway with this rule body.
+
+        No command comes from the caller: the program and the user are the profile's, and only the
+        JSON body (permissions and protected networks this project already validated) travels. The
+        container has to carry this project's labels, so the trusted component can only ever exec
+        in a container it owns — and with no program configured, nothing runs at all.
+        """
+        egress = self._egress()
+        egress = self._egress()
+        container = self._container(gateway_id, require_project=True)
+        try:
+            result = container.exec_run(
+                [*egress.policy_command, payload], user=egress.policy_user, demux=False
+            )
+        except DockerException as error:
+            raise RuntimeUnavailable(str(error)) from error
+        if result.exit_code != 0:
+            # The rule set is replaced as a whole by the helper, so a refusal leaves the previous
+            # rules standing; the manager reads them back and decides what that means.
+            raise RuntimeUnavailable("gateway policy rejected")
+
+    def read_gateway_policy(self, gateway_id: str) -> str:
+        egress = self._egress()
+        container = self._container(gateway_id, require_project=True)
+        try:
+            result = container.exec_run(list(egress.read_command), user=egress.policy_user)
+        except DockerException as error:
+            raise RuntimeUnavailable(str(error)) from error
+        output: bytes = result.output
+        return output.decode("utf-8", errors="replace")
+
+    def _egress(self) -> EgressProfile:
+        if self.egress is None or not self.egress.policy_command:
+            # Without a fixed program there is nothing this adapter may run, and running the
+            # caller's payload as a program is exactly what must never happen.
+            raise RuntimeUnavailable("no egress policy command is configured")
+        return self.egress
+
     # -- facts about this project's resources -------------------------------------------------
 
     def container_facts(self, container_id: str) -> ContainerFacts:
@@ -201,6 +306,7 @@ class DockerRuntime:
             security_options=tuple(host.get("SecurityOpt") or ()),
             read_only_rootfs=bool(host.get("ReadonlyRootfs")),
             mounts=mounts,
+            health=str((attrs.get("State", {}).get("Health") or {}).get("Status") or "none"),
         )
 
     def container_processes(self, container_id: str, limit: int) -> tuple[str, ...]:
@@ -272,13 +378,43 @@ class DockerRuntime:
     def close(self) -> None:
         self.client.close()
 
-    def _container(self, container_id: str) -> Any:
+    def _container(self, container_id: str, *, require_project: bool = False) -> Any:
         try:
-            return self.client.containers.get(container_id)
+            container = self.client.containers.get(container_id)
         except NotFound as error:
             raise ResourceNotFound(container_id) from error
         except DockerException as error:
             raise RuntimeUnavailable(str(error)) from error
+        if require_project and not str(
+            _labels_of(container.labels).get(f"{LABEL_NAMESPACE}.project", "")
+        ) == PROJECT_NAME:
+            # An operation that runs a program inside a container is only ever aimed at one this
+            # project created: a bare container id from a caller is not enough.
+            raise ResourceNotFound(container_id)
+        return container
+
+    def _network(self, network_id: str) -> Any:
+        try:
+            return self.client.networks.get(network_id)
+        except NotFound as error:
+            raise ResourceNotFound(network_id) from error
+        except DockerException as error:
+            raise RuntimeUnavailable(str(error)) from error
+
+
+def _network_facts(network: Any) -> NetworkFacts:
+    try:
+        network.reload()
+    except DockerException as error:
+        raise RuntimeUnavailable(str(error)) from error
+    attrs: Mapping[str, Any] = network.attrs
+    return NetworkFacts(
+        id=str(network.id),
+        name=str(network.name),
+        subnet=_subnet_of(attrs),
+        internal=bool(attrs.get("Internal")),
+        gateway=_gateway_of(attrs),
+    )
 
 
 def _labels_of(value: object) -> dict[str, str]:
@@ -286,6 +422,24 @@ def _labels_of(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     return {str(key): str(item) for key, item in value.items()}
+
+
+def _subnet_of(attrs: Mapping[str, Any]) -> str | None:
+    config = (attrs.get("IPAM") or {}).get("Config") or []
+    for entry in config:
+        subnet = entry.get("Subnet")
+        if isinstance(subnet, str) and ":" not in subnet:
+            return subnet
+    return None
+
+
+def _gateway_of(attrs: Mapping[str, Any]) -> str | None:
+    config = (attrs.get("IPAM") or {}).get("Config") or []
+    for entry in config:
+        gateway = entry.get("Gateway")
+        if isinstance(gateway, str) and ":" not in gateway:
+            return gateway
+    return None
 
 
 def open_sandbox_manager(settings: SandboxSettings) -> SandboxManager:
@@ -297,7 +451,7 @@ def open_sandbox_manager(settings: SandboxSettings) -> SandboxManager:
     """
     profile = SandboxProfile.load(settings.profile_id, settings.profile_dir)
     return SandboxManager(
-        runtime=DockerRuntime(),
+        runtime=DockerRuntime(egress=profile.egress),
         profile=profile,
         state_dir=settings.state_dir,
         evidence_dir=settings.evidence_dir,

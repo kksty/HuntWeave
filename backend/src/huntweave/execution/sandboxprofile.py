@@ -7,6 +7,7 @@ left to choose. The loader refuses anything that would widen the sandbox instead
 and hoping the caller behaves.
 """
 
+import ipaddress
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -59,6 +60,9 @@ class ContainerSpec:
     pids_limit: int
     memory_limit: str
     cpu_limit: float
+    # Empty means no health probe. The gateway's is what the manager waits on before it lets a
+    # tool exist, so a gateway without one is refused at load time.
+    healthcheck: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,10 @@ class RoleProfile:
     command: tuple[str, ...] | None
     user: str
     capabilities_add: tuple[str, ...]
+    # How the role reports that it finished preparing itself. The gateway installs its
+    # default-deny rules before it reports ready, which is what lets the manager hold the tool
+    # back until the rules exist.
+    healthcheck: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,24 @@ class SandboxLimits:
     log_tail_bytes: int
     log_line_bound: int
     evidence_max_bytes: int
+    # How long the manager waits for the gateway to report ready, and what "within the lease
+    # allows" means when a revocation has to take effect.
+    readiness_seconds: int
+    revocation_seconds: int
+
+
+@dataclass(frozen=True)
+class EgressProfile:
+    """The fixed commands the manager uses to install and read the gateway's egress rules.
+
+    Only the rule body travels; the program that installs it is decided here, and the manager
+    refuses to install anything at all when this profile names no program. A caller cannot name a
+    program, and the adapter runs nothing else.
+    """
+
+    policy_command: tuple[str, ...]
+    read_command: tuple[str, ...]
+    policy_user: str
 
 
 @dataclass(frozen=True)
@@ -96,8 +122,15 @@ class SandboxProfile:
     network_internal: bool
     network_gateway_mode: str
     dns: tuple[str, ...]
+    # The network the gateway uses to reach authorized targets. Null means this profile has no
+    # target egress at all: a session it creates cannot reach anything but itself.
+    target_network: str | None
+    # Ranges the deployment declares off-limits on top of what the manager discovers for itself
+    # (its own networks and the bridges' host-side addresses).
+    protected_networks: tuple[str, ...]
     workspace_mount: str
     tool_inventory: tuple[str, ...]
+    egress: EgressProfile
     gateway: RoleProfile
     tool: RoleProfile
     limits: SandboxLimits
@@ -127,6 +160,7 @@ class SandboxProfile:
                 "network",
                 "workspace",
                 "tool_inventory",
+                "egress",
                 "gateway",
                 "tool",
                 "limits",
@@ -138,7 +172,16 @@ class SandboxProfile:
         if version != SUPPORTED_PROFILE_VERSION:
             raise SandboxRejected("sandbox_profile_unsupported_version")
         network = _mapping(
-            document["network"], {"driver", "internal", "ipv6", "gateway_mode_ipv4", "dns"}
+            document["network"],
+            {
+                "driver",
+                "internal",
+                "ipv6",
+                "gateway_mode_ipv4",
+                "dns",
+                "target_network",
+                "protected",
+            },
         )
         # The session network is where the tool runs. A profile that lets it reach outside the
         # sandbox is not a narrower deployment choice, it is a different product.
@@ -148,7 +191,21 @@ class SandboxProfile:
             raise SandboxRejected("sandbox_profile_not_isolated")
         if gateway_mode != "isolated" or any(value != "127.0.0.1" for value in dns):
             raise SandboxRejected("sandbox_profile_not_isolated")
+        target_network = network["target_network"]
+        if target_network is not None:
+            target_network = _string(target_network)
         workspace = _mapping(document["workspace"], {"mount"})
+        egress = _mapping(
+            document["egress"], {"policy_command", "read_command", "policy_user"}
+        )
+        gateway = _role(document["gateway"], privileged=True)
+        policy_command = _command(egress["policy_command"])
+        read_command = _command(egress["read_command"])
+        policy_user = _string(egress["policy_user"])
+        if _user_identifier(policy_user) != _user_identifier(gateway.user):
+            # The rules are installed as the gateway's own user: two sources for one decision is
+            # one source too many.
+            raise SandboxRejected("sandbox_profile_invalid")
         return cls(
             profile_id=profile_id,
             profile_version=version,
@@ -157,9 +214,18 @@ class SandboxProfile:
             network_internal=True,
             network_gateway_mode=gateway_mode,
             dns=dns,
+            target_network=target_network,
+            protected_networks=tuple(
+                _network(value) for value in _strings(network["protected"])
+            ),
             workspace_mount=_string(workspace["mount"]),
             tool_inventory=_strings(document["tool_inventory"]),
-            gateway=_role(document["gateway"], privileged=True),
+            egress=EgressProfile(
+                policy_command=policy_command,
+                read_command=read_command,
+                policy_user=policy_user,
+            ),
+            gateway=gateway,
             tool=_role(document["tool"], privileged=False),
             limits=_limits(document["limits"]),
         )
@@ -193,6 +259,7 @@ class SandboxProfile:
             pids_limit=self.limits.pids,
             memory_limit=self.limits.memory,
             cpu_limit=self.limits.cpus,
+            healthcheck=self.gateway.healthcheck,
         )
 
     def tool_spec(self, gateway_id: str, volume_id: str) -> ContainerSpec:
@@ -218,6 +285,7 @@ class SandboxProfile:
             pids_limit=self.limits.pids,
             memory_limit=self.limits.memory,
             cpu_limit=self.limits.cpus,
+            healthcheck=self.tool.healthcheck,
         )
 
     def _security_options(self) -> tuple[str, ...]:
@@ -266,6 +334,25 @@ def _strings(value: object) -> tuple[str, ...]:
     return tuple(_string(item) for item in _list(value))
 
 
+def _command(value: object) -> tuple[str, ...]:
+    """A command a profile names is never empty: an empty one would make a caller's payload the
+    program, which is exactly the widening this component exists to prevent."""
+    command = _strings(value)
+    if not command:
+        raise SandboxRejected("sandbox_profile_invalid")
+    return command
+
+
+def _network(value: object) -> str:
+    """A declared protected range must be an IPv4 network literal."""
+    text = _string(value)
+    try:
+        network = ipaddress.IPv4Network(text, strict=False)
+    except ValueError:
+        raise SandboxRejected("sandbox_profile_invalid") from None
+    return str(network)
+
+
 def _user_identifier(value: object) -> int:
     """A container user is ``uid`` or ``uid:gid``; only the numeric form is accepted."""
     head = _string(value).split(":", 1)[0]
@@ -290,7 +377,9 @@ def _image(value: object) -> str:
 
 
 def _role(value: object, *, privileged: bool) -> RoleProfile:
-    document = _mapping(value, {"image", "command", "user", "capabilities_add"})
+    document = _mapping(
+        value, {"image", "command", "user", "capabilities_add", "healthcheck"}
+    )
     command = (
         None
         if document["command"] is None
@@ -304,7 +393,24 @@ def _role(value: object, *, privileged: bool) -> RoleProfile:
         raise SandboxRejected("sandbox_profile_privileged_tool")
     if privileged and (uid != 0 or any(item not in GATEWAY_CAPABILITIES for item in capabilities)):
         raise SandboxRejected("sandbox_profile_invalid")
-    return RoleProfile(image=image, command=command, user=user, capabilities_add=capabilities)
+    healthcheck: tuple[str, ...] = ()
+    if document["healthcheck"] is not None:
+        healthcheck = _command(document["healthcheck"])
+        if healthcheck[0] not in {"CMD", "CMD-SHELL"}:
+            # A readiness probe the daemon cannot run would leave the manager waiting for a
+            # gateway that never reports, which is a refusal at launch, not a silent pass.
+            raise SandboxRejected("sandbox_profile_invalid")
+    if privileged and not healthcheck:
+        # The manager holds the tool back until the gateway reports that its rules are installed.
+        # A gateway nobody can ask is a gateway the manager would have to guess about.
+        raise SandboxRejected("sandbox_profile_invalid")
+    return RoleProfile(
+        image=image,
+        command=command,
+        user=user,
+        capabilities_add=capabilities,
+        healthcheck=healthcheck,
+    )
 
 
 def _limits(value: object) -> SandboxLimits:
@@ -321,6 +427,8 @@ def _limits(value: object) -> SandboxLimits:
             "log_tail_bytes",
             "log_line_bound",
             "evidence_max_bytes",
+            "readiness_seconds",
+            "revocation_seconds",
         },
     )
     if document["read_only_rootfs"] is not True or document["no_new_privileges"] is not True:
@@ -343,4 +451,6 @@ def _limits(value: object) -> SandboxLimits:
         evidence_max_bytes=_integer(
             document["evidence_max_bytes"], minimum=1, maximum=20 * 1024 * 1024
         ),
+        readiness_seconds=_integer(document["readiness_seconds"], minimum=1, maximum=120),
+        revocation_seconds=_integer(document["revocation_seconds"], minimum=1, maximum=60),
     )

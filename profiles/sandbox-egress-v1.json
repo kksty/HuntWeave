@@ -1,14 +1,14 @@
 {
   "profile_version": 1,
-  "profile_id": "sandbox-lifecycle-v1",
-  "status": "lifecycle_check_only",
+  "profile_id": "sandbox-egress-v1",
+  "status": "egress_check_only",
   "network": {
     "driver": "bridge",
     "internal": true,
     "ipv6": false,
     "gateway_mode_ipv4": "isolated",
     "dns": ["127.0.0.1"],
-    "target_network": null,
+    "target_network": "huntweave-lab-egress-targets",
     "protected": []
   },
   "workspace": {
