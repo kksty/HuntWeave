@@ -158,7 +158,7 @@ docker compose -f deploy/compose.yaml up -d --no-build --wait --wait-timeout 150
 
 基础部署不启用 Watch，源码变更通过重建生效。数据库主版本和 secrets 不随更新自动轮换；已有数据库密码需通过独立迁移流程变更。
 
-轮换平台访问密钥：`python deploy/rotate_access_key.py`。入口在原文件中更新，不打印密钥；下一请求拒绝旧会话，重新在本机读取新密钥后登录。会话闲置 2 小时、绝对 24 小时到期；变更接口检查 Origin 与 CSRF；登录限速以真实连接来源和全局尝试数持久化，不信任转发头。本机开发使用独立 HttpOnly / SameSite=Strict Cookie；HTTPS 配置使用 Secure / __Host- Cookie。反向代理、TLS 证书与远程生产部署验收仍待交付。
+轮换平台访问密钥：`python deploy/rotate_access_key.py`。入口在原文件中更新，不打印密钥；下一请求拒绝旧会话，重新在本机读取新密钥后登录。页面只需提交全局 Key，错误次数不会触发限速、锁定或等待窗口；额外公网请求控制由部署者按需配置。会话闲置 2 小时、绝对 24 小时到期；变更接口检查 Origin 与 CSRF，登录请求体上限 4 KiB。本机开发使用独立 HttpOnly / SameSite=Strict Cookie；HTTPS 配置使用 Secure / __Host- Cookie。反向代理、TLS 证书与远程生产部署验收仍待交付。
 
 | 持久内容 | 位置 |
 | --- | --- |
@@ -171,6 +171,8 @@ docker compose -f deploy/compose.yaml up -d --no-build --wait --wait-timeout 150
 ## 验证
 
 各切片的实际覆盖、检查计数、失败边界与未达成项见 [验证记录索引](./docs/validation/README.md)，阶段与能力状态见 [STATUS](./docs/STATUS.md)；本节只给出可复现的入口，不复述验收结论。
+
+开发与验证顺序遵循 [ADR-0018](./docs/adr/0018-backend-first-and-layered-validation.md)。后端迭代使用下列后端检查与适用的 API/数据库、靶场探针；前端接入和阶段集成验收使用类型检查、构建与浏览器命令。根据实际改动选择检查入口。
 
 回归检查通过按需容器执行：
 
@@ -188,7 +190,11 @@ $env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE = "1"
 docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml build app
 docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify build checks
 docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml up -d --no-build --wait --wait-timeout 180
-docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify run --rm --no-deps checks python -m pytest -p no:cacheprovider tests
+# 自行领取队列的业务/API检查独占数据库，避免后台调度器抢走夹具的研究项
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml stop app
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify run --rm --no-deps checks python -m pytest -p no:cacheprovider tests --ignore=tests/test_startup_integration.py
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml up -d --no-build --wait --wait-timeout 180
+docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml -f deploy/compose.verify.yaml --profile verify run --rm --no-deps checks python -m pytest -p no:cacheprovider tests/test_startup_integration.py
 
 python deploy/verify_startup.py --project huntweave-p0-checks --web-port 18000
 python deploy/verify_p0.py --project huntweave-p0-checks --base-url http://127.0.0.1:18000
@@ -199,7 +205,7 @@ npx playwright install chromium
 $env:HUNTWEAVE_E2E_BASE_URL = "http://127.0.0.1:18000"
 # verify_p0.py 的核对探针会打印 CONSOLE_RECONCILIATION_RUN=<run_id>，用它跑控制台核对路径：
 $env:HUNTWEAVE_E2E_RECONCILE_RUN_ID = "<run_id>"
-npm run test:e2e
+npm run test:e2e:full
 cd ..
 
 docker compose --project-name huntweave-p0-checks -f deploy/compose.yaml down -v
@@ -208,15 +214,35 @@ Remove-Item Env:HUNTWEAVE_WEB_PORT, Env:HUNTWEAVE_PUBLIC_ORIGIN, Env:HUNTWEAVE_D
 
 `verify_p0.py` 只接受 `huntweave-p0-checks` 项目与回环非 8000 端口，会重启 app/Runner、停止 PostgreSQL、撤销 checkpoint 写权限并临时改名一条证据文件，结束后在 `finally` 中恢复；它不发送任何目标流量。它是唯一能对真实进程与卷注入故障的验证层（验收容器无 Docker 访问），因此不与后端检查重复覆盖：后者在被测进程内验证同一行为，这里验证的是重启、停库、撤权与归档损坏之后它仍然成立。核对探针会额外留下一个结果未知的 Run 并打印其 id，供上面的浏览器核对路径使用；只要检查、不需要该 fixture 时加 `--no-console-fixture`。`down -v` 在此只用于删除自己创建的一次性验收项目。测试用文档保留 IP，不连接目标；浏览器截图保存在被忽略的 `runtime/validation/`。
 
-本地纯检查与前端构建（不含容器）。这些命令必须在 `backend/` 目录内执行：pytest 相对 rootdir 解析 `pythonpath`，在仓库根目录直接运行会因找不到 `huntweave` 包而整批收集失败：
+本地后端纯检查（不含容器）。这些命令必须在 `backend/` 目录内执行：pytest 相对 rootdir 解析 `pythonpath`，在仓库根目录直接运行会因找不到 `huntweave` 包而整批收集失败：
 
 ```sh
 cd backend
 .venv/Scripts/python -m pytest -m "not integration" -q   # Linux 为 .venv/bin/python
 .venv/Scripts/ruff check src tests
 .venv/Scripts/mypy --config-file pyproject.toml src       # 严格类型（Linux 平台设置）
-cd ../frontend && npm run build
 ```
+
+前端接入时，在 `frontend/` 目录执行。浏览器需要平台服务已启动，默认访问 localhost:8000；业务测试通过登录 API 建立各自的会话，等待工作台初始化完成，入口测试直接验证密钥提交界面。测试创建的假 Run 使用已有参数把假动作设为 1000 毫秒，保留暂停、取消等操作的在途窗口；实际执行、证据和状态由后端产生，生产默认值不变。
+
+```sh
+# 前端源码或构建配置变化时
+npm run build
+
+# 仅修改测试脚本时：检查类型，不重建页面产物
+npx vue-tsc --noEmit
+
+# 定点定位：只运行相关用例
+npm run test:e2e -- authorized-run.spec.ts --grep "execution mode and readiness"
+
+# 日常联调：首个失败停止
+npm run test:e2e
+
+# 集中验收：收集各用例结果
+npm run test:e2e:full
+```
+
+浏览器默认每项上限 30 秒、导航上限 10 秒、页面交互与显示断言上限 5 秒，整轮上限 3 分钟，零自动重试。需要完整假 Run 结束的流程，先通过只读 API 轮询观察后端终态（最多 15 秒），再检查页面显示，仍受单项 30 秒限制。日常命令首个失败即停止；完整验收命令继续运行后续用例，仍受整轮上限约束。先解决服务不可用或公共准备失败，再运行完整验收；超时或未完成的轮次不能记为通过。这些参数仅约束开发检查，不改变目标工具执行、授权时间窗或控制租约。
 
 CI（`.github/workflows/checks.yml`）运行同一组纯检查与前端构建，另有 `uv sync --frozen` 校验依赖锁。集成检查、启动/恢复故障探针和浏览器流程需要 Docker 与一次性栈，仍按上文手工执行。
 
@@ -252,12 +278,16 @@ python deploy/verify_action.py
 决策记录
 
 - [ADR 索引](./docs/adr/README.md) · [真实执行边界与门槛](./docs/adr/0010-real-execution-boundary-and-gate.md) · [计划与证据版本](./docs/adr/0011-planning-authority-and-evidence-revisions.md) · [最小实证与目标数据](./docs/adr/0012-minimal-proof-and-target-data.md) · [严重性与准入](./docs/adr/0013-severity-and-finding-admission.md) · [执行生命周期与环境身份](./docs/adr/0014-execution-lifecycle-and-environment-identity.md) · [研究图语义与投影边界](./docs/adr/0015-graph-semantics-and-projection-boundary.md) · [调度、槽位与资源政策](./docs/adr/0016-scheduling-and-resource-policy.md)
+- [后端先行与分层验证](./docs/adr/0018-backend-first-and-layered-validation.md)
 
 研究记录
 
 - [架构评估与设计取舍](./docs/research/2026-10-09-architecture-assessment.md)：问题核对、备选方案比较与取舍依据
+- [开发顺序与验证边界评估](./docs/research/2026-10-10-development-and-validation-boundaries.md)：后端先行与集中前端接入的取舍
 
 验证记录
+
+- [0016 开发验证反馈](./docs/validation/0016-development-validation-feedback.md)
 
 - [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突 · `0011` P1 受信管理组件与真实容器生命周期 · `0012` P1 出口控制与取消/回收 · `0013` P1 真实动作最小闭环 · `0014` P1 停止确认事实与动作工作目录 · `0015` P1 透明控制台
 

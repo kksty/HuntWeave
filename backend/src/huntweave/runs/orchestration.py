@@ -1274,7 +1274,8 @@ class OrchestrationService:
             else:
                 raise ServiceError("invalid_control", 422)
             session.flush()
-            return RunService._run(run).model_dump(mode="json")
+            # The API revalidates this payload and derives its presentation fields itself.
+            return RunService._run(run).model_dump(mode="json", exclude={"demonstration"})
 
     @staticmethod
     def _active(session: Session, run_id: UUID) -> bool:

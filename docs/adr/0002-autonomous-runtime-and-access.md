@@ -35,7 +35,7 @@
 
 包安装本身可能执行外部代码，来源记录、hash 和自动代码分析不能证明它无害；它们提供可追溯性，隔离边界仍由执行环境承担。工具 stdout 也不能独立证明漏洞成立，关键结果需要原始交互或独立复现支持。
 
-全局密钥简化首版部署，但所有持有者共享权限。会话可撤销、密钥可轮换，不能只在 Vue 路由中比较一个前端可见字符串。认证设计采用服务端会话、HTTPS Cookie、CSRF、限速和输出净化。[OWASP 会话管理](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
+全局密钥简化首版部署，但所有持有者共享权限。会话可撤销、密钥可轮换，不能只在 Vue 路由中比较一个前端可见字符串。认证设计采用服务端会话、HTTPS Cookie、CSRF 和输出净化；**密钥提交的频率限制已按 0.9.6 取消**，即时校验且不因错误次数锁定或延迟登录。额外公网请求控制由部署者按需配置，入口与开发顺序见 [ADR-0018](./0018-backend-first-and-layered-validation.md)。[OWASP 会话管理](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
 
 ## 验收与迁移
 

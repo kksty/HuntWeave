@@ -35,13 +35,6 @@ class WebSession(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
-class LoginBucket(Base):
-    __tablename__ = "login_buckets"
-    bucket: Mapped[str] = mapped_column(String(64), primary_key=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    attempts: Mapped[int] = mapped_column(Integer)
-
-
 class Project(Base):
     __tablename__ = "projects"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

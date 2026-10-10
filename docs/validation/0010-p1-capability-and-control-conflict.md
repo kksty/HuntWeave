@@ -57,7 +57,7 @@
 - **能力请求会创建执行端状态目录**：`fake_execution_ready` 通过打开账本观测，首次能力请求因此具备与首次提交相同的建目录副作用；`mkdir` 失败时报 `runner_state_unavailable`。
 - **门槛 1、4 仍是代码内事实**：`PROFILE_REVALIDATED`/`REVERT_ENTRY_AVAILABLE` 目前是写死在 `execution/capabilities.py` 的两个占位事实（各带替换来源注释），由 #16/#18 的靶场复验记录与回退入口替换。本轮把它们改成可计算值会先于对应切片发明判定口径，故保留；这是「状态仍写进代码」的剩余部分，见「待人工确认」。
 - **Runner 健康语义变严**：账本不可用时 Runner 容器报不健康（此前只看端点可达）。这会让 `depends_on` 的 app 启动等待失败，属有意为之，但未在失败宿主上实测。
-- **浏览器流程需分两次调用**：按 IP 登录限速为 5 次/60 秒（`config.py`），7 条流程各登录一次且本机 Edge 下整套仅 35 秒，第 6、7 条因此得到 429。这不是产品缺陷，但使套件在快速宿主上不能一次跑完。
+- **浏览器流程是否需分两次调用（后续已调整）**：原按 IP 登录限速 5 次/60 秒使本记录当时的套件需要分批；限速已按 0.9.6 取消，当前每项业务检查使用独立会话。见本记录末「本记录的更正」与 `0016`。
 - **浏览器使用 Microsoft Edge（`channel: msedge`）**：Playwright CDN 在本机下载 Chromium（197.5 MiB）多次停顿（一次停在 51.9 MB、一次 0 字节），改为用已安装的 Edge 执行本轮浏览器检查（临时配置，未入库）。README 的入口仍是 `npx playwright install chromium`。
 - **核对浏览器路径本轮跳过**：`verify_p0.py` 以 `--no-console-fixture` 运行，第 4 条核对流程按设计跳过；该路径由记录 `0006` 覆盖，本轮未改核对逻辑。
 - **未验证**：Linux 原生宿主；真实执行端接入后的就绪（门槛 1、4 仍为假，`real_execution_ready` 因此在该宿主上永远为假）；`execution_ready` 与调度路径的关系（本轮明确不改派发行为，`execution_ready` 仅用于展示，符合 spec 0002 第 3.4 节「界面显示只是结果」）。
@@ -68,6 +68,14 @@
 - [ ] 顶层 `reason_code` 是否应从 `environment_unsupported` 改为第一个未满足门槛的原因码（如 `profile_unvalidated`）。本轮按 ADR-0010 的 P1 结论保留顶层值，逐项原因在 `gates` 内；若要细分，需同步 ADR-0010 与 `docs/STATUS.md`。
 - [ ] 门槛 2、3 用「读取契约模型 + 读取所服务的控制台构建产物」判定是否可接受，或应改为显式的构建/CI 断言（例如构建期写入能力契约版本并由镜像校验）。
 - [ ] 门槛 1、4 的两个代码内事实（`PROFILE_REVALIDATED`、`REVERT_ENTRY_AVAILABLE`）是否应在 #16/#18 之前改为可计算值（如复验记录文件存在性、回退入口存在性），以免「状态写进代码」再现。
-- [ ] 浏览器套件是否改为共享一次登录会话（Playwright `storageState`），以免流程数增长后触到 5 次/60 秒的按 IP 登录限速；本轮未改测试基础设施。
+- [x] 浏览器套件是否改为共享一次登录会话（Playwright `storageState`）——共享方案仅为中间尝试，当前已由每项独立 API 会话替代（见 `0016`）；限速亦已取消。
 - [ ] `fake_execution_ready` 的观测副作用（首次能力请求创建 runner 状态目录）与 Runner 健康语义变严是否可接受。
 - [ ] `execution_ready` 是否保持「假执行链路就绪」的含义，或在真实执行接入后改为按 Run 的执行 profile 判定（并相应更新 P0 规格第 1 节与 `docs/STATUS.md`）。
+
+## 本记录的更正
+
+**第 60、71 行所述的按 IP 登录限速与其影响已不存在。** 2026-10-10 按用户明确要求取消登录/密钥提交的频率限制（见 `PROJECT.md` 0.9.6 与 §9.3）：Key 即时校验，错误次数不造成锁定或等待；额外公网请求控制由部署者按需配置。`login_buckets` 表、`AppSettings` 的三个限速字段与 429 `rate_limited` 分支已随迁移 `0007_drop_login_throttle` 删除。
+
+取消限速期间曾尝试 `global-setup.ts` + `storageState` 整套共享会话，这使退出或重新登录可以影响后续检查，且保存 Cookie 不会主动打开页面。该中间方案已删除；当前由 `frontend/tests/fixtures.ts` 为每项业务检查独立登录并打开工作台，入口检查保持匿名，实际结果见 [0016](./0016-development-validation-feedback.md)。第 61 行「使用 Microsoft Edge」是本记录当时的临时做法；后续浏览器检查使用本机已安装的 Chromium。
+
+原结论中与本次取消无关的部分不变：门槛 1、4 当时是代码内事实、能力观测的 5 秒展示缓存、Runner 健康语义变严等均在后续切片中分别处置（`0011`/`0012`/`0013`/`0015`）。

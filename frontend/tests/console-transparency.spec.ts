@@ -1,40 +1,10 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, openNewProject, test } from './fixtures';
 
 // The console's own honesty rules (issue #19). Each check drives the page against a snapshot shaped
 // the way the execution side could really report, so what is asserted is what a reader would see —
-// not what the platform would like to say.
-
-async function login(page: Page) {
-  await page.goto('/login');
-  let key = readFileSync(resolve('../runtime/secrets/access_key'), 'utf8').trim();
-  try { await page.getByLabel('全局访问密钥').fill(key); }
-  catch { throw new Error('无法填写登录字段；为保护密钥，已隐藏调用参数。'); }
-  finally { key = ''; }
-  await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '先确定范围，再开始研究。' })).toBeVisible();
-}
-
-async function openNewProject(page: Page) {
-  // The fold is bound to "no project exists yet", so it is closed once one does — and it is closed
-  // *after* first paint, which is why reading visibility once and clicking on that reading is not a
-  // reliable sequence. Clicking the summary and then waiting for the field is; a click that lands
-  // the wrong way is retried by the same loop.
-  const field = page.getByLabel('项目名称', { exact: true });
-  const summary = page.locator('summary', { hasText: '新建项目' });
-  await expect(summary).toBeVisible();
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await summary.click();
-    try {
-      await expect(field).toBeVisible({ timeout: 5000 });
-      return;
-    } catch {
-      // The fold was still settling from the first paint: clicking again opens it.
-    }
-  }
-  await expect(field).toBeVisible();
-}
+// not what the platform would like to say. The fixture opens the workspace with an independent
+// session and waits for the project list before a check interacts with the page.
 
 async function createDemo(page: Page, targets = '192.0.2.40') {
   await openNewProject(page);
@@ -64,7 +34,6 @@ async function frozenSnapshot(page: Page, patch: (snapshot: Record<string, any>)
 }
 
 test('the console states its views separately and treats a missing answer as a gap', async ({ page }) => {
-  await login(page);
   await createDemo(page);
   const grid = page.getByTestId('run-state-grid');
   await expect(grid).toBeVisible();
@@ -92,13 +61,12 @@ test('the console states its views separately and treats a missing answer as a g
   });
   await page.reload();
   const gap = page.getByTestId('runtime-unavailable');
-  await expect(gap).toBeVisible({ timeout: 30000 });
+  await expect(gap).toBeVisible();
   await expect(gap).toContainText('无法读取容器与网关状态');
   await expect(gap).toContainText('这是观测缺口，不是「没有资源在运行」');
 });
 
 test('an unconfirmed stop is shown as unconfirmed, with what still holds it', async ({ page }) => {
-  await login(page);
   await createDemo(page);
   const instanceId = '11111111-2222-3333-4444-555555555555';
   await frozenSnapshot(page, (snapshot) => {
@@ -153,7 +121,7 @@ test('an unconfirmed stop is shown as unconfirmed, with what still holds it', as
   });
   await page.reload();
   const banner = page.getByTestId('stop-unconfirmed');
-  await expect(banner).toBeVisible({ timeout: 30000 });
+  await expect(banner).toBeVisible();
   await expect(banner).toContainText('停止未确认');
   await expect(banner).toContainText('尚未释放');
   await expect(banner).toContainText('不会显示为已回收或已取消');
@@ -170,7 +138,6 @@ test('an unconfirmed stop is shown as unconfirmed, with what still holds it', as
 });
 
 test('a cut or redacted archive is labelled instead of presented as a whole observation', async ({ page }) => {
-  await login(page);
   await createDemo(page);
   const callId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   await frozenSnapshot(page, (snapshot) => {
@@ -193,7 +160,7 @@ test('a cut or redacted archive is labelled instead of presented as a whole obse
   });
   await page.reload();
   const flags = page.getByTestId('call-evidence-flags');
-  await expect(flags).toBeVisible({ timeout: 30000 });
+  await expect(flags).toBeVisible();
   await expect(flags).toContainText('输出被本次 Run 的保留上限截断');
   await expect(flags).toContainText('含凭据形态内容已脱敏，原值未保存');
   await expect(flags).toContainText('未保留的部分不作为已观察事实');
@@ -204,12 +171,11 @@ test('a cut or redacted archive is labelled instead of presented as a whole obse
 });
 
 test('input over the per-Run limit is answered by line, and IPv6 keeps its own reason', async ({ page }) => {
-  await login(page);
   const overflow = Array.from({ length: 101 }, (_, index) => `192.0.2.${index + 1}`);
   overflow[99] = '2001:db8::5'; // the hundredth row is not executable here, and says so
   await page.getByLabel(/目标 IP/).fill(overflow.join('\n'));
   await page.getByRole('button', { name: '预览 IP', exact: true }).click();
-  await expect(page.getByText('超限 1 行')).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('超限 1 行')).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('超过上限的行已在下表按行号标出');
   // The IPv6 row is refused for its own reason rather than being counted out first.
   await expect(page.getByText('当前部署未启用 IPv6 隔离，不能运行。')).toBeVisible();

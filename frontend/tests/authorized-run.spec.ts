@@ -1,43 +1,97 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { expect, openNewProject, test } from './fixtures';
 
-async function login(page: Page) {
-  await page.goto('/login');
-  await expect(page).toHaveTitle('登录 · HuntWeave');
+async function submitDeploymentKey(page: Page) {
   let key = readFileSync(resolve('../runtime/secrets/access_key'), 'utf8').trim();
   try { await page.getByLabel('全局访问密钥').fill(key); }
   catch { throw new Error('无法填写登录字段；为保护密钥，已隐藏调用参数。'); }
   finally { key = ''; }
   await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '先确定范围，再开始研究。' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '退出登录' })).toBeEnabled();
-  await expect(page).toHaveTitle('HuntWeave · 开发演示');
-  await expect(page.getByText('界巡', { exact: false })).toHaveCount(0);
 }
 
-test('anonymous deep links and bundles are protected; login creates an HttpOnly session', async ({ page, request }) => {
-  expect((await request.get('/api/v1/runs')).status()).toBe(401);
-  expect((await request.get('/assets/index.js')).status()).toBe(401);
-  await page.goto('/runs/00000000-0000-0000-0000-000000000000');
-  await expect(page).toHaveURL(/\/login$/);
-  await login(page);
-  const cookies = await page.context().cookies();
-  const cookie = cookies.find(item => item.name === 'huntweave_local_session');
-  expect(cookie?.httpOnly).toBe(true);
-  expect(cookie?.sameSite).toBe('Strict');
-  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
-  await page.getByRole('button', { name: '退出登录' }).click();
-  await expect(page).toHaveURL(/\/login$/);
-  expect((await page.request.get('/api/v1/runs')).status()).toBe(401);
+async function runControl(page: Page, action: string, buttonName: string, actionLabel: string) {
+  const path = `/api/v1${new URL(page.url()).pathname}/${action}`;
+  let button = page.getByRole('button', { name: buttonName, exact: true });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const answer = page.waitForResponse(response =>
+      new URL(response.url()).pathname === path && response.request().method() === 'POST',
+    { timeout: 5000 });
+    await button.click();
+    const response = await answer;
+    if (response.status() !== 409) {
+      expect(response.status(), `操作 ${action} 返回成功`).toBe(200);
+      return;
+    }
+    expect((await response.json()).reason_code).toBe('version_conflict');
+    const conflict = page.getByTestId('version-conflict');
+    await expect(conflict).toBeVisible();
+    // Simulate the operator's explicit confirmation of the newly displayed version.
+    button = conflict.getByRole('button', { name: new RegExp(`按新状态确认${actionLabel}`) });
+  }
+  throw new Error(`操作 ${action} 的状态持续变化，未取得成功响应。`);
+}
+
+async function awaitAutomaticEnd(page: Page) {
+  const path = `/api/v1${new URL(page.url()).pathname}`;
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const response = await page.request.get(path, { timeout: Math.max(1, Math.min(5000, deadline - Date.now())) });
+    expect(response.status()).toBe(200);
+    const run = await response.json();
+    if (run.status === 'waiting' && run.phase === 'awaiting_human') return;
+    if (['failed', 'cancelled', 'closed'].includes(run.status)) {
+      throw new Error(`假 Run 提前结束：${run.status} / ${run.reason_code || '无原因码'}。`);
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error('后端假 Run 在 15 秒内未结束自动阶段。');
+}
+
+// Business checks use independent API sessions. These checks start anonymous and exercise the
+// real key-submission interface instead.
+test.describe('the entry point', () => {
+  test.use({ authenticated: false });
+
+  test('anonymous deep links and bundles are protected; submitting the key creates an HttpOnly session', async ({ page, request }) => {
+    expect((await request.get('/api/v1/runs')).status()).toBe(401);
+    expect((await request.get('/assets/index.js')).status()).toBe(401);
+    await page.goto('/runs/00000000-0000-0000-0000-000000000000');
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page).toHaveTitle('登录 · HuntWeave');
+    await submitDeploymentKey(page);
+    await expect(page.getByRole('heading', { name: '先确定范围，再开始研究。' })).toBeVisible();
+    await expect(page).toHaveTitle('HuntWeave · 开发演示');
+    await expect(page.getByText('界巡', { exact: false })).toHaveCount(0);
+    const cookies = await page.context().cookies();
+    const cookie = cookies.find(item => item.name === 'huntweave_local_session');
+    expect(cookie?.httpOnly).toBe(true);
+    expect(cookie?.sameSite).toBe('Strict');
+    expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+    await page.getByRole('button', { name: '退出登录' }).click();
+    await expect(page).toHaveURL(/\/login$/);
+    expect((await page.request.get('/api/v1/runs')).status()).toBe(401);
+  });
+
+  test('a wrong key is refused on its own merits and a right one is accepted again', async ({ page }) => {
+    // Submitting the key is not rate limited: the key is generated by the deployment rather than
+    // chosen by a person, so repeating the request is not what a per-address counter would prevent —
+    // and such a counter would lock the operator out of their own platform.
+    await page.goto('/login');
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await page.getByLabel('全局访问密钥').fill(`wrong-key-${attempt}-${'x'.repeat(32)}`);
+      await page.getByRole('button', { name: '登录', exact: true }).click();
+      await expect(page.getByRole('alert')).toContainText('密钥不正确');
+    }
+    await submitDeploymentKey(page);
+    await expect(page.getByRole('heading', { name: '先确定范围，再开始研究。' })).toBeVisible();
+  });
 });
 
 test('preview, freeze, idempotent draft creation, queue, reload and logout', async ({ page }) => {
-  await login(page);
   const projectName = `假执行验证 ${Date.now()} <script>window.huntweaveInjected=true</script>`;
-  if (!await page.getByLabel('项目名称', { exact: true }).isVisible()) {
-    await page.getByText('新建项目', { exact: true }).click();
-  }
+  await openNewProject(page);
   await page.getByLabel('项目名称', { exact: true }).fill(projectName);
   await page.getByRole('button', { name: '创建项目', exact: true }).click();
   await expect(page.getByLabel('所属项目')).not.toHaveValue('');
@@ -75,7 +129,8 @@ test('preview, freeze, idempotent draft creation, queue, reload and logout', asy
   await page.reload();
   await expect(page).toHaveURL(runUrl);
   await expect(page.getByRole('region', { name: '玻璃鱼缸执行台' })).toBeVisible();
-  await expect(page.getByText('自动阶段结束 · 待人工复审').first()).toBeVisible({ timeout: 60000 });
+  await awaitAutomaticEnd(page);
+  await expect(page.getByRole('region', { name: 'Run 详情' }).getByText('自动阶段结束 · 待人工复审', { exact: true })).toBeVisible();
   await expect(page.getByText('只用于本地假执行验证', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => Reflect.get(window, 'huntweaveInjected'))).toBeUndefined();
   await page.screenshot({ path: '../runtime/validation/p0-b-workspace.png', fullPage: true });
@@ -83,8 +138,8 @@ test('preview, freeze, idempotent draft creation, queue, reload and logout', asy
   await expect(page).toHaveURL(/\/login$/);
 });
 
-async function createDemo(page: Page, scenario: string) {
-  if (!await page.getByLabel('项目名称', { exact: true }).isVisible()) await page.getByText('新建项目', { exact: true }).click();
+async function createDemo(page: Page, scenario: string, start = true) {
+  await openNewProject(page);
   await page.getByLabel('项目名称', { exact: true }).fill(`P0 控制 ${scenario} ${Date.now()}`);
   await page.getByRole('button', { name: '创建项目', exact: true }).click();
   await page.getByLabel(/目标 IP/).fill('192.0.2.30');
@@ -97,32 +152,32 @@ async function createDemo(page: Page, scenario: string) {
   await page.getByLabel('假输出场景').selectOption(scenario);
   await page.getByRole('button', { name: '创建假 Run' }).click();
   await expect(page).toHaveURL(/\/runs\/[a-f0-9-]+$/);
-  await page.getByRole('button', { name: '将假 Run 加入队列' }).click();
+  if (start) await page.getByRole('button', { name: '将假 Run 加入队列' }).click();
 }
 
 test('pause, reload, resume preview, original evidence and human close preserve a Run', async ({ page }) => {
-  await login(page);
   await createDemo(page, 'positive');
   const originalUrl = page.url();
-  await page.getByRole('button', { name: '暂停 Run', exact: true }).click();
-  await expect(page.getByRole('button', { name: '查看恢复预览' })).toBeVisible({ timeout: 30000 });
+  await runControl(page, 'pause', '暂停 Run', '暂停');
+  await expect(page.getByRole('button', { name: '查看恢复预览' })).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(originalUrl);
   await page.getByRole('button', { name: '查看恢复预览' }).click();
   await expect(page.getByRole('region', { name: '恢复预览' })).toBeVisible();
   await expect(page.getByRole('button', { name: '按预览恢复' })).toBeEnabled();
-  await page.getByRole('button', { name: '按预览恢复' }).click();
-  await expect(page.getByRole('button', { name: '结束演示', exact: true })).toBeVisible({ timeout: 60000 });
+  await runControl(page, 'resume', '按预览恢复', '恢复');
+  await awaitAutomaticEnd(page);
+  await expect(page.getByRole('button', { name: '结束演示', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '查看原始证据' }).first().click();
   await expect(page.getByRole('region', { name: '原始证据' })).toBeVisible();
   const evidence = page.getByRole('region', { name: '原始证据' });
   await expect(evidence.locator('pre')).not.toBeEmpty();
   await expect(evidence).toContainText('SHA-256');
-  await page.getByRole('button', { name: '结束演示', exact: true }).click();
-  await expect(page.getByText('演示已结束').first()).toBeVisible();
+  await runControl(page, 'close', '结束演示', '结束演示');
+  await expect(page.getByRole('region', { name: 'Run 详情' }).getByText('演示已结束', { exact: true })).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(originalUrl);
-  await expect(page.getByText('演示已结束').first()).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Run 详情' }).getByText('演示已结束', { exact: true })).toBeVisible();
   await page.screenshot({ path: '../runtime/validation/p0-console.png', fullPage: true });
 });
 
@@ -131,10 +186,9 @@ test('the console records an operator verdict on an unknown call and shows what 
   // browser check rules on it the way an operator would.
   const runId = process.env.HUNTWEAVE_E2E_RECONCILE_RUN_ID;
   test.skip(!runId, 'Set HUNTWEAVE_E2E_RECONCILE_RUN_ID from the reconciliation probe.');
-  await login(page);
   await page.goto(`/runs/${runId}`);
   const region = page.getByRole('region', { name: '待核对调用' });
-  await expect(region).toBeVisible({ timeout: 30000 });
+  await expect(region).toBeVisible();
   // Execution facts and the missing conditions are shown before any verdict is offered.
   await expect(region).toContainText('执行端事实');
   await expect(region).toContainText('停止确认 未确认');
@@ -142,7 +196,7 @@ test('the console records an operator verdict on an unknown call and shows what 
   await expect(region).toContainText('仍缺条件');
   // A verdict the execution ledger contradicts is refused, not silently accepted.
   await region.getByRole('button', { name: '确认未执行' }).click();
-  await expect(page.getByRole('alert')).toContainText('执行端记录与该裁定矛盾');
+  await expect(page.getByRole('alert').filter({ hasText: '执行端记录与该裁定矛盾' })).toBeVisible();
   // What is recorded is the operator's own evidence-bound decision.
   await region.getByLabel('裁定说明').fill('结果未到达；执行端账本证明动作已经开始');
   await region.getByRole('button', { name: '确认已执行' }).click();
@@ -158,17 +212,16 @@ test('the console records an operator verdict on an unknown call and shows what 
 });
 
 test('cancel waits for Runner acknowledgement and prevents later dispatch', async ({ page }) => {
-  await login(page);
   await createDemo(page, 'negative');
   // Wait for the console to show the first dispatched call, so the cancel exercises the
   // acknowledgement path against a live snapshot instead of racing an empty console.
-  await expect(page.getByText('fake.collect', { exact: false }).first()).toBeVisible({ timeout: 30000 });
-  await page.getByRole('button', { name: '取消 Run', exact: true }).click();
-  await expect(page.getByText('已取消', { exact: true }).first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('fake.collect', { exact: false }).first()).toBeVisible();
+  await runControl(page, 'cancel', '取消 Run', '取消');
+  await expect(page.getByRole('region', { name: 'Run 详情' }).getByText('已取消', { exact: true })).toBeVisible();
   const snapshotUrl = `/api/v1${new URL(page.url()).pathname}/snapshot`;
   const first = await (await page.request.get(snapshotUrl)).json();
   await page.reload();
-  await expect(page.getByText('已取消', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Run 详情' }).getByText('已取消', { exact: true })).toBeVisible();
   const second = await (await page.request.get(snapshotUrl)).json();
   expect(second.calls.length).toBe(first.calls.length);
   expect(second.budget).toEqual(first.budget);
@@ -176,7 +229,6 @@ test('cancel waits for Runner acknowledgement and prevents later dispatch', asyn
 });
 
 test('the console reports the execution mode and readiness from the capability answer', async ({ page }) => {
-  await login(page);
   const capability = await (await page.request.get('/api/v1/system/capabilities')).json();
   expect(capability.real_execution_ready).toBe(false);
   expect(capability.mode).toBe('demonstration');
@@ -195,7 +247,6 @@ test('the console reports the execution mode and readiness from the capability a
 });
 
 test('a capability answer that is not ready is never rendered as ready', async ({ page }) => {
-  await login(page);
   await createDemo(page, 'positive');
   // The execution side is unreachable: the platform must show the gap and no ready state.
   await page.route('**/api/v1/system/capabilities', (route) => route.fulfill({
@@ -219,15 +270,23 @@ test('a capability answer that is not ready is never rendered as ready', async (
 });
 
 test('a version conflict is shown and re-sent only when the operator confirms', async ({ page }) => {
-  await login(page);
-  await createDemo(page, 'positive');
+  await createDemo(page, 'positive', false);
   const snapshotPath = `/api/v1${new URL(page.url()).pathname}/snapshot`;
   // Freeze the state the console renders, so the operator keeps looking at the version they were
   // shown while the scheduler really advances the Run behind them.
-  const frozen = JSON.stringify(await (await page.request.get(snapshotPath)).json());
-  await page.route('**/api/v1/runs/*/snapshot', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: frozen }));
   const start = await (await page.request.get(snapshotPath)).json();
-  await expect.poll(async () => (await (await page.request.get(snapshotPath)).json()).run.version, { timeout: 30000 }).toBeGreaterThan(start.run.version);
+  const frozen = JSON.stringify(start);
+  await page.route('**/api/v1/runs/*/snapshot', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: frozen }));
+  // Another operator starts through the real API while this page keeps its displayed draft.
+  // This creates the conflict deterministically without waiting for scheduler timing.
+  const session = await (await page.request.get('/auth/session')).json();
+  const changed = await page.request.post(`/api/v1${new URL(page.url()).pathname}/start`, {
+    data: { version: start.run.version },
+    headers: { Origin: new URL(page.url()).origin, 'X-CSRF-Token': session.csrf_token },
+    timeout: 5000,
+  });
+  expect(changed.status()).toBe(200);
+  expect((await changed.json()).version).toBeGreaterThan(start.run.version);
   let attempts = 0;
   await page.route('**/api/v1/runs/*/cancel', async (route) => {
     attempts += 1;
@@ -256,5 +315,5 @@ test('a version conflict is shown and re-sent only when the operator confirms', 
     await page.waitForTimeout(300);
   }
   expect(attempts).toBeGreaterThanOrEqual(2);
-  await expect(page.getByText('已取消', { exact: true }).first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole('region', { name: 'Run 详情' }).getByText('已取消', { exact: true })).toBeVisible();
 });

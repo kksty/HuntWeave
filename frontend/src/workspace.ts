@@ -81,7 +81,7 @@ export const messages: Record<string, string> = {
   scope_denied: '该目标或端口不在本次授权快照内，计划已被拒绝。',  endpoint_not_expressible: '该地址无法表达为 IPv4/TCP，当前 profile 不支持。',
   budget_exhausted: '预算已耗尽，执行已阻断。', evidence_incomplete: '本次 Run 存在归档不完整的证据，受限结束。',
   // -- access and transport ------------------------------------------------------------------
-  rate_limited: '请求过于频繁，请稍后重试。', access_key_missing: '服务端未配置全局访问密钥，业务服务不开放。',
+  access_key_missing: '服务端未配置全局访问密钥，业务服务不开放。',
   invalid_access_key: '全局访问密钥不正确。', authentication_required: '需要重新登录。',
   request_too_large: '请求体超过允许大小。', origin_invalid: '访问地址与服务端入口配置不一致。',
   csrf_invalid: '会话校验失败，请重新登录。', storage_unavailable: '数据库暂不可用，请稍后重试。',

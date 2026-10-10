@@ -6,11 +6,13 @@ from sqlalchemy.orm import Session
 
 from huntweave.config import database_url
 
-# The business revision this build expects to be running on. It is a gate, not a formality: a
-# process that finds an older schema must refuse to serve rather than reading columns that are not
-# there. Bumping it here is part of adding a migration, and it went unbumped for one revision —
-# this is the value `alembic upgrade head` must leave behind before the platform opens.
-BUSINESS_REVISION = "0006_call_runtime"
+# The business revisions this build may serve. `alembic upgrade head` always leaves the newest
+# revision behind, so checking for one exact value fails the moment a new migration lands — even
+# when the build and the schema are perfectly in step. What the gate has to catch is the opposite
+# direction: a schema this build does not know, either too old to have the columns it reads or
+# newer than what it was tested against. Adding a migration means adding its id here, in the same
+# commit as the migration itself.
+BUSINESS_REVISIONS = ("0007_drop_login_throttle",)
 
 
 def database_now(session: Session) -> datetime:
@@ -28,8 +30,11 @@ def connect_engine(role: str = "app") -> Engine:
 def verify_business_schema(engine: Engine) -> None:
     with engine.connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM huntweave.alembic_version"))
-        if revision != BUSINESS_REVISION:
-            raise RuntimeError("Business schema migration is required")
+        if revision not in BUSINESS_REVISIONS:
+            raise RuntimeError(
+                "Business schema revision is not one this build serves: "
+                f"{revision!r} not in {BUSINESS_REVISIONS}"
+            )
 
 
 def verify_agentd(engine: Engine) -> None:

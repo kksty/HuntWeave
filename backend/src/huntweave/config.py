@@ -36,9 +36,6 @@ class AppSettings:
     cookie_secure: bool = False
     idle_seconds: int = 7200
     absolute_seconds: int = 86400
-    login_ip_limit: int = 5
-    login_global_limit: int = 30
-    login_window_seconds: int = 60
 
     def __post_init__(self) -> None:
         origin = urlsplit(self.public_origin)
@@ -58,8 +55,8 @@ class AppSettings:
             raise ValueError("Insecure cookies are allowed only in explicit localhost HTTP mode")
         if self.cookie_secure and origin.scheme != "https":
             raise ValueError("Secure cookies require an HTTPS public origin")
-        if min(self.idle_seconds, self.absolute_seconds, self.login_window_seconds) < 1:
-            raise ValueError("Session and rate-limit durations must be positive")
+        if min(self.idle_seconds, self.absolute_seconds) < 1:
+            raise ValueError("Session lifetimes must be positive")
 
     @property
     def cookie_name(self) -> str:

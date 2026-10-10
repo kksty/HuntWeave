@@ -1,4 +1,14 @@
-"""Durable browser sessions, key rotation and bounded login throttling."""
+"""Durable browser sessions and key rotation behind the deployment's access key.
+
+There is no account system here: the operator presents the deployment's access key and receives a
+server-side session bound to the key's version. Submitting that key is deliberately **not** rate
+limited. The key is a value this deployment generates (at least 32 bytes of cryptographic
+randomness), so guessing it is not a threat that a per-address throttle addresses; what a throttle
+would do is lock the operator out of their own platform for a minute after a few typos. A deployment
+that wants request-level abuse protection for its public entry point puts it at the reverse proxy,
+which is the layer that can see real client addresses and apply a policy to the whole surface rather
+than to one endpoint.
+"""
 
 import hashlib
 import hmac
@@ -14,7 +24,7 @@ from sqlalchemy.orm import Session
 from huntweave.config import AppSettings
 from huntweave.contracts.errors import ServiceError
 from huntweave.storage.database import database_now
-from huntweave.storage.models import AccessKeyState, LoginBucket, WebSession
+from huntweave.storage.models import AccessKeyState, WebSession
 
 
 def digest(value: str) -> str:
@@ -49,38 +59,7 @@ class AccessService:
             session.execute(update(WebSession).values(revoked=True))
         return state.version
 
-    def _throttle(self, client_ip: str) -> None:
-        limited = False
-        retry = self.settings.login_window_seconds
-        with Session(self.engine()) as session, session.begin():
-            now = database_now(session)
-            session.execute(text("SELECT pg_advisory_xact_lock(986013772)"))
-            session.execute(
-                delete(LoginBucket).where(LoginBucket.started_at < now - timedelta(days=1))
-            )
-            for name, limit in (
-                ("global", self.settings.login_global_limit),
-                (digest(client_ip), self.settings.login_ip_limit),
-            ):
-                bucket = session.get(LoginBucket, name)
-                if bucket is None:
-                    bucket = LoginBucket(bucket=name, started_at=now, attempts=0)
-                    session.add(bucket)
-                age = (now - bucket.started_at).total_seconds()
-                if age >= self.settings.login_window_seconds:
-                    bucket.started_at, bucket.attempts = now, 0
-                if bucket.attempts >= limit:
-                    limited = True
-                    retry = max(1, int(self.settings.login_window_seconds - age) + 1)
-                bucket.attempts += 1
-        # Commit the counters even when access is denied. Windows expire without extending lockout.
-        if limited:
-            raise ServiceError("rate_limited", 429, retry_after=retry)
-
-    def login(
-        self, supplied: str, client_ip: str, previous_token: str | None
-    ) -> tuple[str, BrowserSession]:
-        self._throttle(client_ip)
+    def login(self, supplied: str, previous_token: str | None) -> tuple[str, BrowserSession]:
         key = self.settings.current_access_key()
         if key is None:
             raise ServiceError("access_key_missing", 503)

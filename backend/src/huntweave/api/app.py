@@ -239,9 +239,11 @@ def create_app(
 
     @app.post("/auth/login")
     def login(payload: LoginRequest, request: Request, response: Response) -> BrowserSession:
+        # The key submission is not rate limited: the key is a value this deployment generates, so
+        # guessing it is not what a per-address throttle would prevent, and a throttle here only
+        # locks the operator out of their own platform (see access/service.py).
         token, browser = access.login(
             payload.access_key.get_secret_value(),
-            request.client.host if request.client else "unknown",
             request.cookies.get(settings.cookie_name),
         )
         response.set_cookie(
