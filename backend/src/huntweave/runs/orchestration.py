@@ -511,7 +511,7 @@ class OrchestrationService:
                 scope_id=run.scope_id,
                 budget_reservation_id=reservation_id,
                 action_id=decision["action"],
-                parameters=parameters,
+                parameters=parameters.model_dump(),
                 parameters_hash=parameters_hash(parameters),
                 scope_version=run.scope_version,
                 policy_version=scope.policy_version,

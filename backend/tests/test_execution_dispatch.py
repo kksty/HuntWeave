@@ -28,7 +28,7 @@ def ticket(**changes: Any) -> ExecutionRequest:
         scope_id=uuid4(),
         budget_reservation_id=uuid4(),
         action_id="fake.collect",
-        parameters=parameters,
+        parameters=parameters.model_dump(),
         parameters_hash=parameters_hash(parameters),
         scope_version=1,
         policy_version=1,

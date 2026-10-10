@@ -16,9 +16,17 @@ from huntweave.contracts.execution import (
     ExecutionRecord,
     ExecutionRequest,
     ExecutionResult,
+    FakeParameters,
     parameters_hash,
 )
 from huntweave.execution.durable import atomic_write
+
+
+def _fake_parameters(request: ExecutionRequest) -> FakeParameters:
+    """This executor only serves the demonstration actions, and their schema is theirs."""
+    parameters = request.typed_parameters
+    assert isinstance(parameters, FakeParameters)
+    return parameters
 
 
 class RunnerRejected(Exception):
@@ -282,7 +290,7 @@ class FakeRunner:
                 self._change(record, "failed", "evidence_storage_failed")
                 return
         started = datetime.now(UTC).timestamp()
-        finish = started + record.request.parameters.duration_ms / 1000
+        finish = started + _fake_parameters(record.request).duration_ms / 1000
         progress_sent = False
         next_heartbeat = started + 5
         while not self.closed.wait(0.01):
@@ -333,7 +341,7 @@ class FakeRunner:
                         self._persist()
                         next_heartbeat = now.timestamp() + 5
                     continue
-                scenario = record.request.parameters.scenario
+                scenario = _fake_parameters(record.request).scenario
                 output = f"FAKE {record.request.action_id}: {scenario}\n"
                 try:
                     record = self._output(record, output)

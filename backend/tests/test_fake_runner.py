@@ -12,6 +12,7 @@ from huntweave.contracts.execution import (
     FakeParameters,
     parameters_hash,
 )
+from huntweave.contracts.runs import Contract
 from huntweave.execution.fake import FakeRunner, RunnerRejected
 from huntweave.execution.server import create_runner
 
@@ -27,7 +28,7 @@ def ticket(**changes: object) -> ExecutionRequest:
         scope_id=uuid4(),
         budget_reservation_id=uuid4(),
         action_id="fake.collect",
-        parameters=params,
+        parameters=params.model_dump(),
         parameters_hash=parameters_hash(params),
         scope_version=1,
         policy_version=1,
@@ -39,6 +40,10 @@ def ticket(**changes: object) -> ExecutionRequest:
         target_port=80,
     )
     data.update(changes)
+    parameters = data["parameters"]
+    if isinstance(parameters, Contract):
+        # Callers pass the model; the ticket carries the validated mapping.
+        data["parameters"] = parameters.model_dump()
     return ExecutionRequest.model_validate(data)
 
 
