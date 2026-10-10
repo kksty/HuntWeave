@@ -309,6 +309,7 @@ python deploy/verify_retention.py
 - [开发顺序与验证边界评估](./docs/research/2026-10-10-development-and-validation-boundaries.md)：后端先行与集中前端接入的取舍，以及"何时该写规格"的判据
 - [双模式架构评估](./docs/research/2026-10-10-two-mode-architecture.md)：覆盖面与突破的目标函数、三个接缝、工具供给阶梯、带外与不确定结论、可视化横切面，以及评审中修正的 12 条冲突逐条对账
 - [后端架构深化评估](./docs/research/2026-10-11-backend-deepening-assessment.md)：按变更频率取样的八条候选、挂起契约与停止事实的归属裁决、六处统一形态的认定，以及"内部分层不开 ADR"与两个 Module 只有名字的查证依据
+- [延后候选的深化评估](./docs/research/2026-10-11-deferred-deepening-assessment.md)：三条延后候选的裁定——保留动作字面量归一、Runner 链接只收敛传输而不合并策略、测试假件分两步搬迁——以及来源报告中五处与代码不符之处的更正
 
 验证记录
 
