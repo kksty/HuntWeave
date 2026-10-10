@@ -10,13 +10,13 @@
 
 | # | 复核项 | 结论 |
 | --- | --- | --- |
-| 1 | 0006 §10 首段的对象清单（Run/ResearchTask/AgentSession/Decision/ToolCall/ToolResult/Evidence/ReconciliationDecision） | **成立但不完整**：八个对象都存在，然而真实 schema 另有 14 个对象（见 §3.3），原作者未列 |
+| 1 | 0006 §10 首段的对象清单（Run/ResearchTask/AgentSession/Decision/ToolCall/ToolResult/Evidence/ReconciliationDecision） | **成立但不完整**：八个对象都存在，然而真实 schema 另有 14 个对象（见 §3.3；#44 又建 11 张表后为 25 个），原作者未列 |
 | 2 | 0006 §10「没有完整 Claim、Attempt、Finding、Review、准入或 frozen manifest 表」 | **成立**：`class Claim` / `Finding` / `Review` / `Attempt` / `FrozenManifest` 在 `backend/src` 中匹配数均为 **0**，`__tablename__` 声明数与迁移建表数均无对应项 |
-| 3 | `Host` / `Service` / `WebEndpoint`（#44 需要） | **确实不存在**：`class Host` / `class WebEndpoint` 匹配数 **0**；`class Service` 唯一命中是 `contracts/errors.py:1` 的 `ServiceError`，不是领域对象 |
+| 3 | `Host` / `Service` / `WebEndpoint`（#44 需要） | **Phase 0 当时确实不存在**：`class Host` / `class WebEndpoint` 匹配数 **0**；`class Service` 唯一命中是 `contracts/errors.py:1` 的 `ServiceError`，不是领域对象。**该结论已被 #44 取代**：三个类与 `hosts` / `services` / `web_endpoints` 三张表已随 `0010_service_facts` 存在（见 §3.3） |
 | 4 | 0006 §10「现存核对 `outcome=undetermined` 是『调用是否发生仍未决』」 | **成立，且当前库中没有这种记录**：`ReconciliationOutcome` 定义在 `contracts/orchestration.py:12`，但 `reconciliation_decisions` 表 **0 行**，`tool_calls.status` 只出现 `succeeded` / `cancelled` |
 | 5 | 0006 §0.1 的旧 Finding 值（`suspected`/`supported`/`verified`/`inconclusive`/`refuted`/`admitted`/`stale`） | **表里是设计文档的值，不是库里的数据**：库里没有任何 Finding 对象或这些取值，因此**一条迁移事实都不产生**（§4.2） |
 | 6 | `EXECUTION_POLICY_VERSION` 与「策略版本随授权快照固定」 | **成立**：`contracts/runs.py:23` 定义，`:106` 写入 `ScopeSnapshot.policy_version`，旧 Run 不被当前构建改写 |
-| 7 | `BUSINESS_REVISIONS` ≡ 迁移 head | **成立**：`storage/database.py:15` 为 `("0008_retention_decisions",)`，与 §5 的链尾一致 |
+| 7 | `BUSINESS_REVISIONS` ≡ 迁移 head | **Phase 0 当时成立**：`storage/database.py:15` 为 `("0008_retention_decisions",)`，与 §5 的链尾一致。**现为三元组** `("0008_retention_decisions", "0009_planning_attempt_identity", "0010_service_facts")`，head = `0010_service_facts`（#43 加 0009、#44 加 0010） |
 | 8 | 六轴是否已有载体 | **A1 / A2 / A4 完全没有载体**；A3 只有调用的那一半；A5 / A6 有部分载体（§6） |
 | 9 | 冻结输入是否可生产 | **不完整**：`MANIFEST_INPUTS` 共 49 个字段，其中 `available` 6、`partial` 13、`absent` 30（§7.3）；`manifest_gaps()` 另有 43 个缺口 |
 
@@ -57,6 +57,8 @@
 
 （此表 18 行，正好对应 18 个 `__tablename__` 声明。第 19 个类是 `Base` 自身，`__abstract__ = True`，不建表；19 张业务表里另 1 张 `runtime_processes` 以 raw SQL 建表、没有 ORM 类，见 §3.3。）
 
+> **#44 的增量（集成期补记）**：`storage/models.py` 另增 11 个 ORM 类——`Host`、`Service`、`WebEndpoint`、`Observation`、`ServiceBindingRecord`、`ServiceCoverageRecord`、`ServiceNavigationRecord`、`ServiceSettlementRecord`、`ServiceCostShareRecord`、`ResearchLineageReference`、`AddressClue`——有 ORM 类的表因此由 18 张变为 **29 张**。上表「行」列是 **Phase 0 当时** `models.py` 的行号；后续切片增删代码后已整体移位，此处**不逐一回填**，以免写出未经核对的数字。表的权威清单见 §3.3，类与表的对应以 `models.py` 的 `__tablename__` 为准。
+
 ### 3.2 迁移链（`backend/migrations/versions/`，8 个 revision，单一 head）
 
 | revision | down_revision | 文件 | 实际 DDL |
@@ -72,9 +74,13 @@
 
 **当前单一 head = `0008_retention_decisions`**，与 `storage/database.py:15` 的 `BUSINESS_REVISIONS` 一致。链是线性的：8 个 revision、8 条 `down_revision` 边（含 1 个 `None` 根），无分支、无悬挂。
 
+> **集成期补记（#43、#44）**：上表与上一段是 **Phase 0 当时**的链（8 个 revision，head `0008_retention_decisions`）。其后 `0009_planning_attempt_identity`（#43，只加列/约束/索引）与 `0010_service_facts`（#44，建 11 张表）依次接在链尾，**现为 10 个 revision、单一 head = `0010_service_facts`**，`BUSINESS_REVISIONS` 同步为三元组。链仍线性、仍无分支；表清单守卫读的是本节这句「当前单一 head」，因此本句与 `BUSINESS_REVISIONS` 必须一起改。
+
 ### 3.3 完整表清单（真实 schema）
 
 真实 schema = 19 张业务表 + `alembic_version` + 已删除的 `login_buckets`（历史），另有独立 schema `huntweave_checkpoint` 的 4 张库表。**`0006 §10` 只列了其中 8 个对象**，遗漏 14 项（下表「0006 §10」列标 ✗）。
+
+> **#44 的增量（集成期补记）**：`0010_service_facts` 另建 **11 张业务表**，业务表因此由 19 张变为 **30 张**、遗漏项由 14 项变为 **25 项**。下表末尾的 11 行（`hosts` 起）即该增量，其上方各行为 Phase 0 当时的 19 张。`Host` / `Service` / `WebEndpoint` 在 §1 复核项 3 里记为「确实不存在」——那是 **Phase 0 当时**的事实，三个类已随后续切片存在（见 §3.1 的补记）。
 
 | 表 | ORM 类 | 迁移来源 | 写入方 | 0006 §10 |
 | --- | --- | --- | --- | --- |
@@ -100,6 +106,17 @@
 | `alembic_version` | **无** | Alembic 自身 | `alembic upgrade` | ✗ |
 | `login_buckets` | **无**（已删） | 0002 建、0007 删 | 已无写入方 | ✗ |
 | `huntweave_checkpoint.checkpoints` / `checkpoint_blobs` / `checkpoint_writes` / `checkpoint_migrations` | 库表 | 不由 Alembic 建 | `harness/checkpoints.py:29` 的 `PostgresSaver(...).setup()` | ✗ |
+| `hosts` | `Host` | 0010 | `runs/facts.py` | ✗ |
+| `services` | `Service` | 0010 | `runs/facts.py` | ✗ |
+| `web_endpoints` | `WebEndpoint` | 0010 | `runs/facts.py` | ✗ |
+| `observations` | `Observation` | 0010 | `runs/facts.py`（追加触发器拒绝改写已观测内容） | ✗ |
+| `service_bindings` | `ServiceBindingRecord` | 0010 | `runs/facts.py` | ✗ |
+| `service_coverage` | `ServiceCoverageRecord` | 0010 | `runs/facts.py` | ✗ |
+| `service_navigation` | `ServiceNavigationRecord` | 0010 | `runs/facts.py` | ✗ |
+| `service_settlements` | `ServiceSettlementRecord` | 0010 | `runs/facts.py` | ✗ |
+| `service_cost_shares` | `ServiceCostShareRecord` | 0010 | `runs/facts.py` | ✗ |
+| `research_lineage_references` | `ResearchLineageReference` | 0010 | `runs/facts.py` | ✗ |
+| `address_clues` | `AddressClue` | 0010 | `runs/facts.py` | ✗ |
 
 **`runtime_processes` 是唯一「raw SQL 建、无 ORM 类」的表。** 通过 grep 全 `backend/src` 找 `INSERT INTO` / `CREATE TABLE` / schema 名，除它之外没有别的表以裸 SQL 访问：全部命中为 `agentd.py:63`（写心跳）、`orchestration.py:1408` 与 `database.py:45`（读心跳）。
 

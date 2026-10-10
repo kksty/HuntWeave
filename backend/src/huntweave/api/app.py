@@ -25,6 +25,7 @@ from starlette.staticfiles import StaticFiles
 
 from huntweave.access.body_limit import BodyLimitMiddleware
 from huntweave.access.service import AccessService, BrowserSession
+from huntweave.api.facts import create_facts_router
 from huntweave.api.readiness import CapabilityProbe
 from huntweave.config import CONSOLE_BUILD, AppSettings
 from huntweave.contracts.capabilities import Capabilities, SandboxManagement
@@ -160,6 +161,12 @@ def create_app(
             if engine is None:
                 engine = connect_engine()
         return engine
+
+    # The facts, observations and lineage routes ship as a router factory
+    # (`docs/agents/p2-execution-batches.md` section 4): route assembly stays in this file, and this
+    # is the one line that mounts them. Every path it registers is new — none of them shadows an
+    # inline handler here.
+    app.include_router(create_facts_router(database))
 
     def ledger_observation(call_id: UUID) -> ExecutionObservation | None:
         # Read-only access to the Runner's own ledger: the verdict needs the execution side's
