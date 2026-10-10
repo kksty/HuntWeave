@@ -61,7 +61,12 @@ class RunService:
     def create_scope(self, request: ScopeCreate) -> ScopeView:
         preview = preview_targets(request.targets_text)
         if not preview.valid:
-            raise ServiceError("invalid_targets", 422)
+            # Name the reason the operator has to act on: input over the per-Run limit is a
+            # different problem from input the platform cannot parse, and the console shows the
+            # offending lines from the same preview either way.
+            raise ServiceError(
+                "target_limit_exceeded" if preview.over_limit else "invalid_targets", 422
+            )
         if not request.authorization.strip():
             raise ServiceError("authorization_required", 422)
         snapshot = ScopeSnapshot(

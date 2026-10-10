@@ -44,6 +44,11 @@ class TargetPreview(Contract):
     rows: list[TargetRow]
     valid: bool
     ipv6_enabled: Literal[False] = False
+    # The per-Run limit this preview was measured against, and how many rows crossed it. Sent with
+    # the row-level reasons so the console can point at the offending lines instead of showing an
+    # operator a count and a 422.
+    target_limit: int = Field(ge=1, strict=True)
+    over_limit: int = Field(default=0, ge=0, strict=True)
 
 
 class PortInput(Contract):

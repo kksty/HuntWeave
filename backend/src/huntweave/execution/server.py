@@ -17,10 +17,12 @@ from huntweave.contracts.execution import (
     ExecutionRecord,
     ExecutionRequest,
     LeaseRenewal,
+    RunRuntimeView,
 )
 from huntweave.execution.capabilities import evaluate
 from huntweave.execution.fake import FakeRunner
 from huntweave.execution.ledger import CallLedger, RunnerRejected, RunnerUnavailable
+from huntweave.execution.operator import project_run_state, unavailable_run_state
 from huntweave.execution.real import RealRunner
 from huntweave.execution.sandbox import RuntimeUnavailable, SandboxManager, SandboxRejected
 
@@ -201,6 +203,25 @@ def create_runner(
             sandbox_management=management,
             sandbox_reason_code=reason,
             now=datetime.now(UTC),
+        )
+
+    @app.get("/v1/runs/{run_id}/sandbox-state")
+    def sandbox_state_of_run(run_id: UUID) -> RunRuntimeView:
+        """What this deployment can currently say about one Run's containers and gateways.
+
+        A deployment without management answers with `available=false` and the reason, which is not
+        the same as "nothing is running" — the console renders it as an observation gap. The read is
+        a projection of the manager's records plus its runtime audit; it grants no capability and
+        starts, stops or reclaims nothing.
+        """
+        management, reason = sandbox_state()
+        manager = sandbox_manager()
+        if manager is None:
+            return unavailable_run_state(
+                run_id, management=management, reason_code=reason, profile_id=None
+            )
+        return project_run_state(
+            manager.run_state(run_id), profile_id=manager.profile.profile_id, reason_code=reason
         )
 
     @app.post("/v1/calls")

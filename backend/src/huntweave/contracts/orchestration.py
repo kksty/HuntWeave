@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import Field
 
+from huntweave.contracts.execution import RunRuntimeView
 from huntweave.contracts.runs import Contract, RunView
 
 ReconciliationOutcome = Literal["not_executed", "executed", "undetermined"]
@@ -77,6 +78,16 @@ class ToolCallView(Contract):
     status: str
     action: str
     parameters: dict[str, Any]
+    # The normalized hash the ticket and the execution ledger both compare against. Shown beside
+    # the command because "same parameters as the record" is a checkable claim, not a note.
+    parameters_hash: str | None = None
+    # The execution side's own statement of where this call acted: argv, cwd, user, instance,
+    # image digests and gateways. `None` means no such statement exists for this call — an old
+    # record — and the console says so rather than filling the gap from today's profile.
+    runtime: dict[str, Any] | None = None
+    # When it started, when it last produced output, how long it has been going, and the bound it
+    # runs under. This is what replaces a progress bar.
+    progress: dict[str, Any] | None = None
     result: dict[str, Any] | None
     evidence_ids: list[UUID]
     created_at: datetime
@@ -110,6 +121,10 @@ class RunSnapshot(Contract):
     interruptions: list[InterruptionView]
     heartbeat_at: datetime | None
     cursor: int
+    # The execution side's own account of this Run's containers and gateways, read through the app
+    # and never merged into a fact the platform decided for itself. Absent when the execution side
+    # cannot be asked, which the console shows as an observation gap.
+    runtime: RunRuntimeView | None = None
 
 
 class AuditEventView(Contract):
@@ -160,7 +175,11 @@ class EvidenceView(Contract):
     truncated: bool
     redacted: bool
     missing_reason: str | None
-    demonstration: bool
+    # Which side produced this evidence. A report never presents a fixed fixture as a real
+    # observation, or the reverse, so the answer travels with the evidence rather than being
+    # assumed from the Run the reader happens to be looking at.
+    execution_profile: str = "fake-p0-v1"
+    demonstration: bool = True
     offset: int
     content: str
     next_offset: int | None = None

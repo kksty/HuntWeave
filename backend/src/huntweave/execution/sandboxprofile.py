@@ -13,6 +13,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from huntweave.contracts.execution import NetworkMode
+
 SUPPORTED_PROFILE_VERSION = 1
 GATEWAY_CAPABILITIES = ("NET_ADMIN",)
 
@@ -134,6 +136,22 @@ class SandboxProfile:
     gateway: RoleProfile
     tool: RoleProfile
     limits: SandboxLimits
+
+    @property
+    def network_mode(self) -> NetworkMode:
+        """How the tool container reaches anything, in the one word an operator reads.
+
+        Derived from the profile rather than declared a second time: a profile that asked for an
+        internal network and a profile that says "internal" must not be able to disagree.
+        """
+        if self.network_internal:
+            return "internal"
+        return "bridge" if self.network_gateway_mode else "none"
+
+    @property
+    def tool_user(self) -> str:
+        """The unprivileged user every action in the tool container runs as."""
+        return self.tool.user
 
     @classmethod
     def load(cls, profile_id: str, directory: Path) -> "SandboxProfile":

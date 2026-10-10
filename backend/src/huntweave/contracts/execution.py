@@ -11,12 +11,24 @@ hopes for. A real action is never a wrapper around a fake one: it declares its o
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, Field, IPvAnyAddress, StrictInt, model_validator
 
 from huntweave.contracts.runs import Contract
+
+# What the operator console needs to answer "what actually ran, where, and as whom". These live in
+# the execution contract because only the execution side can produce them: the control plane renders
+# them and never fills a gap with a value of its own (spec 0002 section 2, issue #19).
+NetworkMode = Literal["none", "internal", "bridge"]
+# How far the platform's claim on a call reaches. `unconfirmed` is the whole point of the field:
+# it says a stop was not proven, so neither capacity nor the console may read it as reclaimed.
+CallStopState = Literal["never_started", "running", "confirmed", "unconfirmed"]
+# The three states a call's progress can be in from an operator's point of view. The ledger's own
+# terminal statuses collapse into one: once a call has ended, how it ended is the result's business.
+CallProgressStatus = Literal["accepted", "running", "ended"]
 
 ActionId = Literal[
     "fake.collect",
@@ -233,6 +245,140 @@ class ExecutionEvidence(Contract):
     missing_reason: str | None = None
 
 
+class CallRuntime(Contract):
+    """Where one call is going to act, resolved by the execution side before it acts.
+
+    Every field here is a fact the execution side had to decide anyway — the working directory it
+    passed to the exec, the user the container runs as, the image digests the instance was created
+    from — written down at the moment it was decided so the console can show "what really ran"
+    separately from "what the plan said" (spec 0002 section 2 clause 11).
+    """
+
+    action_id: ActionId
+    execution_profile: ExecutionProfile
+    # The ticket's own binding, restated because it is what the action may reach.
+    target_ip: str
+    target_port: int
+    parameters_hash: str
+    # The argv composed from the action and the ticket. For a scripted action the interpreter is
+    # named and the script body follows as its own entry, so a reader sees it was not a caller's
+    # arbitrary command line.
+    argv: list[str] = Field(default_factory=list)
+    cwd: str | None = None
+    user: str | None = None
+    instance_id: UUID | None = None
+    session_id: UUID | None = None
+    # What the instance was assembled from, taken from its immutable environment manifest.
+    image_digests: dict[str, str] = Field(default_factory=dict)
+    tool_inventory: list[str] = Field(default_factory=list)
+    engine: str | None = None
+    architecture: str | None = None
+    profile_version: int | None = None
+    # The gateways this instance's network rules live in, and what they currently permit.
+    network_mode: NetworkMode = "none"
+    gateway_ids: list[str] = Field(default_factory=list)
+    authorized: list[str] = Field(default_factory=list)
+    # When the reference time for this view was taken, so a reader can date it.
+    observed_at: AwareDatetime
+
+
+@dataclass(frozen=True)
+class CallProgress:
+    """A call's own timing, computed from its event list rather than stored beside it.
+
+    The events are where a call's output timeline lives; keeping a second copy of "when it last
+    spoke" would give two places to disagree, and the stale one would be the one on screen. So this
+    is a reading of the record, not a field of it: `status` says whether the call is still going,
+    `started_at` and `last_output_at` are read from its events, and `elapsed_ms` is the wall time it
+    has taken so far.
+    """
+
+    status: CallProgressStatus
+    timeout_seconds: int
+    started_at: datetime | None = None
+    last_output_at: datetime | None = None
+    output_bytes: int = 0
+    elapsed_ms: int | None = None
+
+    def as_view(self) -> "CallProgressView":
+        return CallProgressView(
+            status=self.status,
+            started_at=self.started_at,
+            last_output_at=self.last_output_at,
+            output_bytes=self.output_bytes,
+            timeout_seconds=self.timeout_seconds,
+            elapsed_ms=self.elapsed_ms,
+        )
+
+
+class CallProgressView(Contract):
+    """The progress view as it travels to the console (see `CallProgress` for what it means)."""
+
+    status: CallProgressStatus
+    started_at: AwareDatetime | None = None
+    last_output_at: AwareDatetime | None = None
+    output_bytes: int = 0
+    # The action's own bound, restated so a reader can see how close to it the call is.
+    timeout_seconds: int
+    elapsed_ms: int | None = None
+
+
+class ToolRuntimeView(Contract):
+    """One instance's live state, as the manager records it.
+
+    Kept separate from the session view because the questions are different: this one answers "is
+    there a container running for this Run right now, and what may it reach", and it is the only
+    place a stop confirmation is reported — `unconfirmed` never becomes `confirmed` by being
+    displayed (docs/specs/0006 section 7).
+    """
+
+    instance_id: UUID
+    session_id: UUID
+    run_id: UUID
+    state: str
+    stop_state: CallStopState
+    environment: dict[str, Any] = Field(default_factory=dict)
+    egress: dict[str, Any] = Field(default_factory=dict)
+    lease_expires_at: AwareDatetime | None = None
+    halt_reason: str | None = None
+    resources: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SessionRuntimeView(Contract):
+    session_id: UUID
+    agent_session_id: UUID
+    run_id: UUID
+    scope_version: int
+    policy_version: int
+    created_at: AwareDatetime
+    instances: list[ToolRuntimeView] = Field(default_factory=list)
+    gateway: dict[str, Any] | None = None
+
+
+class RunRuntimeView(Contract):
+    """Everything the execution side can currently say about one Run's containers and gateways.
+
+    ``available=false`` with a reason is a real answer: a Runner that cannot be reached, or a
+    deployment with no management capability, must not be rendered as a Run with nothing running.
+    """
+
+    available: bool
+    reason_code: str | None = None
+    sandbox_management: Literal["disabled", "ready", "unavailable"] = "disabled"
+    profile_id: str | None = None
+    observed_at: AwareDatetime
+    run_id: UUID
+    sessions: list[SessionRuntimeView] = Field(default_factory=list)
+    # Resources the manager's ledger and the container runtime disagree about, and instances left
+    # interrupted by a create that never finished: both are shown rather than quietly reconciled.
+    unaccounted: list[dict[str, Any]] = Field(default_factory=list)
+    missing: list[dict[str, Any]] = Field(default_factory=list)
+    interrupted: list[UUID] = Field(default_factory=list)
+    # What a reclaim attempt would and would not touch, so a console never reports 已回收 on its own
+    # authority (issue #19 clause 1).
+    reclaimable: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ExecutionResult(Contract):
     output: str
     exit_code: int | None
@@ -241,6 +387,14 @@ class ExecutionResult(Contract):
     # A caller may branch on this; it is never a substitute for the raw output, which stays the
     # evidence, and an action that declares no summary fields leaves it empty.
     summary: dict[str, Any] = Field(default_factory=dict)
+    # How long the action really took. Left unset when this side did not measure it, because a
+    # duration nobody measured is not a zero.
+    duration_ms: int | None = None
+    # Whether any part of the output was cut by the run's quota or emptied by redaction. `false`
+    # here means "what is archived is what the tool printed", and it is asserted by the archive,
+    # not assumed by the caller (issue #19 clause 3).
+    truncated: bool = False
+    redacted: bool = False
 
 
 class ExecutionEvent(Contract):
@@ -275,6 +429,17 @@ class ExecutionRecord(Contract):
     # Absent only on records the control plane states without asking the ledger; an
     # unproven absence of observation never authorises declaring a call not executed.
     observation: ExecutionObservation | None = None
+    # Written by the executor from facts it had to decide anyway (cwd, user, image digests, the
+    # argv it composed and the gateways that hold this instance's permits), so the console reads
+    # the execution side's own account of the call instead of inferring one.
+    runtime: CallRuntime | None = None
+    # Timing and silence, computed from this record's own events. The console shows "running for
+    # 42s, last output 12s ago"; it never renders an estimate of how far along the action is.
+    progress: CallProgress | None = None
+
+    @property
+    def progress_view(self) -> CallProgressView | None:
+        return self.progress.as_view() if self.progress is not None else None
 
 
 class LeaseRenewal(Contract):

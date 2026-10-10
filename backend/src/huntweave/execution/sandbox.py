@@ -174,13 +174,15 @@ class CommandResult:
 
     ``exit_code`` is the command's own status (124, the shell's "timed out", is reported as a
     timeout instead), and both streams come back whole so the caller can archive them as evidence
-    rather than summarising them away.
+    rather than summarising them away. ``duration_ms`` is the wall time the call actually took,
+    which is what the console shows while an action prints nothing (issue #19).
     """
 
     exit_code: int
     stdout: str
     stderr: str
     timed_out: bool = False
+    duration_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -464,6 +466,20 @@ class SandboxObservation(Contract):
     observed_at: AwareDatetime | None = None
 
 
+class SandboxRunState(Contract):
+    """One Run's execution-side records, plus whatever the runtime audit could say about them.
+
+    ``audit`` is optional on purpose: a runtime that cannot be read leaves the ledger's own answer
+    standing and says so, rather than presenting "the ledger has nothing outstanding" as a
+    statement about the host.
+    """
+
+    run_id: UUID
+    sessions: list[SessionRecord] = Field(default_factory=list)
+    instances: list[InstanceRecord] = Field(default_factory=list)
+    audit: ResourceAudit | None = None
+
+
 # --------------------------------------------------------------------------------------------
 # Labels and names
 # --------------------------------------------------------------------------------------------
@@ -736,6 +752,30 @@ class SandboxManager:
                 if record.state == "interrupted"
             ]
             return ResourceAudit(unaccounted=unaccounted, missing=missing, interrupted=interrupted)
+
+    def run_state(self, run_id: UUID) -> SandboxRunState:
+        """Everything this manager can currently say about one Run's sessions, instances and audit.
+
+        This is the operator's read of the execution side, and it is deliberately a *statement of
+        the records*: a stop counts as confirmed only where `stop_confirmed_at` exists; an instance
+        the runtime lost is reported missing rather than forgotten, and a resource the runtime still
+        has but the ledger does not is reported unaccounted. Nothing here is derived from a call's
+        outcome, because a call finishing is not evidence that its container is gone (issue #19
+        clause 1, docs/specs/0006 section 7). Whether the audit could be taken at all is reported
+        beside it, so a ledger-only answer is never presented as the whole truth.
+        """
+        with self.lock:
+            sessions = [record for record in self.sessions.values() if record.run_id == run_id]
+            instances = [record for record in self.instances.values() if record.run_id == run_id]
+            try:
+                audit: ResourceAudit | None = self.audit()
+            except Exception:
+                # Any failure to read the runtime is the same fact to an operator: no trusted
+                # observation of what is currently out there.
+                audit = None
+            return SandboxRunState(
+                run_id=run_id, sessions=sessions, instances=instances, audit=audit
+            )
 
     def processes(self, instance_id: UUID, limit: int = 64) -> list[str]:
         container = self._container_of(self._instance(instance_id), "tool")

@@ -19,6 +19,9 @@ from typing import Any, Literal
 from uuid import UUID
 
 from huntweave.contracts.execution import (
+    CallProgress,
+    CallProgressStatus,
+    CallRuntime,
     ExecutionEvent,
     ExecutionEvidence,
     ExecutionObservation,
@@ -27,6 +30,12 @@ from huntweave.contracts.execution import (
     ExecutionResult,
     parameters_hash,
 )
+from huntweave.execution.archive import (
+    ARTIFACT_QUOTA_BYTES,
+    OUTPUT_QUOTA_BYTES,
+    ArchiveRejected,
+    EvidenceArchive,
+)
 from huntweave.execution.durable import atomic_write
 
 CallStatus = Literal["accepted", "running", "completed", "failed", "cancelled", "unknown"]
@@ -34,6 +43,16 @@ CallStatus = Literal["accepted", "running", "completed", "failed", "cancelled", 
 # The statuses a call does not come back from. A transition into one of these is where the claim
 # about its processes has to be settled, so it is also where an unconfirmed stop is named.
 ENDED_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled", "unknown"})
+# The ledger's statuses as the progress view states them. Kept as one explicit table so a status
+# added to the ledger is a `KeyError` here rather than a word the console has never seen.
+PROGRESS_STATUS: dict[CallStatus, CallProgressStatus] = {
+    "accepted": "accepted",
+    "running": "running",
+    "completed": "ended",
+    "failed": "ended",
+    "cancelled": "ended",
+    "unknown": "ended",
+}
 
 
 @dataclass(frozen=True)
@@ -91,10 +110,21 @@ class CallLedger:
     # side and the real side can run in one process without fighting over either.
     ledger_name = "ledger"
 
-    def __init__(self, state_dir: Path, evidence_dir: Path):
+    def __init__(
+        self,
+        state_dir: Path,
+        evidence_dir: Path,
+        *,
+        output_quota_bytes: int = OUTPUT_QUOTA_BYTES,
+        artifact_quota_bytes: int = ARTIFACT_QUOTA_BYTES,
+    ):
         self.state_dir, self.evidence_dir = state_dir, evidence_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         evidence_dir.mkdir(parents=True, exist_ok=True)
+        self.output_quota_bytes = output_quota_bytes
+        self.archive_writer = EvidenceArchive(
+            evidence_dir, artifact_quota_bytes=artifact_quota_bytes
+        )
         self.lock = threading.RLock()
         self.closed = threading.Event()
         self.threads: list[threading.Thread] = []
@@ -201,6 +231,7 @@ class CallLedger:
         started_at = next(
             (event.created_at for event in record.events if event.type == "execution_started"), now
         )
+        elapsed_ms = int((now - started_at).total_seconds() * 1000)
         events = [
             *record.events,
             ExecutionEvent(
@@ -208,7 +239,7 @@ class CallLedger:
                 type="execution_started" if status == "running" else f"execution_{status}",
                 payload={
                     "reason_code": reason,
-                    "elapsed_ms": int((now - started_at).total_seconds() * 1000),
+                    "elapsed_ms": elapsed_ms,
                 },
                 created_at=now,
             ),
@@ -231,8 +262,72 @@ class CallLedger:
             result=result,
             events=events,
             observation=self._observation_after(record, status, confirmed),
+            runtime=record.runtime,
+            progress=self._progress(record, status, elapsed_ms),
         )
         return self._store(updated)
+
+    def _progress(
+        self, record: ExecutionRecord, status: CallStatus, elapsed_ms: int | None = None
+    ) -> CallProgress:
+        """When this call started, when it last spoke, and how much it has said.
+
+        Read from the record's own events so there is exactly one place a call's output timeline
+        lives. Silence is reported as-is: an action that has printed nothing for two minutes looks
+        different from one that printed a moment ago, and neither is turned into a percentage of
+        work nobody measured.
+
+        ``elapsed_ms`` is stored, not recomputed on every read: an ended call's duration is a fact
+        about that call, and a reader asking twice must get the same answer. A call still running is
+        the exception — the same request arriving a second later is genuinely a second later — and
+        its duration is measured from the last moment this ledger wrote anything about it, so the
+        record stays a record rather than becoming a clock.
+        """
+        started = next(
+            (event.created_at for event in record.events if event.type == "execution_started"),
+            None,
+        )
+        last_output = next(
+            (
+                event.created_at
+                for event in reversed(record.events)
+                if event.type == "execution_output"
+            ),
+            None,
+        )
+        now = datetime.now(UTC)
+        return CallProgress(
+            status=PROGRESS_STATUS[status],
+            timeout_seconds=self._timeout_requested(record.request),
+            started_at=started,
+            last_output_at=last_output,
+            output_bytes=sum(
+                len(event.payload.get("text", "").encode())
+                for event in record.events
+                if event.type == "execution_output"
+            ),
+            elapsed_ms=(
+                elapsed_ms
+                # Still running: measured from the last thing this ledger wrote about the call,
+                # corrected below to the start when it has produced nothing yet.
+                if elapsed_ms is not None
+                else int((now - (last_output or started)).total_seconds() * 1000)
+                if started is not None
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _timeout_requested(request: ExecutionRequest) -> int:
+        """The bound this call runs under, from the ticket's own parameters when it names one."""
+        value = request.parameters.get("timeout_seconds")
+        if isinstance(value, int):
+            return min(value, request.spec.hard_timeout_seconds)
+        return request.spec.default_timeout_seconds
+
+    def _runtime(self, record: ExecutionRecord, runtime: CallRuntime) -> ExecutionRecord:
+        """Attach what the executor decided about where this call acts."""
+        return self._store(record.model_copy(update={"runtime": runtime}))
 
     def _emit(
         self, record: ExecutionRecord, event_type: str, payload: dict[str, Any]
@@ -268,6 +363,9 @@ class CallLedger:
                 request=request,
                 status="accepted",
                 observation=self._observed(False, False, False, True),
+                progress=self._progress(
+                    ExecutionRecord(request=request, status="accepted"), "accepted"
+                ),
             )
             self.data[str(request.call_id)] = {
                 "fingerprint": fingerprint,
@@ -481,6 +579,28 @@ class CallLedger:
     # -- the hooks a subclass runs its call through -------------------------------------------
 
     def _execute(self, call_id: UUID) -> None:
+        try:
+            self._execute_call(call_id)
+        except ArchiveRejected as refusal:
+            # Evidence could not be kept — the volume is full, the directory is unwritable, or the
+            # deployment's quota refuses this artifact. The call is blocked with the archive's own
+            # reason rather than settled as a success: a call whose evidence is missing is not a
+            # confirmed action, and the console shows the refusal instead of a silent gap.
+            self._evidence_refused(call_id, refusal.reason_code)
+
+    def _evidence_refused(self, call_id: UUID, reason_code: str) -> None:
+        with self.lock:
+            record = self._record(call_id)
+            if record is None or record.status not in {"accepted", "running"}:
+                return
+            blocked = self._emit(
+                record,
+                "execution_evidence_refused",
+                {"reason_code": reason_code},
+            )
+            self._failure(blocked, reason_code)
+
+    def _execute_call(self, call_id: UUID) -> None:
         with self.lock:
             record = self.query(call_id)
             if record is None or record.status != "accepted":
@@ -557,59 +677,89 @@ class CallLedger:
 
     # -- evidence -----------------------------------------------------------------------------
 
-    def _archive(self, record: ExecutionRecord, name: str, payload: bytes) -> ExecutionEvidence:
-        """Write one evidence file, then hash the file that was written.
+    def _archive(self, record: ExecutionRecord, name: str, text: str) -> ExecutionEvidence:
+        """Write one evidence file through the archive, which refuses rather than half-writes.
 
-        The order matters: the hash describes the bytes on disk, not the bytes the caller meant
-        to write, and evidence that cannot be written is reported as missing rather than
-        assembled from memory.
+        The archive redacts and hashes the bytes it really wrote, and a refusal is re-raised as
+        this executor's own reason code: a call whose archive could not be kept is a call whose
+        affected execution stops (issue #19, criterion 3).
         """
         relative = f"{record.request.run_id}/{record.request.call_id}/{name}"
-        destination = self.evidence_dir / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(destination, payload)
-        return ExecutionEvidence(
-            id=_evidence_id(record.request.call_id, name),
-            relative_path=relative,
-            sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
-            size_bytes=destination.stat().st_size,
-            available=True,
-        )
+        return self.archive_writer.archive(relative, text).evidence
 
     def _output_path(self, record: ExecutionRecord) -> str:
         return f"{record.request.run_id}/{record.request.call_id}.txt"
 
     def _output(self, record: ExecutionRecord, text: str) -> ExecutionRecord:
-        """Append raw output to this call's transcript and to the archived stream."""
+        """Append raw output to this call's transcript, and record whether it still fits.
+
+        The transcript is bounded: once the run's output quota is spent nothing more is written, and
+        an `execution_output_truncated` event says so. The call keeps going — a tool that talks too
+        much is not a reason to abandon the action — but its evidence is labelled incomplete, so a
+        later reader cannot mistake a cut transcript for the whole output.
+        """
         relative = self._output_path(record)
-        destination = self.evidence_dir / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        previous = destination.read_bytes() if destination.exists() else b""
-        atomic_write(destination, previous + text.encode())
-        return self._emit(
+        written = self.archive_writer.append(relative, text, quota_bytes=self.output_quota_bytes)
+        offset = record.progress.output_bytes if record.progress is not None else 0
+        if written is None:
+            return self._emit(
+                record,
+                "execution_output_truncated",
+                {
+                    "reason_code": "evidence_output_truncated",
+                    "offset": offset,
+                    "quota_bytes": self.output_quota_bytes,
+                },
+            )
+        if written.truncated:
+            record = self._emit(
+                record,
+                "execution_output_truncated",
+                {
+                    "reason_code": "evidence_output_truncated",
+                    "offset": offset,
+                    "kept_bytes": written.evidence.size_bytes,
+                    "quota_bytes": self.output_quota_bytes,
+                },
+            )
+        if written.redacted:
+            record = self._emit(
+                record,
+                "execution_output_redacted",
+                {"patterns": written.redactions, "count": sum(written.redactions.values())},
+            )
+        record = self._emit(
             record,
             "execution_output",
             {
-                "text": text,
-                "offset": len(previous),
-                "next_offset": len(previous) + len(text.encode()),
+                "text": written.text,
+                "offset": offset,
+                "next_offset": written.evidence.size_bytes,
+                "truncated": written.truncated,
+                "redacted": written.redacted,
             },
+        )
+        return self._store(
+            record.model_copy(update={"progress": self._progress(record, "running")})
         )
 
     def _result(self, record: ExecutionRecord, exit_code: int | None) -> ExecutionResult | None:
         """The transcript as the call's output, when there is one."""
-        destination = self.evidence_dir / self._output_path(record)
+        relative = self._output_path(record)
+        destination = self.evidence_dir / relative
         if not destination.exists():
             return None
         payload = destination.read_bytes()
-        evidence = ExecutionEvidence(
-            id=_evidence_id(record.request.call_id, "output"),
-            relative_path=self._output_path(record),
-            sha256=hashlib.sha256(payload).hexdigest(),
-            size_bytes=len(payload),
-            available=True,
+        evidence = self.archive_writer.stored_evidence(relative)
+        # Whether the transcript is whole is a recorded fact rather than something a reader has to
+        # infer from the size, so the label survives into the call's result.
+        truncated = any(event.type == "execution_output_truncated" for event in record.events)
+        redacted = any(event.type == "execution_output_redacted" for event in record.events)
+        return ExecutionResult(
+            output=payload.decode(),
+            exit_code=exit_code,
+            evidence=[evidence.model_copy(update={"truncated": truncated, "redacted": redacted})],
         )
-        return ExecutionResult(output=payload.decode(), exit_code=exit_code, evidence=[evidence])
 
     def _failure(
         self, record: ExecutionRecord, reason: str, *, stopped: bool | None = None
@@ -623,7 +773,11 @@ class CallLedger:
         )
 
 
-def _evidence_id(call_id: UUID, name: str) -> UUID:
-    from uuid import uuid5
-
-    return uuid5(call_id, name)
+__all__ = [
+    "ArchiveRejected",
+    "CallLedger",
+    "CallStatus",
+    "RunnerRejected",
+    "RunnerUnavailable",
+    "StopOutcome",
+]

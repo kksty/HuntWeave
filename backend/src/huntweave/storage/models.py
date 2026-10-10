@@ -132,6 +132,14 @@ class ToolCall(Base):
     )
     # The execution side's own last word on this call's process and connection.
     observation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # What the execution side decided about where the call acts (argv, cwd, user, instance,
+    # image digests, gateways), written when it said so. Kept on the call rather than derived later
+    # from a profile: a deployment's profile can change, and the record of what an old call actually
+    # ran must not change with it.
+    runtime: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # How long the call had been running and when it last produced output, in the execution side's
+    # own terms. This is what the console shows instead of a progress bar (issue #19).
+    progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
 
 class ReconciliationDecision(Base):

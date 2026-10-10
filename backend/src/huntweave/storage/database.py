@@ -6,7 +6,11 @@ from sqlalchemy.orm import Session
 
 from huntweave.config import database_url
 
-BUSINESS_REVISION = "0004_reconciliation"
+# The business revision this build expects to be running on. It is a gate, not a formality: a
+# process that finds an older schema must refuse to serve rather than reading columns that are not
+# there. Bumping it here is part of adding a migration, and it went unbumped for one revision —
+# this is the value `alembic upgrade head` must leave behind before the platform opens.
+BUSINESS_REVISION = "0006_call_runtime"
 
 
 def database_now(session: Session) -> datetime:

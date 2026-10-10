@@ -676,6 +676,12 @@ class OrchestrationService:
                 or str(call.decision_id) != str(record.request.decision_id)
             ):
                 raise ServiceError("execution_record_mismatch", 409)
+            # The execution side's latest word on this call's process and connection is kept even
+            # for a call that is already settled: a stop confirmation can arrive after the outcome
+            # did, and every reader of the call — reconciliation, capacity and the console — has to
+            # see that fact rather than the one that was true when the outcome landed.
+            if record.observation is not None:
+                call.observation = record.observation.model_dump(mode="json")
             if session.get(ToolResult, call.id) is not None:
                 return
             outbox = session.get(Outbox, call.id)
@@ -693,6 +699,7 @@ class OrchestrationService:
                 verdict = session.get(ReconciliationDecision, call.id)
                 if record.observation is not None:
                     call.observation = record.observation.model_dump(mode="json")
+                self._keep_runtime(call, record)
                 if verdict is None:
                     call.status = "unknown"
                     # Reconcile idempotently: repeated passes must not keep bumping the
@@ -716,10 +723,12 @@ class OrchestrationService:
                 call.status = "dispatched" if record.status == "accepted" else "running"
                 if record.observation is not None:
                     call.observation = record.observation.model_dump(mode="json")
+                self._keep_runtime(call, record)
                 return
             call.status = {"completed": "succeeded", "failed": "failed", "cancelled": "cancelled"}[
                 record.status
             ]
+            self._keep_runtime(call, record)
             result = (
                 record.result.model_dump(mode="json")
                 if record.result
@@ -823,6 +832,20 @@ class OrchestrationService:
                     "Restore the execution archive; incomplete evidence cannot support a finding.",
                 )
             self._converge(session, run)
+
+    def _keep_runtime(self, call: ToolCall, record: ExecutionRecord) -> None:
+        """Keep the execution side's statement about where this call acted, and how it went.
+
+        Stored on the call row rather than derived at read time: the runtime view is the execution
+        side's own account of one call (argv, cwd, user, instance, image digests, gateways), and a
+        profile that changed since then must not silently rewrite what an old call ran. The progress
+        view is stored with it for the same reason — how long a call ran and when it last spoke are
+        facts about that call, not properties of the deployment answering the request now.
+        """
+        if record.runtime is not None:
+            call.runtime = record.runtime.model_dump(mode="json")
+        if record.progress is not None:
+            call.progress = record.progress.as_view().model_dump(mode="json")
 
     def unknown(self, run_id: UUID, call_id: UUID, reason: str = "execution_unknown") -> None:
         with Session(self.engine()) as session, session.begin():
@@ -1313,7 +1336,14 @@ class OrchestrationService:
         call: ToolCall,
         recorded: ReconciliationDecision | None = None,
     ) -> dict[str, Any]:
-        """One call as the console sees it: execution facts, and any verdict kept apart."""
+        """One call as the console sees it: execution facts, and any verdict kept apart.
+
+        Everything a reader needs in order to separate "what the plan said" from "what really ran"
+        is here: the ticket's parameters, the hash that identifies them, and the execution side's
+        own statement of the argv, working directory, user, instance and environment it used. When
+        no such statement was recorded — calls made before the execution side started writing one —
+        the field is `None` rather than a value reconstructed from today's profile.
+        """
         verdict = recorded or session.get(ReconciliationDecision, call.id)
         result = session.get(ToolResult, call.id)
         return {
@@ -1323,6 +1353,9 @@ class OrchestrationService:
             "status": call.status,
             "action": call.ticket["action_id"],
             "parameters": call.ticket["parameters"],
+            "parameters_hash": call.ticket["parameters_hash"],
+            "runtime": call.runtime,
+            "progress": self._progress_view(call, result),
             "result": result.content if result else None,
             "evidence_ids": [
                 str(e)
@@ -1334,6 +1367,23 @@ class OrchestrationService:
             "reconciliation": self._reconciliation_view(verdict) if verdict else None,
             "conditions": self._call_conditions(call, verdict),
         }
+
+    def _progress_view(
+        self, call: ToolCall, result: ToolResult | None
+    ) -> dict[str, Any] | None:
+        """When this call last spoke, and how long it has been going.
+
+        The stored view is the execution side's own account. When there is none — calls made before
+        this side started writing one — the platform adds only what it can prove from the call row:
+        that the call has produced nothing at all. Everything else stays empty, because the console
+        answers "is this stuck or just quiet" from facts and never from a guess.
+        """
+        stored = dict(call.progress) if call.progress else {}
+        if "last_output_at" not in stored:
+            stored["last_output_at"] = None
+        if "no_output_yet" not in stored:
+            stored["no_output_yet"] = result is None or not (result.content or {}).get("output")
+        return stored or None
 
     def _observation_view(self, observation: dict[str, Any] | None) -> dict[str, Any] | None:
         if not observation:
@@ -1357,7 +1407,10 @@ class OrchestrationService:
         self, session: Session, run: Run, call: ToolCall, verdict: ReconciliationDecision
     ) -> dict[str, Any]:
         return {
-            "run": RunService._run(run).model_dump(mode="json"),
+            # `demonstration` is computed on the way out rather than stored, so it is left out here:
+            # the caller's contract derives it again from `execution_profile`, and a field handed
+            # over as if it were a column is exactly what a strict contract has to refuse.
+            "run": RunService._run(run).model_dump(mode="json", exclude={"demonstration"}),
             "call": self._call_view(session, call, verdict),
         }
 
@@ -1377,7 +1430,11 @@ class OrchestrationService:
                 text("SELECT heartbeat_at FROM huntweave.runtime_processes WHERE name='agentd'")
             )
             return {
-                "run": RunService._run(run).model_dump(mode="json"),
+                # `demonstration` is derived from the execution profile on the way out, so it is
+                # left out of the payload here: the view that carries this Run to the console
+                # derives it again, and a derived field travelling as if it were a column is
+                # exactly what a strict contract must refuse.
+                "run": RunService._run(run).model_dump(mode="json", exclude={"demonstration"}),
                 "tasks": [
                     {
                         "id": str(x.id),

@@ -3,10 +3,12 @@ import json
 import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from uuid import UUID
 
+import httpx
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import Engine
@@ -27,7 +29,7 @@ from huntweave.api.readiness import CapabilityProbe
 from huntweave.config import CONSOLE_BUILD, AppSettings
 from huntweave.contracts.capabilities import Capabilities
 from huntweave.contracts.errors import ServiceError
-from huntweave.contracts.execution import ExecutionObservation
+from huntweave.contracts.execution import ExecutionObservation, RunRuntimeView
 from huntweave.contracts.orchestration import (
     EventPage,
     EvidenceView,
@@ -77,11 +79,27 @@ def error_response(error: ServiceError) -> JSONResponse:
     )
 
 
+def unobserved_runtime(run_id: UUID, reason_code: str) -> RunRuntimeView:
+    """An execution-side read the platform could not take, stated as exactly that.
+
+    `available=false` with a reason is the honest answer. The console renders it as an observation
+    gap, so an operator never reads "we could not ask" as "there is nothing out there".
+    """
+    return RunRuntimeView(
+        available=False,
+        reason_code=reason_code,
+        sandbox_management="unavailable",
+        observed_at=datetime.now(UTC),
+        run_id=run_id,
+    )
+
+
 def create_app(
     settings: AppSettings | None = None,
     engine: Engine | None = None,
     observation_reader: Callable[[UUID], ExecutionObservation | None] | None = None,
     capability_reader: Callable[[], Capabilities] | None = None,
+    runtime_reader: Callable[[UUID], RunRuntimeView] | None = None,
 ) -> FastAPI:
     settings = settings or AppSettings.from_env()
     app = FastAPI(title="HuntWeave", docs_url=None, redoc_url=None, openapi_url=None)
@@ -101,6 +119,28 @@ def create_app(
         return read_observation(RunnerClient(), call_id)
 
     observation_source = observation_reader or ledger_observation
+
+    def execution_runtime(run_id: UUID) -> RunRuntimeView:
+        """Ask the execution side what this Run currently has outside the platform.
+
+        A refusal or an unreachable execution side is reported as an observation gap with the
+        reason, never as "this Run has nothing running": those are different statements, and only
+        one of them this process is entitled to make (issue #19 clause 1).
+        """
+        try:
+            return RunnerClient().run_runtime(run_id)
+        except httpx.HTTPStatusError as failure:
+            # A Runner that does not serve this read is a deployment fact, not a Run fact.
+            reason = (
+                "sandbox_state_unsupported"
+                if failure.response.status_code in {404, 501}
+                else "runner_unavailable"
+            )
+            return unobserved_runtime(run_id, reason)
+        except (httpx.HTTPError, OSError, TimeoutError, ValueError):
+            return unobserved_runtime(run_id, "runner_unavailable")
+
+    runtime_source = runtime_reader or execution_runtime
 
     def observed(view: RunView) -> RunView:
         """Report the execution chain this Run would use as it is now, never as assumed.
@@ -277,7 +317,9 @@ def create_app(
     @app.get("/api/v1/runs/{run_id}/snapshot")
     def run_snapshot(run_id: UUID) -> RunSnapshot:
         snapshot = RunSnapshot.model_validate(orchestration.snapshot(run_id))
-        return snapshot.model_copy(update={"run": observed(snapshot.run)})
+        return snapshot.model_copy(
+            update={"run": observed(snapshot.run), "runtime": runtime_source(run_id)}
+        )
 
     @app.get("/api/v1/runs/{run_id}/event-history")
     def event_history(

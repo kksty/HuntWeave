@@ -13,12 +13,14 @@ cancellation and failure, because a call that is over must not leave a permit be
 """
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from huntweave.contracts.execution import (
     REAL_ACTIONS,
+    CallRuntime,
     DiscoverTcpParameters,
     ExecutionRecord,
     ExecutionRequest,
@@ -26,11 +28,18 @@ from huntweave.contracts.execution import (
     ProbeHttpParameters,
     ShellExecParameters,
 )
-from huntweave.execution.ledger import CallLedger, RunnerRejected, RunnerUnavailable, StopOutcome
+from huntweave.execution.ledger import (
+    ArchiveRejected,
+    CallLedger,
+    RunnerRejected,
+    RunnerUnavailable,
+    StopOutcome,
+)
 from huntweave.execution.sandbox import (
     AuthorizedEndpoint,
     CommandResult,
     HaltRequest,
+    InstanceRecord,
     LeaseRenewal,
     RuntimeUnavailable,
     SandboxInstanceRequest,
@@ -114,7 +123,15 @@ class RealRunner(CallLedger):
     ):
         self.manager = manager
         self.profile = profile
-        super().__init__(state_dir, evidence_dir)
+        super().__init__(
+            state_dir,
+            evidence_dir,
+            # The profile decides how much of one artifact this deployment may keep. A profile is
+            # already the fixed, reviewed place these limits live (spec 0002 section 3.6), so the
+            # archive reads it from there instead of carrying a second default.
+            artifact_quota_bytes=profile.limits.evidence_max_bytes,
+            output_quota_bytes=profile.limits.evidence_max_bytes,
+        )
 
     # -- submission ---------------------------------------------------------------------------
 
@@ -141,6 +158,8 @@ class RealRunner(CallLedger):
             int(getattr(parameters, "timeout_seconds", request.spec.default_timeout_seconds)),
             request.spec.hard_timeout_seconds,
         )
+        argv = action_command(request, timeout)
+        began = datetime.now(UTC)
         instance_id: UUID | None = None
         try:
             session = self.manager.open_session(
@@ -174,9 +193,8 @@ class RealRunner(CallLedger):
                 # The operator cancelled while the instance was being prepared. The command never
                 # starts, and the instance this call created is released by the same path.
                 return
-            self._announce(record, request, instance_id)
-            command = action_command(request, timeout)
-            result = self.manager.run_command(instance_id, command, timeout)
+            record = self._announce(record, request, instance, argv)
+            result = self.manager.run_command(instance_id, argv, timeout)
         except SandboxRejected as refusal:
             self._settle_failure(call_id, refusal.reason_code)
             return
@@ -213,6 +231,10 @@ class RealRunner(CallLedger):
                 return
             try:
                 settled = self._archive_result(current, request, result)
+            except ArchiveRejected as refusal:
+                # The archive refused this call's output. No result is claimed, and the call ends
+                # blocked with the archive's own reason instead of a fabricated success.
+                raise refusal
             except OSError:
                 self._failure(current, "evidence_storage_failed")
                 return
@@ -221,15 +243,21 @@ class RealRunner(CallLedger):
                 reason = "execution_timeout"
             elif result.exit_code != 0:
                 reason = "action_failed"
+            settled = settled.model_copy(
+                update={"duration_ms": result.duration_ms, "truncated": self._truncated(current)}
+            )
             # Every one of these transitions takes its claim about processes from this executor's
             # own stop fact, read after the release above: the ledger asks whether the instance
             # this call used is confirmed stopped, instead of this path asserting that it is.
-            self._change(
+            finished = self._change(
                 current,
                 "completed" if result.exit_code == 0 else "failed",
                 reason,
                 settled,
             )
+            # The end of the command is recorded with the end of the call, so a reader that sees
+            # the terminal status already sees the whole call rather than racing the last event.
+            self._announce_completion(finished, began, result)
 
     def _halt_requested(self, call_id: UUID) -> bool:
         """Whether an operator ended this call while it was still being prepared."""
@@ -289,25 +317,97 @@ class RealRunner(CallLedger):
     # -- helpers ------------------------------------------------------------------------------
 
     def _announce(
-        self, record: ExecutionRecord, request: ExecutionRequest, instance_id: UUID
-    ) -> None:
+        self,
+        record: ExecutionRecord,
+        request: ExecutionRequest,
+        instance: InstanceRecord,
+        argv: list[str],
+    ) -> ExecutionRecord:
         """Record where the call is going to act, before it acts.
 
         ``cwd`` is the profile's workspace mount — the directory the manager passes on the exec
         itself — so a reader sees where the command ran as a decision of this deployment rather
-        than as whatever the tool image left as its default.
+        than as whatever the tool image left as its default. The rest is the same kind of fact:
+        the user the container runs as, the image digests the instance was built from, and the
+        gateway that holds this instance's permits. All of it is written here, once, from the
+        instance the manager just read back (spec 0002 section 2 clause 11, issue #19).
         """
-        self._emit(
+        runtime = CallRuntime(
+            action_id=request.action_id,
+            execution_profile=request.execution_profile,
+            target_ip=str(request.target_ip),
+            target_port=request.target_port,
+            parameters_hash=request.parameters_hash,
+            argv=argv,
+            cwd=self.profile.workspace_mount,
+            user=self.profile.tool_user,
+            instance_id=instance.instance_id,
+            session_id=instance.session_id,
+            image_digests=dict(instance.environment.image_digests),
+            tool_inventory=list(instance.environment.tool_inventory),
+            engine=instance.environment.engine,
+            architecture=instance.environment.architecture,
+            profile_version=instance.environment.profile_version,
+            network_mode=self.profile.network_mode,
+            gateway_ids=[
+                resource.id for resource in instance.resources if resource.role == "gateway"
+            ],
+            authorized=[
+                f"{endpoint.address}:{endpoint.port}" for endpoint in instance.egress.authorized
+            ],
+            observed_at=datetime.now(UTC),
+        )
+        record = self._runtime(record, runtime)
+        return self._emit(
             record,
             "execution_instance",
             {
-                "instance_id": str(instance_id),
+                "instance_id": str(instance.instance_id),
                 "execution_profile": request.execution_profile,
                 "profile_id": self.profile.profile_id,
                 "action": request.action_id,
                 "target": f"{request.target_ip}:{request.target_port}",
                 "cwd": self.profile.workspace_mount,
+                "user": self.profile.tool_user,
+                "argv": argv,
+                "network_mode": self.profile.network_mode,
             },
+        )
+
+    def _announce_completion(
+        self, record: ExecutionRecord, began: datetime, result: CommandResult
+    ) -> None:
+        """Record that the action ended, with the wall time it really took.
+
+        This is what lets the console separate "the platform never said anything" from "the action
+        is still silent": the end is a fact of its own, written by the side that ran it. It is
+        written from the record the terminal transition just returned, so the event lands with the
+        outcome instead of racing a reader that already saw the call finish.
+        """
+        with self.lock:
+            current = self._record(record.request.call_id)
+            if current is None or current.status != record.status:
+                return
+            ended = datetime.now(UTC)
+            self._emit(
+                record,
+                "execution_command_completed",
+                {
+                    "exit_code": result.exit_code,
+                    "timed_out": result.timed_out,
+                    "duration_ms": result.duration_ms
+                    if result.duration_ms is not None
+                    else int((ended - began).total_seconds() * 1000),
+                    "started_at": began.isoformat(),
+                    "ended_at": ended.isoformat(),
+                },
+            )
+
+    def _truncated(self, record: ExecutionRecord) -> bool:
+        """Whether any part of this call's transcript was cut or emptied by redaction."""
+        return any(
+            event.type in {"execution_output_truncated", "execution_output_redacted"}
+            for event in record.events
         )
 
     def _settle_failure(self, call_id: UUID, reason_code: str) -> None:
@@ -339,14 +439,15 @@ class RealRunner(CallLedger):
     ) -> ExecutionResult:
         """Archive what the call produced, then describe it.
 
-        The transcript is appended first (it is what the console shows), then stdout and stderr
-        as their own files, each hashed from the bytes that were really written.
+        The transcript is appended first (it is what the console shows), then stdout and stderr as
+        their own files, each hashed from the bytes that were really written. A refusal from the
+        archive propagates: this method never returns a result for output that was not kept.
         """
         text = result.stdout + (f"\n[stderr]\n{result.stderr}" if result.stderr else "")
         if text:
             record = self._output(record, text)
-        stdout_evidence = self._archive(record, "stdout.txt", result.stdout.encode())
-        stderr_evidence = self._archive(record, "stderr.txt", result.stderr.encode())
+        stdout_evidence = self._archive(record, "stdout.txt", result.stdout)
+        stderr_evidence = self._archive(record, "stderr.txt", result.stderr)
         transcript = self._result(record, result.exit_code)
         evidence = [
             *(transcript.evidence if transcript is not None else []),
@@ -358,6 +459,9 @@ class RealRunner(CallLedger):
             exit_code=result.exit_code,
             evidence=evidence,
             summary=_summary(request, result),
+            duration_ms=result.duration_ms,
+            truncated=self._truncated(record),
+            redacted=any(item.redacted for item in evidence),
         )
 
 

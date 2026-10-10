@@ -14,9 +14,18 @@ TARGET_LIMIT = 100
 
 
 def preview_targets(text: str) -> TargetPreview:
+    """Read a pasted list of targets and report, per line, what the platform will and will not take.
+
+    The order of the two refusals matters and is deliberate. Every line is classified first — which
+    is where an IPv6 target is told it cannot run here at all — and only a list that is otherwise
+    acceptable is measured against the per-Run limit. Reporting `target_limit_exceeded` for input
+    that also contains an IPv6 target would hide the reason the operator can actually act on behind
+    a count, and no per-line feedback would be shown for either.
+    """
     targets: dict[str, int] = {}
     rows: list[TargetRow] = []
     invalid = False
+    overflow = 0
     for line, raw in enumerate(text.splitlines(), start=1):
         value = raw.strip()
         if not value:
@@ -41,6 +50,11 @@ def preview_targets(text: str) -> TargetPreview:
                     reason = "ipv6_environment_unsupported"
         except ValueError:
             reason = "invalid_ip"
+        if reason is None and duplicate is None and len(targets) > TARGET_LIMIT:
+            # Over the per-Run limit: named on the line that crossed it, so the operator is told
+            # which rows to remove instead of only that something 422ed.
+            reason = "target_limit_exceeded"
+            overflow += 1
         invalid = invalid or reason is not None
         rows.append(
             TargetRow(
@@ -51,9 +65,13 @@ def preview_targets(text: str) -> TargetPreview:
                 duplicate_of=duplicate,
             )
         )
-    if len(targets) > TARGET_LIMIT:
-        raise ServiceError("target_limit_exceeded", 422)
-    return TargetPreview(targets=list(targets), rows=rows, valid=bool(targets) and not invalid)
+    return TargetPreview(
+        targets=list(targets),
+        rows=rows,
+        valid=bool(targets) and not invalid,
+        target_limit=TARGET_LIMIT,
+        over_limit=overflow,
+    )
 
 
 def expand_ports(value: PortInput) -> list[int]:

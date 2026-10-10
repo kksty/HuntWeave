@@ -122,6 +122,25 @@ def test_a_real_call_runs_inside_an_instance_authorized_for_its_own_target(
     assert archived == "uid=10001\n"
     assert stdout.sha256 and stdout.available
 
+    # The call also states where it acted, which is what the console reads instead of inferring a
+    # command, a directory or an identity from the plan (issue #19 clause 2).
+    assert record.runtime is not None
+    runtime_view = record.runtime
+    assert runtime_view.argv == ["sh", "-c", "id"]
+    assert runtime_view.cwd == manager.profile.workspace_mount
+    assert runtime_view.user == manager.profile.tool.user
+    assert runtime_view.instance_id is not None
+    assert runtime_view.network_mode == "internal"
+    assert runtime_view.gateway_ids
+    assert runtime_view.authorized == ["10.20.0.5:7000"]
+    assert runtime_view.image_digests and runtime_view.profile_version == 1
+    assert runtime_view.parameters_hash == request.parameters_hash
+    # The action ended, and the record says when and how long it took.
+    assert record.progress is not None and record.progress.status == "ended"
+    assert any(
+        event.type == "execution_command_completed" for event in record.events
+    ), "the end of the command is a fact of its own, not something the reader infers"
+
 
 def test_a_call_leaves_no_instance_and_no_permit_behind(tmp_path: Path) -> None:
     runtime = FakeRuntime()
@@ -211,14 +230,19 @@ def test_cancelling_ends_the_running_command_and_keeps_what_was_collected(tmp_pa
     assert cancelled.status == "cancelled"
     assert cancelled.reason_code == "operator_cancelled"
     # The instance this call created is released even though the cancel arrived while it was
-    # still being prepared, and the command it would have run never started.
+    # still being prepared.
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         if all(record.state == "reclaimed" for record in manager.instances.values()):
             break
         time.sleep(0.05)
     assert [record.state for record in manager.instances.values()] == ["reclaimed"]
-    assert runtime.commands == []
+    # Whether the command started is a genuine race with the cancel — the request is recorded
+    # before it is acted on, and the executor checks it around preparing the instance — so what is
+    # asserted is the property that must hold either way: a command does not outlive its call.
+    # The call is over, so anything that did start was stopped with the instance.
+    assert cancelled.observation is not None
+    assert cancelled.observation.process_active is False
     gate.set()
 
 

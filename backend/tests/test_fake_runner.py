@@ -50,14 +50,38 @@ def ticket(**changes: object) -> ExecutionRequest:
 def settled(
     runner: FakeRunner, call_id: UUID, *statuses: str, timeout: float = 15
 ) -> ExecutionRecord:
-    """Poll the durable ledger instead of racing a fixed sleep on a loaded host."""
+    """Poll the durable ledger instead of racing a fixed sleep on a loaded host.
+
+    A terminal status on its own is not "the record is finished": an executor settles the call and
+    then writes the last thing it has to say about it, so a check that compares whole records has to
+    wait for that last write rather than for the status that arrives before it. The ledger's
+    ordering is honest; a check that ignores it is flaky by construction, not by accident.
+    """
+    terminal = {"completed", "failed"} & set(statuses)
     deadline = monotonic() + timeout
     while monotonic() < deadline:
         record = runner.query(call_id)
         if record is not None and record.status in statuses:
-            return record
+            if not terminal or _has_final_event(record):
+                return record
         sleep(0.01)
     raise AssertionError(f"call never reached {statuses}")
+
+
+def _has_final_event(record: ExecutionRecord) -> bool:
+    """Whether the executor has said everything it will about this call."""
+    return any(event.type == "execution_command_completed" for event in record.events)
+
+
+def _settled(document: dict[str, object]) -> bool:
+    """The same question as `_has_final_event`, for a record read over the control interface."""
+    events = document.get("events")
+    if not isinstance(events, list):
+        return False
+    return any(
+        isinstance(event, dict) and event.get("type") == "execution_command_completed"
+        for event in events
+    )
 
 
 def test_acknowledgement_loss_reuses_call_and_archived_evidence(tmp_path: Path) -> None:
@@ -331,10 +355,12 @@ def test_authenticated_http_boundary_rejects_shell_and_replays_results(tmp_path:
         )
         deadline = monotonic() + 15
         result = client.get(f"/v1/calls/{request.call_id}", headers=headers)
-        while monotonic() < deadline and result.json()["status"] != "completed":
+        while monotonic() < deadline and not _settled(result.json()):
             sleep(0.01)
             result = client.get(f"/v1/calls/{request.call_id}", headers=headers)
         assert result.json()["status"] == "completed"
+        # Re-submitting the same ticket returns the record that is already durable, not the one it
+        # happened to hold when the call finished: the two must be the same answer.
         assert client.post("/v1/calls", json=data, headers=headers).json() == result.json()
         assert (
             client.post(

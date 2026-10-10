@@ -38,13 +38,21 @@ def _targets_at_limit() -> list[str]:
     return [f"192.0.2.{index}" for index in range(1, 101)]
 
 
-def test_target_limit_rejects_the_101st_distinct_target() -> None:
+def test_target_limit_names_the_rows_that_crossed_it() -> None:
+    """The 101st distinct target is refused by line, not by a bare 422 (issue #19).
+
+    A count in a response body tells an operator nothing about which rows to remove, so the limit
+    is reported the same way every other input problem is: on the line that caused it.
+    """
     targets = _targets_at_limit()
     assert preview_targets("\n".join(targets)).valid
-    with pytest.raises(ServiceError) as raised:
-        preview_targets("\n".join([*targets, "192.0.2.101"]))
-    assert raised.value.reason_code == "target_limit_exceeded"
-    assert raised.value.status_code == 422
+    over = preview_targets("\n".join([*targets, "192.0.2.101"]))
+    assert not over.valid
+    assert over.target_limit == 100
+    assert over.over_limit == 1
+    assert [row.line for row in over.rows if row.reason_code] == [101]
+    assert over.rows[-1].reason_code == "target_limit_exceeded"
+    assert over.rows[-1].normalized == "192.0.2.101"
 
 
 def test_target_limit_counts_distinct_targets_rather_than_input_lines() -> None:
@@ -52,6 +60,21 @@ def test_target_limit_counts_distinct_targets_rather_than_input_lines() -> None:
     preview = preview_targets("\n".join([*targets, *targets]))
     assert len(preview.targets) == 100
     assert preview.valid
+    assert preview.over_limit == 0
+
+
+def test_an_in_executable_ipv6_target_is_reported_before_the_limit() -> None:
+    """An IPv6 target inside the quota must say why it cannot run, not be counted out first.
+
+    Both refusals are true of this input; the one the operator can act on is the one where the
+    address can never run on this deployment, so it is reported on the row itself and the count
+    never pre-empts it.
+    """
+    targets = [*_targets_at_limit()[:99], "2001:db8::5"]
+    preview = preview_targets("\n".join([*targets, "192.0.2.101"]))
+    reasons = {row.line: row.reason_code for row in preview.rows if row.reason_code}
+    assert reasons[100] == "ipv6_environment_unsupported"
+    assert reasons[101] == "target_limit_exceeded"
 
 
 def test_ports_expand_explicit_profile_custom_ranges_and_full_tcp() -> None:

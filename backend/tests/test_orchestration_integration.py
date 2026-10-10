@@ -1,11 +1,19 @@
+import json
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import Engine, text
 
-from huntweave.contracts.execution import ExecutionRecord, ExecutionRequest, ExecutionResult
+from huntweave.contracts.execution import (
+    CallProgress,
+    CallRuntime,
+    ExecutionRecord,
+    ExecutionRequest,
+    ExecutionResult,
+)
 from huntweave.contracts.runs import Budget, PortInput, ProjectCreate, RunCreate, ScopeCreate
 from huntweave.runs.orchestration import OrchestrationService
 from huntweave.runs.service import RunService
@@ -170,3 +178,156 @@ def test_a_plan_aimed_outside_the_authorization_is_refused_before_it_reserves_an
     denied = [e for e in service.history(run_id)["events"] if e["type"] == "scope_denied"]
     assert len(denied) == 1
     assert denied[0]["payload"]["planned_target_ip"] == "192.0.2.200"
+
+
+def test_what_the_execution_side_said_about_a_call_reaches_the_console(business):
+    """The console reads the execution side's own account of where a call acted.
+
+    The facts are stored on the call rather than derived at read time, so a profile that changed
+    since then cannot rewrite what an old call ran — and the parameters hash travels beside the
+    command, because "same parameters as the record" is a claim a reader has to be able to check.
+    """
+    runs, service, run_id = business
+    engine = connect_engine()
+    try:
+        ticket = next_ticket(engine, service, run_id)
+        service.accept(
+            ExecutionRecord(
+                request=ticket,
+                status="accepted",
+                runtime=CallRuntime(
+                    action_id=ticket.action_id,
+                    execution_profile=ticket.execution_profile,
+                    target_ip=str(ticket.target_ip),
+                    target_port=ticket.target_port,
+                    parameters_hash=ticket.parameters_hash,
+                    argv=["sh", "-c", "id"],
+                    cwd="/workspace",
+                    user="10001:10001",
+                    instance_id=uuid4(),
+                    network_mode="internal",
+                    gateway_ids=["gateway-1"],
+                    authorized=[f"{ticket.target_ip}:{ticket.target_port}"],
+                    image_digests={"tool": "sha256:" + "a" * 64},
+                    tool_inventory=["curl", "redis-cli"],
+                    engine="29.7.2",
+                    architecture="x86_64",
+                    profile_version=1,
+                    observed_at=datetime.now(UTC),
+                ),
+                progress=CallProgress(
+                    status="accepted",
+                    started_at=datetime.now(UTC),
+                    timeout_seconds=30,
+                ),
+            )
+        )
+        call = next(
+            item
+            for item in service.snapshot(run_id)["calls"]
+            if item["id"] == str(ticket.call_id)
+        )
+        assert call["parameters_hash"] == ticket.parameters_hash
+        assert call["runtime"]["argv"] == ["sh", "-c", "id"]
+        assert call["runtime"]["cwd"] == "/workspace"
+        assert call["runtime"]["user"] == "10001:10001"
+        assert call["runtime"]["network_mode"] == "internal"
+        assert call["runtime"]["tool_inventory"] == ["curl", "redis-cli"]
+        assert call["progress"]["timeout_seconds"] == 30
+    finally:
+        engine.dispose()
+
+
+def test_a_call_without_an_execution_side_statement_says_so_rather_than_guessing(business):
+    """An old record has no runtime view, and the console must not fill the gap from the profile."""
+    runs, service, run_id = business
+    engine = connect_engine()
+    try:
+        ticket = next_ticket(engine, service, run_id)
+        settle(service, ticket)
+        call = next(
+            item
+            for item in service.snapshot(run_id)["calls"]
+            if item["id"] == str(ticket.call_id)
+        )
+        assert call["runtime"] is None
+        # The hash still travels: the ticket has it whether or not the execution side spoke.
+        assert call["parameters_hash"] == ticket.parameters_hash
+    finally:
+        engine.dispose()
+
+
+def test_the_evidence_route_answers_in_the_shape_its_contract_promises(business, tmp_path: Path):
+    """The read path is checked through the view the browser receives, not through the dictionary.
+
+    `EvidenceView` forbids fields the browser has no rendering for, so a key added to the payload
+    without being declared there is not a cosmetic problem: the request fails, and the operator gets
+    an error instead of the evidence the whole conclusion rests on. This check reads a real archived
+    file back through that view, which is the seam the earlier checks were missing.
+    """
+    import hashlib
+
+    from huntweave.contracts.orchestration import EvidenceView
+    from huntweave.storage.models import Evidence  # noqa: F401 - documents the table under test
+
+    runs, service, run_id = business
+    # The archive this check writes to is its own: the deployment's evidence volume is mounted
+    # read-only for the control side, which is itself the boundary being relied on here.
+    reading = OrchestrationService(lambda: connect_engine(), tmp_path / "evidence")
+    engine = connect_engine()
+    try:
+        ticket = next_ticket(engine, service, run_id)
+        settle(service, ticket)
+        call = next(
+            item
+            for item in service.snapshot(run_id)["calls"]
+            if item["id"] == str(ticket.call_id)
+        )
+        relative = f"{run_id}/{ticket.call_id}/stdout.txt"
+        target = (tmp_path / "evidence" / relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = b"uid=10001\n"
+        target.write_bytes(payload)
+        evidence_id = uuid4()
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO huntweave.evidence (id, run_id, call_id, metadata_json) "
+                    "VALUES (:id, :run_id, :call_id, CAST(:metadata AS jsonb))"
+                ),
+                {
+                    "id": evidence_id,
+                    "run_id": run_id,
+                    "call_id": ticket.call_id,
+                    "metadata": json.dumps(
+                        {
+                            "id": str(evidence_id),
+                            "relative_path": relative,
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                            "size_bytes": len(payload),
+                            "available": True,
+                            "truncated": False,
+                            "redacted": False,
+                            "missing_reason": None,
+                        }
+                    ),
+                },
+            )
+        # The view the route returns, validated exactly as the route validates it.
+        view = EvidenceView.model_validate(reading.evidence(evidence_id))
+        assert view.content == "uid=10001\n"
+        assert view.available and not view.truncated and not view.redacted
+        assert view.demonstration  # this Run is a fixed-fixture Run, and the view says so
+        # And the call the evidence belongs to names it, so a reader can get from the call to the
+        # bytes it rests on by one hop.
+        assert evidence_id in [
+            UUID(item)
+            for item in next(
+                candidate["evidence_ids"]
+                for candidate in service.snapshot(run_id)["calls"]
+                if candidate["id"] == call["id"]
+            )
+        ]
+        assert call["parameters_hash"] == ticket.parameters_hash
+    finally:
+        engine.dispose()

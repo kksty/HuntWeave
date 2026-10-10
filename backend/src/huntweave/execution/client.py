@@ -6,7 +6,7 @@ import httpx
 
 from huntweave.config import runner_token
 from huntweave.contracts.capabilities import Capabilities
-from huntweave.contracts.execution import ExecutionRecord, ExecutionRequest
+from huntweave.contracts.execution import ExecutionRecord, ExecutionRequest, RunRuntimeView
 
 
 class RunnerClient:
@@ -32,6 +32,17 @@ class RunnerClient:
 
     def capabilities(self) -> Capabilities:
         return Capabilities.model_validate(self._request("GET", "/v1/capabilities").json())
+
+    def run_runtime(self, run_id: UUID) -> RunRuntimeView:
+        """The execution side's own account of this Run's containers and gateways.
+
+        Read-only: this asks for a projection of the manager's records and grants no capability. A
+        refusal (404 on an older Runner, a 5xx, an unreachable side) is the caller's to turn into an
+        observation gap — never into "this Run has nothing running".
+        """
+        return RunRuntimeView.model_validate(
+            self._request("GET", f"/v1/runs/{run_id}/sandbox-state").json()
+        )
 
     def submit(self, request: ExecutionRequest) -> ExecutionRecord:
         return ExecutionRecord.model_validate(

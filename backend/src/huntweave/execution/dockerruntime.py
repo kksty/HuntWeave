@@ -8,6 +8,7 @@ become a container option. There is no generic request method and no ``**options
 """
 
 import socket
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -301,10 +302,12 @@ class DockerRuntime:
         container = self._container(container_id, require_project=True)
         user = self._tool_user()
         supervised = ["timeout", "-k", str(TOOL_KILL_GRACE_SECONDS), str(timeout_seconds), *argv]
+        began = time.monotonic()
         try:
             result = container.exec_run(supervised, user=user, demux=True, workdir=workdir)
         except DockerException as error:
             raise RuntimeUnavailable(str(error)) from error
+        duration_ms = int((time.monotonic() - began) * 1000)
         streams = result.output if isinstance(result.output, tuple) else (result.output, None)
         raw_stdout, raw_stderr = streams
         stdout = (raw_stdout or b"").decode("utf-8", errors="replace")
@@ -316,6 +319,9 @@ class DockerRuntime:
             stderr=stderr,
             # 124 is what `timeout` returns when the deadline was reached.
             timed_out=exit_code == 124,
+            # How long the action really took, measured around the exec itself rather than derived
+            # from the ticket's timeout, so "no output for 90s" is a fact and not an estimate.
+            duration_ms=duration_ms,
         )
 
     def _tool_user(self) -> str:
