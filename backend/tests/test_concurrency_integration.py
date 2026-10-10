@@ -33,7 +33,10 @@ from huntweave.contracts.execution import (
     ExecutionRequest,
     ExecutionResult,
 )
-from huntweave.contracts.resources import ResourcePolicy
+from huntweave.contracts.resources import (
+    ConcurrencyAcceptanceThresholds,
+    ResourcePolicy,
+)
 from huntweave.contracts.runs import Budget, PortInput, ProjectCreate, RunCreate, ScopeCreate
 from huntweave.runs.dispatch import ExecutionDispatcher
 from huntweave.runs.events import append_event
@@ -46,6 +49,7 @@ pytestmark = pytest.mark.integration
 POLICY = ResourcePolicy(
     control_dispatch_slots=4, global_execution_slots=4, per_ip_execution_slots=1
 )
+THRESHOLDS = ConcurrencyAcceptanceThresholds()
 
 
 def stopped(started: bool = True) -> ExecutionObservation:
@@ -352,6 +356,41 @@ def test_an_unknown_outcome_with_a_confirmed_stop_returns_capacity_and_keeps_rec
     assert deployment.service.snapshot(run_id)["run"]["reason_code"] == "execution_unknown"
     assert run_id in deployment.service.reconcilable_runs()
     assert deployment.service.preview(run_id)["reason_code"] == "execution_reconciliation_required"
+    # Capacity came back; the action did not. `unknown_retries_max` is what this measures.
+    assert retries_of(deployment, run_id, call_id) <= THRESHOLDS.unknown_retries_max
+
+
+def retries_of(deployment: Deployment, run_id: UUID, call_id: UUID) -> int:
+    """How many further calls a Run with an unconfirmed outcome produced for the same action.
+
+    The threshold's question is "how often was an unknown outcome acted on again", and the answer is
+    the number of calls this Run has beyond the one whose outcome nobody has. Counting calls rather
+    than reading a status is deliberate: a second call for the same decision *is* the action being
+    repeated, whatever the first call's status says.
+    """
+    calls = deployment.calls(run_id)
+    assert str(call_id) in calls
+    return len(calls) - 1
+
+
+def test_an_unknown_outcome_is_never_acted_on_again(deployment: Deployment) -> None:
+    """No stop fact, and no new action: the Run waits for a human instead of re-offering the call.
+
+    This is the case the acceptance table calls "unknown 误重试必须为 0", and unlike the test above
+    it does *not* hand the Run a confirmed stop — so the Run stays blocked on the outcome itself
+    rather than on the resource, which is the harder half of the rule.
+    """
+    run_id = deployment.run_on("192.0.2.64")
+    call_id = deployment.plan_next(run_id)
+    assert call_id is not None
+    deployment.service.unknown(run_id, call_id)
+    # A full turn — claim, then plan — must produce nothing at all.
+    assert deployment.plan_next(run_id) is None
+    assert deployment.service.claim(run_id) is None
+    assert retries_of(deployment, run_id, call_id) == 0 <= THRESHOLDS.unknown_retries_max
+    assert deployment.service.preview(run_id)["can_resume"] is False
+    # ...and the slot is still held, because nothing has said the action stopped.
+    assert deployment.service.execution_quota().global_used == 1
 
 
 class RefusingRunner:

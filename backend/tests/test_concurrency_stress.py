@@ -49,6 +49,7 @@ from huntweave.contracts.resources import (
     LIVE_SLOT_SQL,
     ConcurrencyAcceptanceThresholds,
     ResourcePolicy,
+    holds_physical_slot,
 )
 from huntweave.contracts.runs import Budget, PortInput, ProjectCreate, RunCreate, ScopeCreate
 from huntweave.execution.archive import EvidenceArchive
@@ -112,6 +113,11 @@ def stopped_observation() -> ExecutionObservation:
         lease_active=False,
         observed_at=datetime.now(UTC),
     )
+
+
+# The statement a finished call really carries, as one shared instance: the contract is frozen, so
+# there is nothing to copy and a default argument can name it directly.
+CONFIRMED_STOP = stopped_observation()
 
 
 class Runner:
@@ -367,7 +373,17 @@ class Fixture:
             )
         return ExecutionRequest.model_validate(raw)
 
-    def settle(self, call_id: UUID) -> None:
+    def stored_observation(self, call_id: UUID) -> dict[str, object] | None:
+        with self.engine.begin() as connection:
+            return connection.scalar(
+                text("SELECT observation FROM huntweave.tool_calls WHERE id = :id"),
+                {"id": call_id},
+            )
+
+    def settle(
+        self, call_id: UUID, observation: ExecutionObservation = CONFIRMED_STOP
+    ) -> None:
+        """Settle one call with the statement the fixture chose (a confirmed stop by default)."""
         evidence = [
             ExecutionEvidence(
                 id=uuid4(),
@@ -383,9 +399,42 @@ class Fixture:
                 request=self.ticket(call_id),
                 status="completed",
                 result=ExecutionResult(output="measured\n", exit_code=0, evidence=evidence),
-                observation=stopped_observation(),
+                observation=observation,
             )
         )
+
+    def classify_release(self, before: int, call_id: UUID) -> str:
+        """What the release rule did to one settlement, from the fixture's own reading.
+
+        The occupancy is read before and after and the *record left behind* is read too, so the
+        answer is a measurement of the rule rather than a restatement of an assertion. An earlier
+        draft counted "wrong releases" as `admitted - quota.global_used` on the line after asserting
+        `quota.global_used == admitted`, which can only ever be zero: it measured the assertion.
+        """
+        after = self.service.execution_quota().global_used
+        still_held = holds_physical_slot(self.stored_observation(call_id))
+        if after < before:
+            return "released_without_stop" if still_held else "released_on_stop"
+        return "occupancy_grew" if after > before else "held"
+
+    def settle_audited(self, call_id: UUID) -> str:
+        """Settle with a confirmed stop and report what the release rule did."""
+        before = self.service.execution_quota().global_used
+        self.settle(call_id)
+        return self.classify_release(before, call_id)
+
+    def settle_without_a_stop(self, call_id: UUID) -> str:
+        """Settle with no statement about the process: a positive control for the metric above.
+
+        If the fixture only ever settled with a confirmed stop, "no slot was released without a
+        stop" would be true by construction and would prove nothing. This is the case that must
+        come back `held`, and it is what makes the metric a live measurement.
+        """
+        before = self.service.execution_quota().global_used
+        self.settle(call_id, ExecutionObservation(started=True, process_active=None,
+                                                  connection_open=None, lease_active=None,
+                                                  observed_at=datetime.now(UTC)))
+        return self.classify_release(before, call_id)
 
     def cancel(self, run_id: UUID) -> None:
         """Ask this Run to end, unless it already has.
@@ -401,7 +450,7 @@ class Fixture:
     def calls_of(self, run_id: UUID) -> int:
         return len(self.service.snapshot(run_id)["calls"])
 
-    def settle_step(self) -> float:
+    def settle_step(self) -> tuple[float, str]:
         """Settle one call that carries evidence, and time only the settlement.
 
         The Run, its ticket and its reservation are prepared outside the measured window: what the
@@ -411,16 +460,20 @@ class Fixture:
         run_id = self.scratch_run()
         call_id = self.plan_once(run_id)
         assert call_id is not None
+        before = self.service.execution_quota().global_used
         start = time.perf_counter()
         self.settle(call_id)
         elapsed = time.perf_counter() - start
+        outcome = self.classify_release(before, call_id)
         self.cancel(run_id)
-        return elapsed
+        return elapsed, outcome
 
-    def release(self, holders: list[tuple[UUID, UUID]]) -> None:
-        for run_id, call_id in holders:
-            self.settle(call_id)
+    def release(self, holders: list[tuple[UUID, UUID]]) -> list[str]:
+        """Give every holder its slot back on a confirmed stop, and report the rule's verdicts."""
+        outcomes = [self.settle_audited(call_id) for _, call_id in holders]
+        for run_id, _ in holders:
             self.cancel(run_id)
+        return outcomes
 
 
 @pytest.fixture
@@ -445,10 +498,16 @@ def test_measured_capacity_and_latency_under_concurrent_runs(fixture: Fixture) -
     ledger_sizes = from_environment("HUNTWEAVE_STRESS_LEDGER_SIZES", DEFAULT_LEDGER_SIZES)
     active_counts = from_environment("HUNTWEAVE_STRESS_ACTIVE_COUNTS", DEFAULT_ACTIVE_COUNTS)
     slots = POLICY.global_execution_slots
+    # The numbers below are taken under the policy the deployment itself resolves, not under a
+    # literal this file happens to hold: if the environment says something else, the report would be
+    # about a deployment nobody is running.
+    assert POLICY == ResourcePolicy.from_environment(), (
+        "the fixture's policy is not the one this process resolves from the environment"
+    )
     rows: list[dict[str, object]] = []
     worst: dict[str, float] = {}
-    duplicate_actions = 0
-    wrong_releases = 0
+    second_calls_while_in_flight = 0
+    release_verdicts: list[str] = []
 
     def record(operation: str, samples: list[float], **dimensions: object) -> dict[str, float]:
         summary = summarise(samples)
@@ -467,42 +526,54 @@ def test_measured_capacity_and_latency_under_concurrent_runs(fixture: Fixture) -
             quota = fixture.service.execution_quota()
             assert quota.global_used == admitted, (quota.global_used, admitted)
             assert fixture.held_calls() == quota.global_used
-            # Nothing was released without a trusted stop, and nothing already in flight was acted
-            # on a second time.
-            wrong_releases += max(0, admitted - quota.global_used)
-            duplicate_actions += sum(
+            # Nothing already in flight was acted on a second time.
+            second_calls_while_in_flight += sum(
                 1 for run_id, _ in holders if fixture.calls_of(run_id) != 1
             )
             # The next address cannot be admitted while the pool is full: that is the backpressure
             # #21 asks for. It is refused, not failed, and it claims nothing.
+            start = time.perf_counter()
             extra = fixture.hold(admitted)
+            turn_seconds = time.perf_counter() - start
             assert (extra is None) == (admitted == slots)
             if extra is not None:
                 holders.append(extra)
+                # A Run that was ready while `admitted` Runs held calls got its turn in this long:
+                # the wall-clock form of "one Run must not starve the others".
+                record(
+                    "scheduling_wait",
+                    [turn_seconds],
+                    requested_calls=active,
+                    admitted_calls=admitted,
+                    ledger_calls=ledger,
+                )
 
             record(
                 "claim_turn",
                 timed(fixture.service.claim, repeats),
+                requested_calls=active,
+                admitted_calls=admitted,
                 ledger_calls=ledger,
-                active_calls=admitted,
             )
             record(
                 "quota_count",
                 timed(fixture.service.execution_quota, repeats),
+                requested_calls=active,
+                admitted_calls=admitted,
                 ledger_calls=ledger,
-                active_calls=admitted,
             )
             if admitted == slots:
                 observer = fixture.scratch_run()
                 record(
                     "plan_refused_pool_full",
                     timed(lambda target=observer: fixture.plan_once(target), repeats),
+                    requested_calls=active,
+                    admitted_calls=admitted,
                     ledger_calls=ledger,
-                    active_calls=admitted,
                 )
                 assert fixture.calls_of(observer) == 0
                 fixture.cancel(observer)
-            fixture.release(holders)
+            release_verdicts += fixture.release(holders)
 
     # The control paths and the archive, measured with the pool as full as it gets. Settling and
     # archiving act on a call of their own, so they are measured with two slots given back; neither
@@ -514,39 +585,65 @@ def test_measured_capacity_and_latency_under_concurrent_runs(fixture: Fixture) -
         record(
             "cancel",
             timed(lambda target=holders[0][0]: fixture.cancel(target), repeats),
+            requested_calls=slots,
+            admitted_calls=slots,
             ledger_calls=ledger,
-            active_calls=slots,
         )
         record(
             "renew",
             timed(lambda target=holders[1][0]: fixture.dispatcher.reconcile(target), repeats),
+            requested_calls=slots,
+            admitted_calls=slots,
             ledger_calls=ledger,
-            active_calls=slots,
         )
         record(
             "sweep",
             timed(lambda: fixture.dispatcher.sweep(20, 0), repeats),
+            requested_calls=slots,
+            admitted_calls=slots,
             ledger_calls=ledger,
-            active_calls=slots,
         )
-        record("quota_lock_wait", lock_wait(fixture), ledger_calls=ledger, active_calls=slots)
-        fixture.release(holders[2:])
+        record(
+            "quota_lock_wait",
+            lock_wait(fixture),
+            requested_calls=slots,
+            admitted_calls=slots,
+            ledger_calls=ledger,
+        )
+        release_verdicts += fixture.release(holders[2:])
+        settlements = [fixture.settle_step() for _ in range(repeats)]
         record(
             "settle_with_evidence",
-            [fixture.settle_step() for _ in range(repeats)],
+            [elapsed for elapsed, _ in settlements],
+            requested_calls=slots,
+            admitted_calls=len(holders[:2]),
             ledger_calls=ledger,
-            active_calls=len(holders[:2]),
         )
+        release_verdicts += [outcome for _, outcome in settlements]
         record(
             "archive_write",
             timed(lambda: archive_write(fixture), repeats),
+            requested_calls=slots,
+            admitted_calls=len(holders[:2]),
             ledger_calls=ledger,
-            active_calls=len(holders[:2]),
         )
+        # The positive control for the release metric: a settlement with no statement about the
+        # process must come back `held`, or "nothing was released without a stop" would be true by
+        # construction and would measure nothing.
+        control_run = fixture.scratch_run()
+        control_call = fixture.plan_once(control_run)
+        assert control_call is not None
+        release_verdicts.append(fixture.settle_without_a_stop(control_call))
         fixture.release(holders[:2])
+        release_verdicts.append(fixture.settle_audited(control_call))
+        fixture.cancel(control_run)
 
+    released_without_stop = release_verdicts.count("released_without_stop")
+    released_on_stop = release_verdicts.count("released_on_stop")
+    held_after_settlement_without_stop = release_verdicts.count("held")
     report = {
         "policy_version": POLICY.policy_version,
+        "policy_source": "ResourcePolicy.from_environment() of this process",
         "thresholds_version": THRESHOLDS.thresholds_version,
         "global_execution_slots": slots,
         "per_ip_execution_slots": POLICY.per_ip_execution_slots,
@@ -555,8 +652,10 @@ def test_measured_capacity_and_latency_under_concurrent_runs(fixture: Fixture) -
         "iterations": repeats,
         "rows": rows,
         "worst_ms": worst,
-        "duplicate_actions": duplicate_actions,
-        "wrong_releases": wrong_releases,
+        "second_calls_while_in_flight": second_calls_while_in_flight,
+        "released_on_stop": released_on_stop,
+        "released_without_stop": released_without_stop,
+        "held_after_settlement_without_stop": held_after_settlement_without_stop,
     }
     print(json.dumps(report, indent=2, sort_keys=True))
 
@@ -564,8 +663,12 @@ def test_measured_capacity_and_latency_under_concurrent_runs(fixture: Fixture) -
         worst["cancel"], worst["renew"], worst["settle_with_evidence"], worst["sweep"]
     )
     assert control_path / 1000 <= THRESHOLDS.control_path_seconds
-    assert duplicate_actions == THRESHOLDS.unknown_retries_max
-    assert wrong_releases <= THRESHOLDS.wrong_releases_max
+    assert second_calls_while_in_flight == 0
+    assert released_without_stop <= THRESHOLDS.wrong_releases_max
+    # The metric is live, not vacuous: the positive control really did keep its slot.
+    assert held_after_settlement_without_stop >= 1
+    assert released_on_stop >= 1
+    assert worst.get("scheduling_wait", 0.0) / 1000 <= THRESHOLDS.scheduling_wait_seconds
     growth = growth_ms_per_1000_calls(rows, "quota_count")
     if growth is not None:
         assert growth <= THRESHOLDS.pass_growth_ms_per_1000_calls
