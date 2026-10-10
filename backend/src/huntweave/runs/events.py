@@ -9,12 +9,19 @@ the same cursor under the same lock:
   is the commit order;
 * an optional source identifier makes a repeat a no-op, which is how a retried request or a
   redelivered intent stays one event rather than two.
+
+The lock is taken *before* the source is looked up, and the cursor row is created with
+``ON CONFLICT DO NOTHING``. Both matter for one reason: two wakes for the same work can arrive at
+the same moment (a retried request, a redelivered intent, a replayed graph node), and a dedupe that
+reads before it locks is a race in which both writers find nothing and one of them then fails on the
+unique constraint. Serialising first turns that into what it should be — the second writer sees the
+first writer's committed event and does nothing.
 """
 
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from huntweave.storage.database import database_now
@@ -31,16 +38,22 @@ def append_event(
     source: str | None = None,
 ) -> None:
     """Append one event to a Run's timeline, or do nothing if that source already landed."""
+    session.execute(
+        text(
+            "INSERT INTO huntweave.event_cursors (run_id, cursor) VALUES (:run_id, 0) "
+            "ON CONFLICT (run_id) DO NOTHING"
+        ),
+        {"run_id": run_id},
+    )
+    cursor = session.get(EventCursor, run_id, with_for_update=True, populate_existing=True)
+    if cursor is None:  # pragma: no cover - the insert above makes the row observable
+        raise RuntimeError("Event cursor row is unavailable for this Run")
     if source and session.scalar(
         select(AuditEvent.cursor).where(
             AuditEvent.run_id == run_id, AuditEvent.source_event_id == source
         )
     ) is not None:
         return
-    cursor = session.get(EventCursor, run_id, with_for_update=True)
-    if cursor is None:
-        cursor = EventCursor(run_id=run_id, cursor=0)
-        session.add(cursor)
     cursor.cursor += 1
     session.add(
         AuditEvent(
