@@ -1,4 +1,4 @@
-﻿# ADR-0026：开工契约对齐：可表达不等于可执行、CIDR 边界与确认级队列语义
+# ADR-0026：开工契约对齐：可表达不等于可执行、CIDR 边界与确认级队列语义
 
 日期：2026-10-11。状态：已采纳，待实施。**契约澄清性质**，不改写任何既有决定的能力边界。来源：[#37](https://github.com/kksty/HuntWeave/issues/37)。相关：[ADR-0010](./0010-real-execution-boundary-and-gate.md)（四项就绪门槛）、[ADR-0019](./0019-engagement-modes-and-policy-gate.md)（双模式与准入层）、[ADR-0017](./0017-claim-confirmation-and-frozen-delivery.md)（确认等级）、[ADR-0025](./0025-remove-the-research-depth-tier.md)（移除深度档位）。
 
@@ -29,7 +29,7 @@
 
 因此 [#25 验收 2](https://github.com/kksty/HuntWeave/issues/25) 的「四种组合都能创建 Run 且语义正确」应读作：**L1 全部通过；L2–L4 保持阻断不变。** 「语义正确」的验收内容是可表达性与拒绝原因可区分，**不是**四种组合都能跑出真实动作。任何把本轮读成「放宽真实执行」的说法都错误。
 
-四项门槛、旧授权快照与空 `breach` 注册表的阻断**在本轮全部保持有效**，不因模式字段新增而放宽（与 [ADR-0019 后果段](./0019-engagement-modes-and-policy-gate.md)一致）。落点见 [0008 §2](../specs/0008-coverage-mode.md)。
+四项门槛、旧授权快照与空 `breach` 注册表的阻断**在本轮全部保持有效**，不因模式字段新增而放宽（与 [ADR-0019 后果段](./0019-engagement-modes-and-policy-gate.md)一致）。落点见 [0008 §2.1](../specs/0008-coverage-mode.md)。
 
 ## 3. 决定二：CIDR 边界**未决**，现状不变
 
