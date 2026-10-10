@@ -72,9 +72,9 @@ V-A（issue #33）执行这条硬约束，并顺带把 `frontend/src/style.css` 
 
 规则：
 
-- **中文不得交给 Latin 等宽字体 fallback 渲染**。数字与编号走等宽，中文走中文字族，混排时按行内组合处理。V-A（issue #33）把这个规则做成机制而不是纪律：`frontend/src/fonts.css` 里 Sarasa Gothic SC 与 Sarasa Mono SC 的 `@font-face` 用 `unicode-range` **只声明汉字与中文标点**，Latin 字母、数字与编号不在其中，因此它们只能落到 IBM Plex；字体栈顺序为 `--hw-font-sans: 'IBM Plex Sans', 'Sarasa Gothic SC', …`、`--hw-font-mono: 'IBM Plex Mono', 'Sarasa Mono SC', …`。中文字体按「前端源码与产品文档里真实出现的汉字与中文标点」子集化（完整 TTF 各 23–25MB，子集后每个字重约 242KB），字符集由 `frontend/scripts/build-fonts.mjs` 唯一决定，可复现；检查脚本逐字核对前端用到的中文字符都在中文字族的 `unicode-range` 与字体 cmap 内。
+- **中文不得交给 Latin 等宽字体 fallback 渲染**。数字与编号走等宽，中文走中文字族，混排时按行内组合处理。V-A（issue #33）把这个规则做成机制而不是纪律：`frontend/src/fonts.css` 里 Sarasa Gothic SC 与 Sarasa Mono SC 的 `@font-face` 用 `unicode-range` **只声明汉字与中文标点**，Latin 字母、数字与编号不在其中，因此它们只能落到 IBM Plex；字体栈顺序为 `--hw-font-sans: 'IBM Plex Sans', 'Sarasa Gothic SC', …`、`--hw-font-mono: 'IBM Plex Mono', 'Sarasa Mono SC', …`。中文字体按「前端源码与产品文档里真实出现的汉字与中文标点」子集化（完整 TTF 各 23–25MB，子集后每个字重约 249KB），字符集由 `frontend/scripts/build-fonts.mjs` 唯一决定，可复现；检查脚本逐字核对前端用到的中文字符都在中文字族的 `unicode-range` 与字体 cmap 内。
 - 全大写只用于 Latin 标签与编号；**中文不做全大写效果**。
-- Univers Extended 与 Helvetica 是商业字体，**仓库不得打包其字体文件**；只能作为字体栈尾部的本机回退，默认交付一律使用上表的 OFL 字体并自托管。V-A 的实际交付是 5 个 OFL 字族、9 个 woff2、合计 1,162,192 字节，随资产附 3 份 OFL 许可文本，`npm run check:design` 会核对仓库与 `frontend/dist` 里没有商业字体文件，且默认字体栈里不出现商业字体名。
+- Univers Extended 与 Helvetica 是商业字体，**仓库不得打包其字体文件**；只能作为字体栈尾部的本机回退，默认交付一律使用上表的 OFL 字体并自托管。V-A 的实际交付是 5 个 OFL 字族、9 个 woff2、合计 1,165,496 字节，随资产附 3 份 OFL 许可文本，`npm run check:design` 会核对仓库与 `frontend/dist` 里没有商业字体文件，且默认字体栈里不出现商业字体名。
 
 ## 5. 面板与结构
 

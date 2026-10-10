@@ -35,7 +35,7 @@ PASS  1a 色值只来自 token 层
 PASS  1a2 无 rgb()/hsl() 绕过
 PASS  1b 样式规则内无十六进制色值
 PASS  1c 换肤前的色值全部有 token 去处
-      18 个换肤前色值逐个映射到 token 槽位（0 个取值不变、18 个按 0009 §3 换成新值）
+      29 个换肤前色值逐个映射到 token 槽位（0 个取值不变、29 个按 0009 §3 换成新值；其中 #61766c 在原样式表里未被实际使用，仅记录在案）
 PASS  2a 公式自检（#FFFFFF / #000000 必须为 21.0000）
 PASS  2b 0009 §3 记录的对比度与现算值一致
 PASS  2c 强调色不得用于正文小字（<4.5:1），accent-ink 可用于小字（≥4.5:1）
@@ -52,7 +52,7 @@ PASS  4c 中文字体文件确实含用到的字形
       4 个中文字体文件逐字核对通过（family Sarasa Gothic SC/Sarasa Mono SC）
 PASS  5a 字体自托管体积在预算内
 PASS  5b 构建产物体积已记录
-      合计 1162192 字节（1135.0 KiB），阈值 1536 KiB
+      合计 1165496 字节（1138.2 KiB），阈值 1536 KiB
 ```
 
 检查脚本读的是**仓库源码与 `frontend/dist` 的实际产物**（不是声明）：色值扫描用 `#[0-9a-fA-F]{3,8}` 与 `rgb()/hsl()` 两种表示法；中文分工一项同时核对 `fonts.css` 里生成的 `unicode-range` **与 woff2 的实际 cmap**；`3a` 一项遍历仓库与 `dist` 里的字体二进制文件名。
@@ -98,22 +98,24 @@ PASS  5b 构建产物体积已记录
 - `SarasaMonoSC-TTF-1.0.42.7z`（65,885,338 字节）`aa2150e99eb38c5f9d3a00fe58e3f90a9d89495c795a8ac80934d1c3e6c377ee`
 - `be5invis/Sarasa-Gothic@master/LICENSE`（4,702 字节）`32c932e0dbae4f6e6386964bbc2d04178707665a05ca65cf636241af13d50a53`
 
-**子集口径**：中文字符集 = `frontend/src/**`、`frontend/index.html` 与 `docs/**/*.md` 里出现过的全部汉字与中文标点，由 `build-fonts.mjs` 的 `extractCharset()` 唯一决定，共 **1204 个字符**。用产品自己的源码与文档定字符集，而不是拍一个常用字表：交付的每一个中文码点都能指回仓库里的真实文本，且 `docs/` 的加入覆盖了后续界面文案用词。字符集变化时重跑 `npm run fonts:build` 即可。
+**子集口径**：中文字符集 = `frontend/src/**`、`frontend/index.html` 与 `docs/**/*.md` 里出现过的全部汉字与中文标点，由 `build-fonts.mjs` 的 `extractCharset()` 唯一决定，共 **1208 个字符**。用产品自己的源码与文档定字符集，而不是拍一个常用字表：交付的每一个中文码点都能指回仓库里的真实文本，且 `docs/` 的加入覆盖了后续界面文案用词。字符集变化时重跑 `npm run fonts:build` 即可。
 
 **体积实测**（`frontend/src/assets/fonts/`）：
 
 | 文件 | 字节 | 源文件字节 | cmap 码点 |
 | --- | --- | --- | --- |
-| `sarasa-gothic-sc-subset-700.woff2` | 249,980 | 23,892,196 | 1204 |
-| `sarasa-mono-sc-subset-700.woff2` | 249,700 | 25,422,592 | 1204 |
-| `sarasa-gothic-sc-subset-400.woff2` | 247,992 | 24,047,784 | 1204 |
-| `sarasa-mono-sc-subset-400.woff2` | 247,980 | 25,612,020 | 1204 |
+| `sarasa-mono-sc-subset-700.woff2` | 250,732 | 25,422,592 | 1208 |
+| `sarasa-gothic-sc-subset-700.woff2` | 250,712 | 23,892,196 | 1208 |
+| `sarasa-gothic-sc-subset-400.woff2` | 248,972 | 24,047,784 | 1208 |
+| `sarasa-mono-sc-subset-400.woff2` | 248,540 | 25,612,020 | 1208 |
 | `archivo-latin-wdth-var.woff2` | 90,104 | —（上游 woff2） | 229 |
 | `ibm-plex-sans-latin-600.woff2` | 24,252 | — | 232 |
 | `ibm-plex-sans-latin-400.woff2` | 22,588 | — | 232 |
 | `ibm-plex-mono-latin-500.woff2` | 14,888 | — | 227 |
 | `ibm-plex-mono-latin-400.woff2` | 14,708 | — | 227 |
-| **合计** | **1,162,192**（1135.0 KiB） | | |
+| **合计** | **1,165,496**（1138.2 KiB） | | |
+
+`npm run fonts:build` 在本机连续跑两次，四个中文 woff2 的 sha256 前 12 位完全一致（`4d97ddced470` / `5856c7ac8e69` 等），即在同一份输入与同一版子集化工具下产物逐字节可复现。跨版本的 `subset-font`/HarfBuzz 升级不保证一致，因此归档 sha256 固定的是**输入**。
 
 许可是随资产交付的：`LICENSE-Archivo.txt` 4,503 字节、`LICENSE-IBM-Plex.txt` 4,429 字节、`LICENSE-Sarasa-Gothic.txt` 4,702 字节。
 
@@ -126,15 +128,15 @@ dist/assets/ibm-plex-mono-latin-500-*.woff2               14.88 kB
 dist/assets/ibm-plex-sans-latin-400-*.woff2               22.58 kB
 dist/assets/ibm-plex-sans-latin-600-*.woff2               24.25 kB
 dist/assets/archivo-latin-wdth-var-*.woff2                90.10 kB
-dist/assets/sarasa-mono-sc-subset-400-*.woff2            247.98 kB
-dist/assets/sarasa-gothic-sc-subset-400-*.woff2          247.99 kB
-dist/assets/sarasa-mono-sc-subset-700-*.woff2            249.70 kB
-dist/assets/sarasa-gothic-sc-subset-700-*.woff2          249.98 kB
-dist/assets/index-*.css                                   43.12 kB │ gzip:  7.00 kB
+dist/assets/sarasa-mono-sc-subset-400-*.woff2            248.54 kB
+dist/assets/sarasa-gothic-sc-subset-400-*.woff2          248.97 kB
+dist/assets/sarasa-gothic-sc-subset-700-*.woff2          250.71 kB
+dist/assets/sarasa-mono-sc-subset-700-*.woff2            250.73 kB
+dist/assets/index-*.css                                   43.22 kB │ gzip:  7.03 kB
 dist/assets/index-*.js                                   162.47 kB │ gzip: 59.31 kB
 ```
 
-两点必须写清楚：**（a）** 每个 `@font-face` 都带 `font-display: swap`，且只有页面真实用到的字重会被下载，因此首屏至少要付 1 个中文字重（约 248KB）+ Plex/Archivo 的对应字重；**（b）** 43KB 的 CSS 比换肤前的约 6KB 大得多，多出来的是四个中文字重的 `unicode-range`（合计约 28KB 文本），gzip 后 7.00KB 而换肤前约 1.6KB。相对 1.1MB 字体体积，`unicode-range` 的体积不是瓶颈，因此保留逐码点声明而没有退化成整块 `U+3400-9FFF`。
+两点必须写清楚：**（a）** 每个 `@font-face` 都带 `font-display: swap`，且只有页面真实用到的字重会被下载，因此首屏至少要付 1 个中文字重（约 249KB）+ Plex/Archivo 的对应字重；**（b）** 43KB 的 CSS 比换肤前的约 6KB 大得多，多出来的是四个中文字重的 `unicode-range`（合计约 28KB 文本），gzip 后 7.03KB 而换肤前约 1.6KB。相对 1.1MB 字体体积，`unicode-range` 的体积不是瓶颈，因此保留逐码点声明而没有退化成整块 `U+3400-9FFF`。
 
 ## 5. 逐条验收结论（Issue #33）
 
@@ -144,7 +146,7 @@ dist/assets/index-*.js                                   162.47 kB │ gzip: 59.
 | 2 | 对比度数值实测并写入 0009 §3 | **通过** | 见 §3；检查项 2b 会把现算值与 0009 §3 的文本逐条比对，不一致即失败；2c 另外证明"accent 不得用于小字、accent-ink 可以"这一条与本票实测值一致 |
 | 3 | 字体全部 OFL 或系统字体且自托管；仓库与构建产物无商业字体文件 | **通过** | 见 §4；检查项 3a（仓库 9 个 + `dist` 9 个字体文件，文件名与嵌入名都不匹配 `univers/helvetica/neue/arial/times`）、3b（`@font-face` 只用 5 个 OFL 族，字体栈里不出现商业字体名）、3c（3 份 OFL 许可文本随资产交付） |
 | 4 | 中文由中文字体渲染，未落到 Latin 等宽 fallback（中英混排与纯中文两种样例） | **通过（静态证据）** | 机制：`fonts.css` 里 Sarasa Gothic SC / Sarasa Mono SC 的 `unicode-range` 只声明汉字与中文标点，检查项 4b 证明 A-Z/a-z/0-9 不在其中，因此数字与编号只能落到 IBM Plex；4a 证明前端用到的 632 个中文字符全部落在中文字族的 `unicode-range` 内；4c 证明 4 个中文字体文件的 cmap 里确实有这些字形。字体栈：`--hw-font-sans: 'IBM Plex Sans', 'Sarasa Gothic SC', …`、`--hw-font-mono: 'IBM Plex Mono', 'Sarasa Mono SC', …`。**浏览器内的实际渲染未在本票验证**（见 §8） |
-| 5 | 字体自托管后的构建产物体积有记录，不显著拖慢首屏 | **部分** | 体积已实测并记录（§4：字体合计 1,162,192 字节、CSS gzip 7.00KB、JS gzip 59.31KB，检查项 5a/5b 通过）。"不显著拖慢首屏"只有成本侧数据，**没有真实加载耗时测量**：本票按 ADR-0018 不做浏览器验收，首屏时间与字体加载时序留给 V-B 的浏览器验收 |
+| 5 | 字体自托管后的构建产物体积有记录，不显著拖慢首屏 | **部分** | 体积已实测并记录（§4：字体合计 1,165,496 字节、CSS gzip 7.03KB、JS gzip 59.31KB，检查项 5a/5b 通过）。"不显著拖慢首屏"只有成本侧数据，**没有真实加载耗时测量**：本票按 ADR-0018 不做浏览器验收，首屏时间与字体加载时序留给 V-B 的浏览器验收 |
 
 ## 6. `style.css` 色值映射表（V-A → V-B 的交接内容）
 
@@ -201,10 +203,10 @@ dist/assets/index-*.js                                   162.47 kB │ gzip: 59.
 
 1. **浏览器内渲染未验证**（验收 4 只有静态证据）。本票按 ADR-0018 不做浏览器验收：没有启动 Docker 栈、没有跑 Playwright、没有截图。中英混排与纯中文两种样例需要由 V-B 在真实页面上确认（可用浏览器 devtools 的 "Rendered Fonts" 面板或 `document.fonts.check()`）。
 2. **首屏耗时未测量**（验收 5 只有体积）。缺"换肤前 vs 换肤后"的首屏时间/字体加载时序对比。
-3. **字符集覆盖有边界**：中文字体只含 1204 个字符（前端源码 + `docs/**/*.md` 里出现的汉字与中文标点）。遇到子集外的汉字时，`unicode-range` 会让它落到字体栈的下一项 `system-ui`：**不会**落到 Latin 等宽（因为中文字族之后的等宽项只出现在 `--hw-font-mono`，且 `system-ui` 本身不在等宽栈里），但会与同行的 Sarasa 混排。新增界面文案请重跑 `npm run fonts:build`，检查项 4a 会在漏字时失败。
+3. **字符集覆盖有边界**：中文字体只含 1208 个字符（前端源码 + `docs/**/*.md` 里出现的汉字与中文标点）。遇到子集外的汉字时，`unicode-range` 会让它落到字体栈的下一项 `system-ui`：**不会**落到 Latin 等宽（因为中文字族之后的等宽项只出现在 `--hw-font-mono`，且 `system-ui` 本身不在等宽栈里），但会与同行的 Sarasa 混排。新增界面文案请重跑 `npm run fonts:build`，检查项 4a 会在漏字时失败。
 4. **跨平台字体栈尾部依赖系统字体**：栈尾是 `system-ui` / `ui-monospace`，Windows / Linux / macOS 会给出不同的兜底字形。首版按 0009 §4 允许系统字体，但这意味着子集外字符与 `×`、`→` 这类符号在不同宿主上外观可能不同。
 5. **`npm run fonts:build` 的中文下载依赖网络**：Sarasa 归档来自 GitHub release（`raw.githubusercontent.com` 在开发机上 Node 的 DNS 路径不通，脚本会退回 `pwsh Invoke-WebRequest`，两者都校验 sha256）。构建产物已提交，因此**正常构建与检查不需要网络**，只有重新生成 Chinese 子集时才需要。
-6. **子集化产物的可复现性只验证到"同输入同来源"**：`subset-font` 通过 HarfBuzz 决定字形与表布局，两次构建的 woff2 未做过逐字节比对；归档 sha256 固定的是输入，不是输出。
+6. **子集化产物的可复现性**：同一份输入、同一版 `subset-font`/HarfBuzz 下连续两次构建的四个中文 woff2 逐字节一致（已实测，见 §4）；跨工具版本升级不保证一致，归档 sha256 固定的是输入而不是输出。
 7. **`style.css` 的间距没有全部贴到 8px 栅格**：为保持与换肤前一致的几何，迁移期保留了原取值的字面别名（`--hw-margin-*` 等）。0009 §5 的"间距按 8px 基准栅格"目前是"新加的间距一律用 `--hw-space-*`"，历史取值的收敛留给 V-B/V-C。
 8. **未跑既有 Playwright 用例**（0009 §11 的第 10 条）。改动只涉及 CSS 与样式引入，`style.css` 的类名、选择器与结构全部保留，理论上不影响用例；但没有实际跑过，不作为已验证结论。
 
