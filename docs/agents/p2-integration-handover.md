@@ -15,31 +15,27 @@
 | [#43](https://github.com/kksty/HuntWeave/issues/43) P2-A1 事务外模型请求 | `2ca7ca8` | 三段协议 `begin_planning → 事务外模型判断 → commit_planning`、独立任务/会话/决策身份、`0009_planning_attempt_identity`；合入后又补了 `#21` 压力夹具的 `task_id` 与 `0003` 的 `plan()` 引用（`d9e5561`） | [0024](../validation/0024-model-outside-transactions.md) |
 | [#44](https://github.com/kksty/HuntWeave/issues/44) P2-B1 服务事实与血缘 | `8a0d239`（**`main` 现 head**） | Host/Service/WebEndpoint 程序计算身份、追加式观察、ADR-0015 的四记录、跨 Run 冻结血缘、线索不扩授权、`0010_service_facts`（11 张表） | [0025](../validation/0025-service-facts-and-lineage.md) |
 
-`main` 现 head：`8a0d239`，比 `origin/main` **ahead 15**，**尚未 push**。GitHub 侧的 Issue 状态**一律未动**（未评论、未关闭、未改标签）：推送与关闭由维护者决定。
+`main` 现 head：`55f050c`，比 `origin/main` **ahead 21**，**尚未 push**。GitHub 侧的 Issue 状态**一律未动**（未评论、未关闭、未改标签）：推送与关闭由维护者决定。
 
-`main` 上的纯检查（`cd backend`，`python -m pytest -m "not integration" -q`）：**332 passed, 15 skipped, 54 deselected**（该检出含 `frontend/dist`，因此比 worktree 环境少一项跳过）；ruff、mypy 干净。
+`main` 上的纯检查（`cd backend`，`python -m pytest -m "not integration" -q`）：**394 passed, 15 skipped, 92 deselected**；真库上（除需活栈的 startup）**87 passed**；`test_phase0_contracts.py` **35 passed**；ruff、mypy 干净。**注意**：`test_reason_codes.py` 会读本检出已构建的控制台产物，因此改过原因码或前端文案后**必须重建 `frontend/dist`**（本轮就因产物陈旧红过一次，`npm run build` 后转绿）。
 
-> **`#45` 没有合入，这是有意的。** 它的实现、集成、真库检查与两轴评审都已完成并提交在分支上，但 Spec 轴评审发现一个**阻塞项**：`published` 是「本页走到了哪」而不是「一个全新读者能继续到哪」（真库实测 600 条事件、`limit=500` 时给出 `committed=600, published=500`），与本切片自己的契约注释矛盾，并使「跨快照拒绝合并」在现有契约下不可实现。详见 [0026](../validation/0026-event-retention-and-resync.md) 第 6b、9、10 节。**下一个会话的第一件事是定 `published` 的语义，而不是继续加检查。**
+> **`#45` 已合入。** Spec 轴评审曾发现一个阻塞项：`published` 被实现成「本页走到了哪」而不是契约写明的「a *fresh* read can actually continue through」（真库实测 600 条事件、`limit=500` 时给出 `committed=600, published=500`）。**已修并在保留有界代价的前提下留守卫**：`cursors` 仍是本页，`published` 改由 `_contiguous_end` 结算（两条索引聚合的常路径，只有真存在洞时才逐行走）。由此失效的夹具与措辞一并更正（`event_history_writer_in_flight` → `event_history_missing_position`）。取舍理由与证据见 [0026](../validation/0026-event-retention-and-resync.md) 第 6b、10 节；**若维护者更愿意放弃「走满连续区间」语义，需要同时改契约说明、视图与记录**。
+>
+> 仍未处理的是 [0026](../validation/0026-event-retention-and-resync.md) 第 9 节列的结构性项（清理的两段式持锁、409 不带水位、没有快照身份、夹具无漂移检查、`page_events` 一函数两职、`stream_probe` 自建 `AccessService` 等），建议另开维护票。
 
-## 2. 进行中（独立 worktree + 分支，**未 push**）
+## 2. 进行中的分支：**没有了**
 
-分支命名 `codex/<编号>-<slug>`，worktree 在 `D:\code\huntweave-wt\<编号>-<slug>`。
+三支（`#43`、`#44`、`#45`）都已合入 `main` 并**退役**（worktree 与分支都已删除，安全快照 tag 也已删除）。`git worktree list` 现在只剩主检出。
 
-`#44` 已合入并退役（worktree 与分支都已删除）。**只剩 `#45`**，它的工作**已全部提交在分支上**（不再是「留在工作区」的状态），19 个提交、工作区干净：
+分支命名 `codex/<编号>-<slug>`，worktree 在 `D:\code\huntweave-wt\<编号>-<slug>`；开工时按此约定新建。
 
-| 票 | 分支 / worktree | head | 状态 |
-| --- | --- | --- | --- |
-| [#45](https://github.com/kksty/HuntWeave/issues/45) P2-E2 事件保留与补拉 | `codex/45-p2-e2-event-retention-resync` / `D:\code\huntweave-wt\45-p2-e2-event-retention-resync` | `267b725` | 实现＋集成＋真库检查＋两轴评审都已完成；**因 Spec 轴的阻塞项未合入** |
+`#44` 与 `#45` 都已合入并退役（worktree 与分支都已删除）。`#45` 的 5 个提交依次是：前一会话的实现原样固定 → 集成补完（迁移线性化、删两条同路径内联路由、修 `created_at` 覆写与三处夹具缺陷）→ 按 Standards 轴修三处不实陈述 → 验证记录 0026 → 按 Spec 轴修 `published` 语义并更正由此失效的夹具与措辞。
 
-安全快照 tag 已删除（工作已提交，tag 不再需要）。分支的 4 个提交依次是：前一会话的实现原样固定 → 集成补完（迁移线性化、删两条同路径内联路由、修 `created_at` 覆写与三处夹具缺陷）→ 按 Standards 轴修三处不实陈述 → 验证记录 0026。
+## 3. 合入顺序与迁移链（已完成，链尾 `0011_event_retention`）
 
-**下一步不是继续加检查，而是先定 `published` 的语义**（见第 1 节末的提示与 [0026](../validation/0026-event-retention-and-resync.md) 第 10 节的两条路）。
+三支的迁移已按 `0009_planning_attempt_identity`（#43）→ `0010_service_facts`（#44）→ `0011_event_retention`（#45）线性化，`main` 上现在是 **`0001`–`0011` 共 11 个 revision、单一 head = `0011_event_retention`**，`BUSINESS_REVISIONS` 为四项线性元组，且 `0009 → 0010 → 0011` 都在一次性库上真实升级并回读过。
 
-## 3. 合入顺序与迁移链
-
-`#43`、`#44` 已合入。**只剩 `#45` 的迁移**，它已经线性化好（`down_revision = "0010_service_facts"`，`BUSINESS_REVISIONS` 已是四项线性元组，并在一次性库上真实升级过 `0010 → 0011`），因此合入时**不需要**再改迁移编号，只需在合入后确认单一 head。
-
-`tests/test_phase0_contracts.py::test_the_migration_chain_is_linear_and_has_exactly_one_head` 会抓分叉。注意同一文件的表清单守卫读 `0010-phase0-source-inventory.md` 里**声明为基线的 head**（仍保持 `0008`，这是有意留的），改那句话会同时改守卫允许的表范围——两者要一起改。
+`tests/test_phase0_contracts.py::test_the_migration_chain_is_linear_and_has_exactly_one_head` 会抓分叉（现 35 项全绿）。注意同一文件的表清单守卫读 `0010-phase0-source-inventory.md` 里**声明为基线的 head**（仍保持 `0008`，这是有意留的），改那句话会同时改守卫允许的表范围——两者要一起改。
 
 ## 4. `#43` 的合成：已做完，但本轮查出三处漏项
 
