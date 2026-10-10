@@ -1,8 +1,10 @@
 # P2-A1 事务外模型请求与独立任务、会话与决策身份（#43）实施评审与验证
 
-状态：实现与检查已完成，**未合入**。日期：2026-10-11。工作树 `D:\code\huntweave-wt\43-p2-a1-model-outside-transactions`，分支 `codex/43-p2-a1-model-outside-transactions`，起点 `main` `c8033c8`（已含 #37 与 #38）。对应 [#43](https://github.com/kksty/HuntWeave/issues/43)，依据 [0003 §2.2/§5/§8.2](../specs/0003-agent-research.md)、[0006 §1/§2/§4/§11](../specs/0006-state-model-and-delivery.md)、[ADR-0014](../adr/0014-execution-lifecycle-and-environment-identity.md)、[0010 §9](../specs/0010-phase0-source-inventory.md)。
+状态：实现、检查与**集成分支重放**已完成，**未合入**。日期：2026-10-11。工作树 `D:\code\huntweave-wt\43-p2-a1-model-outside-transactions`，分支 `codex/43-p2-a1-model-outside-transactions`；实现起点 `main` `c8033c8`（已含 #37 与 #38），随后**重放到 `main` `8bfe9e8`**（已含 #21）以便按 #43→#44→#45 顺序合入。对应 [#43](https://github.com/kksty/HuntWeave/issues/43)，依据 [0003 §2.2/§5/§8.2](../specs/0003-agent-research.md)、[0006 §1/§2/§4/§11](../specs/0006-state-model-and-delivery.md)、[ADR-0014](../adr/0014-execution-lifecycle-and-environment-identity.md)、[0010 §9](../specs/0010-phase0-source-inventory.md)。
 
 本记录只写**本切片实际做了什么、实际跑了什么**。它不改变阶段状态（`docs/STATUS.md` 不在本切片范围），不复述设计规格，也不把「已实现」写成「已交付主线」。
+
+**本记录在合入重放后经过一次更正**：实现阶段的数字与结论全部取自 `c8033c8` 基线；重放到含 #21 的 `8bfe9e8` 后，基线、检查计数与「未跑项」都变了，且合成暴露出三处**只在集成后才可见**的缺陷。更正内容集中在「合入基线、重放与 #21 的合成」一节；下列各节均为**更正后的实际值**，旧值只在说明差异时保留。
 
 ## 环境与入口
 
@@ -11,10 +13,11 @@
 | Python | 复用主仓库虚拟环境 `D:\code\HuntWeave\backend\.venv\Scripts\python.exe`（pytest 9.1.1），未重建 |
 | 工作目录 | worktree 的 `backend/`（`pytest` 按 rootdir 解析 `pythonpath=src`） |
 | 纯检查 | `python -m pytest -m "not integration" -q` |
-| 真实数据库检查 | 一次性独立容器 `hw-a1-model-postgres-1`，`127.0.0.1:18899`，镜像 digest `postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826`，角色/模式按 `deploy/postgres/init.sh` 建立，用完即删 |
+| 真实数据库检查（实现期） | 一次性独立容器 `hw-a1-model-postgres-1`，`127.0.0.1:18899`，镜像 digest `postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826`，角色/模式按 `deploy/postgres/init.sh` 建立，用完即删 |
+| 真实数据库检查（集成期） | 一次性 Compose 项目 `hw-review43-pg` 的 `postgres`（`deploy/compose.yaml` + `deploy/compose.isolated-db.yaml`，`127.0.0.1:18931`），`huntweave.alembic_version = 0009_planning_attempt_identity`；**不是**常驻项目 `huntweave` |
 | 未触碰 | 常驻项目 `huntweave`（`huntweave-app-1`/`-runner-1`/`-postgres-1`）、#44 的 `huntweave-i44-facts-postgres-1`(#18777)、#45 的 `hw-e2-retention-postgres-1`(#18455) 均未启停、未清理 |
 | 未接触 | 任何外部目标；全部检查只用 `192.0.2.0/24` 文档保留地址与固定假执行 |
-| 数据库隔离方式 | 自有容器名 + 自有回环端口；`HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 只对本容器设置；`deploy/compose.isolated-db.yaml`（#21 引入，本 worktree 无此文件）在主线可用，本切片改用等价的 `docker run` 一次性容器，效果相同（独立库、独立端口、用完即删） |
+| 数据库隔离方式 | 自有项目名 + 自有回环端口；`HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 只对这次运行设置；`deploy/compose.isolated-db.yaml` 的端口无默认值（缺变量即失败），保证不会把常驻库发布到宿主 |
 
 ## 实施评审（PROJECT §14）
 
@@ -110,6 +113,8 @@ now the same downgrade on a database that used the new identity:
 
 ### 命令与结果
 
+实现期（基线 `c8033c8`，未含 #21）：
+
 ```
 $ cd <worktree>/backend
 $ python -m pytest -m "not integration" -q
@@ -127,9 +132,39 @@ $ python -m mypy --config-file pyproject.toml src
 Success: no issues found in 51 source files
 ```
 
-纯检查基线为 285 passed / 8 skipped / 41 deselected，本切片新增 21 项纯检查与 1 项确定性适配器用量检查（`tests/test_real_plan_and_mode.py`），并新增 7 项数据库检查（纯检查运行中跳过）。
+集成期（基线 `8bfe9e8`，已含 #21；本切片三处集成修复落地后重跑）：
 
-**未跑的三项**：容器内检查（`deploy/compose.verify.yaml` 的 checks 容器）、靶场探针（`deploy/verify_action.py` 等）、浏览器验收。理由与限制见下。
+```
+$ cd <worktree>/backend
+$ python -m pytest -m "not integration" -q -p no:cacheprovider
+331 passed, 16 skipped, 54 deselected in 31.88s
+# 基线（同一 worktree、同一命令、`8bfe9e8` 的内容）：310 passed, 8 skipped, 54 deselected
+# 本切片新增 21 项纯检查 + 1 项确定性适配器用量检查；+8 skipped 为 7 项新数据库检查与
+# #21 的 1 项跳过项；deselected 由 41 升到 54 是 #21 新增的集成项，不是本切片新增
+
+$ $env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE = "1"; python -m pytest -m "not integration" -q
+346 passed, 1 skipped, 54 deselected in 39.08s
+# 16 项跳过里有 15 项是「需要一次性 PostgreSQL 才能求值」（7 项属本切片新增），设了
+# 变量就会真跑并通过；余下 1 项是 test_reason_codes.py 的「本检出没有控制台构建产物」
+
+$ python -m ruff check src tests
+All checks passed!
+
+$ python -m mypy --config-file pyproject.toml src
+Success: no issues found in 52 source files
+
+$ python -m pytest tests/test_concurrency_integration.py tests/test_model_outside_transactions_integration.py \
+    tests/test_orchestration_integration.py tests/test_reconciliation_integration.py -q
+# 环境：一次性项目 hw-review43-pg 的库，127.0.0.1:18931
+39 passed in 28.08s
+
+$ python -m pytest tests/test_concurrency_stress.py -q   # 最小化规模，验证夹具可跑而不是取值
+1 passed in 2.56s
+```
+
+纯检查基线（`8bfe9e8` 内容）为 310 passed / 8 skipped / 54 deselected。`mypy` 的源文件数由 51 升到 52，是 #21 新增的 `contracts/resources.py`，不是本切片新增。
+
+**未跑的三项**：容器内检查（`deploy/compose.verify.yaml` 的 checks 容器）、靶场探针（`deploy/verify_action.py` 等）、浏览器验收。理由与限制见下。`test_concurrency_stress.py` 只以最小规模证明夹具可跑，未重跑 #21 记录的完整取值矩阵（那是 #32 的实测题）。
 
 ## 变异验证
 
@@ -168,28 +203,67 @@ Success: no issues found in 51 source files
 - **表清单守卫**：本切片**未新建表**，`tests/test_phase0_contracts.py::test_the_inventory_document_lists_the_tables_the_code_really_has` 保持通过（不需要协调人补 `0010 §3.3`）。
 - **迁移链**：新增 `0009_planning_attempt_identity`（`down_revision=0008_retention_decisions`），`BUSINESS_REVISIONS` 同提交同步；`down_revision` 未改，等协调人按 #43→#44→#45 顺序合入。
 
-## 合入基线与 #21 夹具的兼容性
+## 合入基线、重放与 #21 的合成
 
-本分支从 `c8033c8` 切出；期间 `origin/main` 前进了 16 个提交（#21 的一次性数据库覆盖文件、`backend/tests/conftest.py`、并发/额度检查与验证记录 0022 已合入主线）。本切片**不 rebase、不合并**（集成由协调人做），因此记录如下两点：
+本分支从 `c8033c8` 切出；期间 `origin/main` 前进了 16 个提交（#21 的一次性数据库覆盖文件、`backend/tests/conftest.py`、并发/额度检查与验证记录 0022 已合入主线）。实现期本切片**不 rebase、不合并**（集成由协调人做），当时的核对结论如下：
 
 1. **与 #21 的 `conftest.py` 兼容**：把 `origin/main` 的 `backend/tests/conftest.py` 临时放进本工作树（不提交）后，在 `HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 下连跑两次同样的 27 项数据库检查，**两次都是 27 passed**（第二次复用同一个未重建的库，证明检查不依赖跨检查残留数据，也不受 autouse `TRUNCATE` 影响）。临时文件随后删除，`git status --short` 为空。
-2. **与前进后的 `origin/main` 重叠的文件**（合入时需要人工核对）：
-   - `backend/src/huntweave/runs/orchestration.py`：两边都改了同一文件（#21 侧改的是容量/额度相关区域：`SCENARIOS` 之后的新常量块、`OrchestrationService.__init__`、`claim`、`accept`/`_converge` 一带；本切片改的是 `plan()` 整段与其后的提交段）。这是本次合入的主要人工合成点。
-   - `backend/tests/test_orchestration_integration.py`：#21 侧改 `settle` 辅助与导入，本切片把 `service.plan(...)` 换成 `plan_step(...)`；冲突面小。
-   - `docs/validation/README.md`：两边各插一行（0022 与 0024），行不相邻。
-   - 本切片独占的 `contracts/orchestration.py` 与 #21 无重叠（#21 改的是 `contracts/resources.py`、`contracts/runs.py`）。
+2. **与前进后的 `origin/main` 重叠的文件**：`runs/orchestration.py`（#21 侧改容量/额度区域，本切片改 `plan()` 整段与其后的提交段）、`tests/test_orchestration_integration.py`（#21 改 `settle` 辅助与导入）、`docs/validation/README.md`（两边各插一行，行不相邻）；本切片独占的 `contracts/orchestration.py` 与 #21 无重叠。
+
+### 实际发生的重放
+
+集成会话把 6 个提交重放到 `main` `8bfe9e8`（已含 #21）。`git rebase` 在**第 3/6 步**（`runs: 模型请求移出 Run 行锁事务…`）停在 `runs/orchestration.py` 的冲突上，重放被中断；`rebase-merge` 状态仍然完整，冲突标记已由上一会话在**工作区**消除但未 `git add`（索引里仍是 stage 1/2/3）。因此本次**没有**丢弃重来，而是核对工作区的合成结果后 `add` → 以 `rebase-merge/message` 重建该提交 → `rebase --continue` 走完余下 3 步。
+
+这一点更正了交接文档的描述：交接记录写「rebase 目录已不在，所以它是一个被中断的 rebase 残留，不是可继续的 rebase 状态」，实际 `rebase-merge` 目录存在且可继续。
+
+冲突的唯一实质是：#43 删除了旧的整段 `plan()`，而 #21 此前把**物理额度与背压**逻辑插进了那个旧 `plan()`。所以合成不是二选一，而是**把 #21 的额度语义移植进 #43 的新结构**。逐条核对（均在 `_dispatch` 内）：
+
+| # | 必须保留的语义 | 合成后的位置 | 判定 |
+| --- | --- | --- | --- |
+| 1 | 额度检查与「锁定 + 计数 + 写 `ToolCall`」在同一短事务内，**锁先于计数** | `_lock_execution_slots` 在 `_execution_quota` 之前，两者与 `ToolCall`/`BudgetReservation`/`Outbox` 同一事务 | 保留 |
+| 2 | 被背压时写**去重**的 `execution_backpressure` 事件、`return None`，不留下 ToolCall/预留/outbox 行 | 去重键 `str(decision_id) + ":backpressure"` 随移植保留；`return None` 在任何写入之前 | 保留（**合成后一度无守卫**，见下 D1） |
+| 3 | 受控重派受同一额度门约束 | 额度门在 `replacing is None / Redispatch` 分支**之后**，两条路径共用 | 保留 |
+| 4 | 「预算不超限」语义仍有承载 | `_reserved` + `_dispatch` 的预算门 + `_open_attempt` 的 `budget_snapshot` | 保留 |
+| 5 | 「decision 已提交但其 call 不存在」的可续跑语义 | `begin_planning` 的已提交分支重新派发 | **保留但当时不可达**，见下 D2 |
+
+### 合成暴露出的三处缺陷（都只在集成后才可见，已修并各留守卫）
+
+**D1 — #43 删掉了 `plan()`，#21 的检查仍在调用它（8 处）。** `tests/test_concurrency_integration.py` 5 处、`tests/test_concurrency_stress.py` 3 处调用 `service.plan(...)`。两个文件都是 `pytestmark = pytest.mark.integration`，而纯检查与 CI 都跑 `-m "not integration"`；`ruff` 看不到属性、`mypy` 只扫 `src`。所以**移植过来的背压/额度语义当时没有任何验证**——交接文档点名的「真正验收」其实跑不到。已改为经 `tests/_planning.py` 的 `plan_step` 走 harness 的三段协议，与 `test_orchestration_integration.py` 同一做法。
+
+**D2 — `begin_planning` 的续跑分支返回的形状没有 `kind`。** 该分支直接 `return self._dispatch(...)`（形状 `{"id", **content}`），而唯一的消费者 `harness/graph.py` 读的是 `handoff["kind"]` → 在「答案已提交、call 因额度被扣下、额度已归还」这条**续跑路径**上抛 `KeyError`。这恰好是交接文档要求「没有丢，丢了会把 Run 卡死」的语义。已改为包成 `{"kind": "reuse", "decision": ...}`，并在额度仍未归还（`_dispatch` 返回 `None`）时返回 `None`。
+
+**D3 — 本切片自己的数据库夹具没有满足 #21 的停止确认规则。** `tests/test_model_outside_transactions_integration.py` 的 `settle()` 只提交结算结果、不带 `ExecutionObservation`；按 #21 收紧后的规则，「已结算」不等于「已确认停止」，调用不释放物理额度、其 Run 不再可领取，于是 `test_two_workers_of_one_role_cannot_collide_on_a_task_session_or_decision` 报 `only one task ever produced a decision`。已补上执行端「没有任何东西仍在运行」的那句陈述。
+
+D1 与 D3 都属同一类：**实现期的夹具是按 `c8033c8` 的语义写的，重放到含 #21 的主线后语义变了**。D1 使守卫静默消失，D3 使守卫变红——后者反而是好的，因为它至少会响。
+
+### 变异验证（更正后重做）
+
+D2 与 D1 关掉的那条守卫，各自把结论写错一次确认变红：
+
+| 变异 | 把什么写错 | 目标检查 | 结果 |
+| --- | --- | --- | --- |
+| N1 | `begin_planning` 的续跑分支退回直接返回 `_dispatch(...)`（即 D2 原样） | `test_concurrency_integration.py::test_one_address_runs_one_active_action_across_runs` | RED `1 failed in 1.13s` |
+| N2 | 背压事件去掉去重键（`":backpressure"` 源改为 `None`） | 同上 | RED `1 failed in 0.98s` |
+
+N1 说明 D2 那条路径确实被守卫住：该检查在第一个 Run 的停止被确认后，对第二个 Run 再要一次额度，走的正是「已提交答案、当时无 call」的续跑分支。
 
 ## 未达成与限制
 
-1. **未跑容器内检查与靶场探针**：本切片没有新的执行端行为，`deploy/verify_*.py` 与 checks 容器未复跑；`lab/isolation/action.py` 只做了适配新 Interface 的机械改动（`self.plan(...)`），**未在靶场复验**。
+1. **未跑容器内检查与靶场探针**：本切片没有新的执行端行为，`deploy/verify_*.py` 与 checks 容器未复跑；`lab/isolation/action.py` 只做了适配新 Interface 的机械改动（`self.plan(...)`），**未在靶场复验**。集成期同样未补跑这两项。
 2. **未做浏览器验收**：`RunSnapshot` 新增字段只经严格契约校验；前端类型与渲染未接入（归 P2-F/#65）。
 3. **真实模型仍不存在**：Interface 已就位，但没有供应商适配器、没有 token 计费与模型并发槽；`budget_snapshot` 记的是工具调用额度画面，不是模型额度预留（`0003` §2.2 的「预留模型额度」在无计费来源时只能记「无回执」，未做假账）。
 4. **模型调用失败没有持久化**：适配器抛异常时请求行停留在 `requested`、用量为 `unknown`（待核对），但本切片没有「模型不可用/限流/Schema 错误」的原因码与有界退避——那是 `0003` §5 的后续切片（P2-B/#49 与 P2-C/#54）。当前失败会让 agentd 的调度轮次中止（既有行为，未变）。
-5. **崩溃窗口**：答案只在提交段落库。若进程在「模型已答、提交段未跑」之间死掉，该请求行停在 `requested`（用量待核对），恢复后按新尝试重新提问；`0003` §2.2 的「崩溃前已保存的有效模型结果优先复用」只在本切片覆盖「已提交结果」，未实现「已答未提交」的第三条写入。它不影响正确性（不重复派发、不重复结算），但会多花一次模型请求。
+5. **崩溃窗口**：答案只在提交段落库。若进程在「模型已答、提交段未跑」之间死掉，该请求行停在 `requested`（用量待核对），恢复后按新尝试重新提问；`0003` §2.2 的「崩溃前已保存的有效模型结果优先复用」只在本切片覆盖「已提交结果」，未实现「已答未提交」的第三条写入。它不影响正确性（不重复派发、不重复结算），但会多花一次模型请求。**D2 修好后仍只覆盖「call 因额度被扣下」这一种，不覆盖崩溃窗口。**
 6. **第二个同角色 Worker 的调度**：`open_follow_up_task` 是业务入口，实际「何时开第二轮」的触发规则（Reviewer 补证建议 → 新任务）归 P2-B（#49/#50），本切片不做。
 7. **`RunSnapshot` 不允许未声明字段**：真实 profile 的确定性决策会把 `target_ip`/`target_port` 写进 `decisions.content`，而 `DecisionView` 不声明这两个字段。这是**既有**的潜在问题（旧代码同样把 `content` 展开进快照），本切片未改；一旦真实 profile 的 Run 被控制台读取，需要另行处理（不在 #43 范围）。
 8. **降级不完整**：见上「迁移」一节，有数据的库上 `downgrade()` 会显式拒绝。
 9. 未更新 `docs/STATUS.md` 与 `docs/validation/README.md` 之外的索引（根 README 无逐条记录索引）；STATUS 的「下一实施项」由协调人在合入时更新。
+10. **`0003` §2.2「同一 Run 最多一个有效尝试」在本实现下是弱保证**：`_open_attempt` 在租约代次前进时把上一条尝试置为 `abandoned` 再建新尝试，于是同一 Run 可以同时存在两条 `requested` 的尝试。未在 `decisions` 上加唯一约束。是否收紧要等真实供应商适配器落地后按实际并发判断（P2-C/#54）。
+11. **独立两轴评审的整改项（判定为可接受、未改）**：
+    - `_stop_confirmed` 现在只是转发 `contracts.resources.stop_confirmed`，而同模块的 `_call_conditions` 直接调用 `holds_physical_slot`——同一条规则在同一模块里有两种写法（Middle Man）。
+    - 重派行复用 `decided.attempt_ordinal`，因此 `attempt_identity`「id 是任务、步骤与本序号的函数」对重派行为假；迁移 0009 未加唯一约束来暴露它。
+    - `_dispatch` 收 8 个参数，`_commit_redispatch` 重复同一参数簇；`decision` 事件载荷在两处各写一遍。
+    这三项是判断项而非违反文档标准，改动会扩大本切片范围，留给后续切片。
 
 ## 待人工确认
 
