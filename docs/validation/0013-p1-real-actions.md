@@ -36,7 +36,7 @@
 
 | 行为 | 结果 |
 | --- | --- |
-| 真实动作靶场验收 | `python deploy/verify_action.py` → **17 项检查全部通过**、`leftovers: 0`；报告 `runtime/sandbox/<run>/report.json`，本次运行 sha256 `867a85e00f9eec1925a47c3a361162abca02e703d8210e814684e9585376bf74`（`source_tree_dirty=true`，即本切片提交前的工作树） |
+| 真实动作靶场验收 | `python deploy/verify_action.py` → **17 项检查全部通过**、`leftovers: 0`；报告 `runtime/sandbox/<run>/report.json`，在提交 `cb51a8a` 上取得，sha256 `8b04b59900a42ff8d8f354c20988a0d7ca193dd9a0444fdf27d3149ef347ea95`（报告内 `source_tree_dirty=true`：该提交之后工作树里另有并行的设计文档改动，被测代码本身即 `cb51a8a`） |
 | 三个真实动作经票据跑通 | `shell.exec`（`id -u`）→ 退出码 0、stdout `10001`（工具容器普通用户）；`discover_tcp_services` → `open_ports:[7000]`、`closed_ports:[7001]`；`probe_http` → `status_code:200`、`server: SimpleHTTP/0.6 Python/3.12.15` |
 | 真实反例驱动不同结局 | 对非 HTTP 端口 `probe_http` → `failed`/`action_failed`；`exit 3` 的命令 → `failed` 且 stderr 归档（内容为 `problem`）；发现无端口时下一步为 `finish_research` |
 | 真实返回决定下一个动作并真的执行 | 对 HTTP 靶场做发现得 `open_ports:[8080]` → 计划提出 `probe_http` 并指名该端点（目标绑定由票据承载、不在动作参数里）→ **该动作真的运行并返回 200** |
@@ -59,6 +59,10 @@
 - **超时监督由适配器包裹**：命令在容器内由 coreutils `timeout` 监督（`-k 5`），退出码 124 视为超时。这一点只由适配器实现，单元检查用假运行时覆盖不了；靶场探针未构造超时用例（改造超时验证需注入慢命令，归 #21 的压力与容量验收）。
 - **未验证**：原生 Linux 宿主（ADR-0010 另立切片）；多活跃 Run 下的并发与公平（#21）；Kali 工具镜像下的同组行为（本切片用 lab 探针镜像）；动态安装与按需特权（后续阶段）。
 
+## 迁移与既有环境
+
+`0005_run_execution_profile` 在开发栈上实际应用并复核：迁移头为 `0005_run_execution_profile`，`huntweave.runs` 出现 `execution_profile` 列，既有 6 个 Run 全部读为 `fake-p0-v1`（服务端默认值，历史不被回溯改写）。`RunView.demonstration` 由 profile 派生，因此旧 Run 的界面语义不变。
+
 ## 过程中发现并修复的缺陷
 
 - 取消路径在准备阶段不知道实例身份，导致「准备中取消」不停止实例：改为先记录 `halt_requested`，由运行线程在准备完成后检查并释放。
@@ -66,3 +70,4 @@
 - profile 分派在持有缓存锁时调用管理器构造，而后者再次获取同一把锁（死锁）。
 - `atomic_write` 多个写入者争用同一临时文件（#18 复跑时发现，本切片延续修复）。
 - 探针用回声夹具的应答等待普通 HTTP 端口、每次调用换授权身份（被产品正确拒绝）、以及把目标端口放进动作参数（应由票据绑定承载）。
+- **契约改名后开发栈上的 Runner 起不来**：既有持久账本里的记录写的是旧字段 `profile`，严格契约拒绝未知字段，Runner 因此在升级后无法打开自己的账本（等于静默丢失全部已记录调用，包括核对所依赖的那些）。处理方式是读入时把旧字段名翻译为现值（值与含义相同），而不是丢弃账本或放宽契约；开发栈重建后 Runner 恢复健康，检查固定住「旧字段记录仍可读回状态与证据」。这条只有在真实运行中的栈上才会暴露。
