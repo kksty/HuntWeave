@@ -1,0 +1,21 @@
+{
+  "name": "reconciliation_conflict",
+  "kind": "error",
+  "materializes": {
+    "model": "error_envelope",
+    "status": "409"
+  },
+  "reason_code": "reconciliation_conflict",
+  "state": {
+    "must_fail": "reconciliation_conflict"
+  },
+  "describes": "A second operator verdict for a call that already carries one. An operator's verdict is added once and never rewritten, so a repeat is refused rather than merged.",
+  "payload": {
+    "reason_code": "reconciliation_conflict"
+  },
+  "source": {
+    "file": "backend/src/huntweave/runs/orchestration.py",
+    "lines": "888",
+    "note": "Raised as ServiceError('reconciliation_conflict', 409)."
+  }
+}

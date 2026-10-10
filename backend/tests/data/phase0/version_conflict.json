@@ -1,0 +1,21 @@
+{
+  "name": "version_conflict",
+  "kind": "error",
+  "materializes": {
+    "model": "error_envelope",
+    "status": "409"
+  },
+  "reason_code": "version_conflict",
+  "state": {
+    "must_fail": "version_conflict"
+  },
+  "describes": "A stale version on a Run control request. The body is the platform's only error envelope: {'reason_code': ...} at the status the refusal carries.",
+  "payload": {
+    "reason_code": "version_conflict"
+  },
+  "source": {
+    "file": "backend/src/huntweave/runs/service.py",
+    "lines": "127, 174",
+    "note": "Raised as ServiceError('version_conflict', 409); rendered by api/app.py:84-90."
+  }
+}

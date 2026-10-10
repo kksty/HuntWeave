@@ -1,0 +1,21 @@
+{
+  "name": "invalid_call_state",
+  "kind": "error",
+  "materializes": {
+    "model": "error_envelope",
+    "status": "409"
+  },
+  "reason_code": "invalid_call_state",
+  "state": {
+    "must_fail": "invalid_call_state"
+  },
+  "describes": "A control request against a call that is not in a state where the request means anything. This is deliberately not a version conflict: the caller sent the right generation and asked for the wrong thing.",
+  "payload": {
+    "reason_code": "invalid_call_state"
+  },
+  "source": {
+    "file": "backend/src/huntweave/runs/orchestration.py",
+    "lines": "893",
+    "note": "Raised as ServiceError('invalid_call_state', 409) beside version_conflict (line 891) so the two are distinguishable."
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "permission_denied",
+  "kind": "error",
+  "materializes": {
+    "model": "error_envelope",
+    "status": "401"
+  },
+  "reason_code": "authentication_required",
+  "state": {
+    "must_fail": "permission_denied"
+  },
+  "describes": "A business request without a valid server-side session. A permission refusal is a different code from a policy refusal: the platform never renders 'not allowed' as 'the model could not'.",
+  "payload": {
+    "reason_code": "authentication_required"
+  },
+  "source": {
+    "file": "backend/src/huntweave/access/service.py",
+    "lines": "104, 136",
+    "note": "Raised as ServiceError('authentication_required', 401); access_key_missing (503) and invalid_access_key (401) are the neighbouring codes."
+  }
+}

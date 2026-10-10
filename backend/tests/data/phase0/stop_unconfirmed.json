@@ -1,0 +1,50 @@
+{
+  "name": "stop_unconfirmed",
+  "kind": "response",
+  "materializes": {
+    "model": "tool_call",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": "stop_unconfirmed"
+  },
+  "describes": "A call the platform cannot prove has stopped. The physical quota and the per-IP occupancy stay held, and the Run cannot be declared closed.",
+  "payload": {
+    "id": "44444444-4444-4444-8444-444444444444",
+    "session_id": "55555555-5555-4555-8555-555555555555",
+    "decision_id": "66666666-6666-4666-8666-666666666666",
+    "status": "cancelling",
+    "action": "shell.exec",
+    "parameters": {"command": "true", "timeout_seconds": 60},
+    "parameters_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "runtime": null,
+    "progress": {
+      "status": "ended",
+      "timeout_seconds": 60,
+      "started_at": "2026-10-11T09:10:00Z",
+      "last_output_at": "2026-10-11T09:10:05Z",
+      "output_bytes": 12,
+      "elapsed_ms": 5000
+    },
+    "result": null,
+    "evidence_ids": ["77777777-7777-4777-8777-777777777777"],
+    "created_at": "2026-10-11T09:10:00Z",
+    "replaces_call_id": null,
+    "observation": {
+      "started": true,
+      "process_active": true,
+      "connection_open": true,
+      "lease_active": false,
+      "observed_at": "2026-10-11T09:11:00Z",
+      "stop_confirmed": false
+    },
+    "reconciliation": null,
+    "conditions": ["stop_unconfirmed"]
+  },
+  "source": {
+    "file": "backend/src/huntweave/runs/orchestration.py",
+    "lines": "57, 973, 1188",
+    "note": "STOP_UNCONFIRMED is the condition name; execution_stop_unconfirmed is the refusal the control plane raises."
+  }
+}

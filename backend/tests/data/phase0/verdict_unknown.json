@@ -1,0 +1,43 @@
+{
+  "name": "verdict_unknown",
+  "kind": "response",
+  "materializes": {
+    "model": "tool_call",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": "unknown"
+  },
+  "describes": "A call whose result was never confirmed. Its status stays 'unknown': that is an execution fact, and it is not an A1 verdict.",
+  "payload": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "decision_id": "33333333-3333-4333-8333-333333333333",
+    "status": "unknown",
+    "action": "probe_http",
+    "parameters": {"scheme": "http", "method": "GET", "path": "/", "timeout_seconds": 20},
+    "parameters_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "runtime": null,
+    "progress": null,
+    "result": null,
+    "evidence_ids": [],
+    "created_at": "2026-10-11T09:01:00Z",
+    "replaces_call_id": null,
+    "observation": {
+      "started": true,
+      "process_active": null,
+      "connection_open": null,
+      "lease_active": false,
+      "observed_at": "2026-10-11T09:03:00Z",
+      "stop_confirmed": false
+    },
+    "reconciliation": null,
+    "conditions": ["outcome_unsettled"]
+  },
+  "source": {
+    "file": "backend/src/huntweave/contracts/orchestration.py",
+    "lines": "12, 51-59, 74-98",
+    "note": "ReconciliationOutcome and CallObservationView; a null process/connection state means the ledger cannot confirm either way."
+  }
+}

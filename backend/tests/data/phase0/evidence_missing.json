@@ -1,0 +1,36 @@
+{
+  "name": "evidence_missing",
+  "kind": "response",
+  "materializes": {
+    "model": "evidence",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": "evidence_missing"
+  },
+  "describes": "An archived artifact the record still names but whose bytes are not readable. It is reported as unavailable with its own reason, never as an empty file and never as a satisfied evidence requirement.",
+  "payload": {
+    "id": "88888888-8888-4888-8888-888888888888",
+    "run_id": "99999999-9999-4999-8999-999999999999",
+    "call_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "relative_path": "runs/99999999/aaaaaaaa/stdout.bin",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "size_bytes": 0,
+    "available": false,
+    "truncated": false,
+    "redacted": false,
+    "missing_reason": "evidence_missing",
+    "execution_profile": "real-lab-v1",
+    "demonstration": false,
+    "offset": 0,
+    "content": "",
+    "next_offset": null,
+    "eof": true
+  },
+  "source": {
+    "file": "backend/src/huntweave/contracts/orchestration.py",
+    "lines": "167-186",
+    "note": "EvidenceView carries availability and missing_reason; contracts/execution.py:237-245 carries the same facts per artifact."
+  }
+}

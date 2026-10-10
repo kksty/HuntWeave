@@ -1,0 +1,35 @@
+{
+  "name": "not_ready",
+  "kind": "response",
+  "materializes": {
+    "model": "capabilities",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": "not_ready"
+  },
+  "describes": "ADR-0010: the platform is in demonstration mode, real execution is not ready, and each unmet gate names its own reason.",
+  "payload": {
+    "protocol_version": "1",
+    "mode": "demonstration",
+    "execution_profile": "fake-p0-v1",
+    "fake_execution_ready": true,
+    "real_execution_ready": false,
+    "sandbox_management": "disabled",
+    "sandbox_reason_code": "sandbox_management_disabled",
+    "reason_code": "real_execution_not_ready",
+    "observed_at": "2026-10-11T09:00:00Z",
+    "gates": [
+      {"gate": "profile_revalidation", "ready": false, "reason_code": "lab_host_required"},
+      {"gate": "contract_expressiveness", "ready": true, "reason_code": null},
+      {"gate": "console_consumption", "ready": true, "reason_code": null},
+      {"gate": "deployment_revert", "ready": false, "reason_code": "deployment_revert_unverified"}
+    ]
+  },
+  "source": {
+    "file": "backend/src/huntweave/contracts/capabilities.py",
+    "lines": "14-19, 40-58",
+    "note": "Four ADR-0010 gate names and the readiness fields the response carries."
+  }
+}
