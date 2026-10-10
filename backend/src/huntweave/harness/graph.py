@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from huntweave.harness.checkpoints import checkpoint_connection
+from huntweave.harness.model import ModelAdapter, ModelRequest
 from huntweave.runs.orchestration import OrchestrationService
 
 
@@ -24,8 +25,46 @@ class ResearchState(TypedDict, total=False):
 
 
 class ResearchHarness:
-    def __init__(self, business: OrchestrationService):
+    """Runs one planning step and drives the durable role graph.
+
+    The adapter is held here rather than by `runs`, because deciding what to research next is the
+    harness's responsibility and calling a model is the one thing that must happen with no
+    transaction open.
+    """
+
+    def __init__(self, business: OrchestrationService, adapter: ModelAdapter):
         self.business = business
+        self.adapter = adapter
+
+    def plan_step(
+        self, run_id: UUID, task_id: str, generation: int
+    ) -> dict[str, Any] | None:
+        """The three-segment planning protocol, in order.
+
+        `runs` prepares in a short transaction that holds the Run row lock only long enough to write
+        the intent; the adapter judges with no transaction open and no lock held at all; `runs`
+        commits in a second short transaction that re-checks the versions, the lease and the
+        authorization window the answer was prepared against. Nothing in the middle segment touches
+        the database, which is what keeps pause, cancel, renewal and reconciliation from waiting
+        behind a slow model.
+        """
+        handoff = self.business.begin_planning(run_id, task_id, generation)
+        if handoff is None:
+            return None
+        if handoff["kind"] == "reuse":
+            # The Run already committed an answer for this step: a replay returns it instead of
+            # asking again or dispatching a second call.
+            decision: dict[str, Any] = handoff["decision"]
+            return decision
+        request = ModelRequest(
+            attempt_id=handoff["attempt_id"],
+            role=handoff["role"],
+            step=handoff["step"],
+            input_hash=handoff["input_hash"],
+            prompt_version=handoff["prompt_version"],
+            context=handoff["context"],
+        )
+        return self.business.commit_planning(handoff["attempt_id"], self.adapter.decide(request))
 
     def advance(self, claim: dict[str, Any]) -> None:
         run_id = UUID(claim["run_id"])
@@ -42,7 +81,9 @@ class ResearchHarness:
         def decide(state: ResearchState) -> ResearchState:
             # Fresh trusted claim supplies the lease after restart/Command(resume).
             return {
-                "decision": self.business.plan(run_id, claim["task_id"], claim["lease_generation"])
+                "decision": self.plan_step(
+                    run_id, str(claim["task_id"]), int(claim["lease_generation"])
+                )
             }
 
         def observe(state: ResearchState) -> ResearchState:

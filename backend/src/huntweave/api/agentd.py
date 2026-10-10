@@ -12,6 +12,7 @@ from huntweave.contracts.errors import ServiceError
 from huntweave.execution.client import RunnerClient, get_capabilities
 from huntweave.harness.checkpoints import verify_checkpoint_schema
 from huntweave.harness.graph import ResearchHarness
+from huntweave.harness.model import DeterministicModel
 from huntweave.runs.dispatch import ExecutionDispatcher
 from huntweave.runs.orchestration import OrchestrationService
 from huntweave.storage.database import connect_engine, verify_business_schema
@@ -43,7 +44,9 @@ def main() -> int:
     engine = connect_engine()
     instance_id = uuid4()
     business = OrchestrationService(lambda: engine)
-    harness = ResearchHarness(business)
+    # The adapter belongs to the harness: planning judgement happens outside every business
+    # transaction, and the business side only prepares and commits.
+    harness = ResearchHarness(business, DeterministicModel())
     dispatcher = ExecutionDispatcher(
         business, RunnerClient(), real_ready=real_execution_ready
     )

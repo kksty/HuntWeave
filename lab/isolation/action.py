@@ -40,7 +40,7 @@ from huntweave.config import SandboxSettings
 from huntweave.contracts.execution import ExecutionRequest, parameters_hash
 from huntweave.execution.dockerruntime import open_sandbox_manager
 from huntweave.execution.sandbox import SandboxManager
-from huntweave.harness.model import DeterministicModel
+from huntweave.harness.model import PROMPT_VERSION, DeterministicModel, ModelRequest
 from huntweave.execution.server import create_runner
 
 RESULTS = Path("/results")
@@ -273,7 +273,8 @@ class ActionCheck:
         )
         http_summary = http_discovery["result"]["summary"] if http_discovery.get("result") else {}
         model = DeterministicModel()
-        planned = model.decide(
+        planned = self.plan(
+            model,
             "reviewer",
             1,
             {
@@ -304,7 +305,8 @@ class ActionCheck:
             followed["status"] == "completed" and followed_summary.get("status_code") == 200,
             summary=followed_summary,
         )
-        empty = model.decide(
+        empty = self.plan(
+            model,
             "reviewer",
             1,
             {
@@ -380,6 +382,22 @@ class ActionCheck:
         self.report["passed"] = True
 
     # -- driving real tickets ----------------------------------------------------------------
+
+    @staticmethod
+    def plan(
+        model: DeterministicModel, role: str, step: int, context: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Ask the adapter through its one Interface, exactly as the harness does."""
+        return model.decide(
+            ModelRequest(
+                attempt_id="lab-action-probe",
+                role=role,
+                step=step,
+                input_hash="0" * 64,
+                prompt_version=PROMPT_VERSION,
+                context=context,
+            )
+        ).content
 
     def call(
         self, client: TestClient, action: str, parameters: dict[str, Any], *, target: str, port: int
