@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from test_sandbox_lifecycle import PROFILES, FakeRuntime  # noqa: F401
+from test_sandbox_lifecycle import PROFILES, REPOSITORY, FakeRuntime  # noqa: F401
 
 from huntweave.config import SandboxSettings
 from huntweave.contracts.execution import (
@@ -409,6 +409,22 @@ def test_a_failed_release_still_names_the_instance_the_call_used(tmp_path: Path)
     assert runner._noted(request.call_id, "instance_id") == instance_id
     assert runner._stop_fact(record) is False
     assert record.observation is not None and record.observation.process_active is None
+
+
+def test_the_executor_reads_a_stop_through_the_manager_and_never_its_ledger() -> None:
+    """The stop claim has one owner, and it answers through its own interface.
+
+    The manager's instance ledger is private. A caller that reads it directly is rebuilding a
+    judgement the manager already makes, and the two copies can drift. Reading the source is the
+    check that fits: the property is "this module does not reach into that one", which no runtime
+    assertion can state as directly. ``test_reason_codes.py`` keeps the console's vocabulary in
+    step the same way.
+    """
+    source = (REPOSITORY / "backend" / "src" / "huntweave" / "execution" / "real.py").read_text(
+        encoding="utf-8"
+    )
+    assert ".instances" not in source
+    assert "stop_fact(" in source
 
 
 def test_a_call_that_cannot_prepare_is_reported_without_inventing_an_outcome(

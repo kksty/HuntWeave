@@ -19,7 +19,6 @@ from typing import Literal
 from uuid import UUID
 
 from huntweave.contracts.execution import (
-    CallStopState,
     RunRuntimeView,
     SessionRuntimeView,
     ToolRuntimeView,
@@ -29,24 +28,10 @@ from huntweave.execution.sandbox import (
     ManagedResource,
     SandboxRunState,
     SessionRecord,
+    StopFact,
 )
 
 __all__ = ["project_run_state"]
-
-
-def _stop_state(record: InstanceRecord) -> CallStopState:
-    """The manager's own answer to "is this instance's execution accounted for".
-
-    Only `stop_confirmed_at` makes a stop confirmed. An instance whose creation never finished and
-    one whose record was reclaimed without a confirmation both answer "unconfirmed" — in the first
-    case because nobody may act on resources held by an unfinished create, in the second because
-    removing containers is not proof about what they left behind.
-    """
-    if record.state in {"creating", "interrupted"}:
-        return "unconfirmed"
-    if record.state in {"stopped", "reclaimed"}:
-        return "confirmed" if record.stop_confirmed_at is not None else "unconfirmed"
-    return "running"
 
 
 def _resource(resource: ManagedResource) -> dict[str, object]:
@@ -58,13 +43,13 @@ def _resource(resource: ManagedResource) -> dict[str, object]:
     }
 
 
-def _instance_view(record: InstanceRecord) -> ToolRuntimeView:
+def _instance_view(record: InstanceRecord, stop: StopFact) -> ToolRuntimeView:
     return ToolRuntimeView(
         instance_id=record.instance_id,
         session_id=record.session_id,
         run_id=record.run_id,
         state=record.state,
-        stop_state=_stop_state(record),
+        stop_state=stop.state,
         environment=record.environment.model_dump(mode="json"),
         egress={
             **record.egress.model_dump(mode="json"),
@@ -90,7 +75,9 @@ def _session_view(record: SessionRecord) -> SessionRuntimeView:
     )
 
 
-def _reclaimable(records: list[InstanceRecord]) -> list[dict[str, object]]:
+def _reclaimable(
+    records: list[InstanceRecord], stops: dict[UUID, StopFact]
+) -> list[dict[str, object]]:
     """What a reclaim would touch, so the console previews the act instead of asserting it.
 
     This is a *preview*: it says which instances have resources left to remove and which are already
@@ -102,13 +89,14 @@ def _reclaimable(records: list[InstanceRecord]) -> list[dict[str, object]]:
         removable = [item for item in record.resources if item.kind != "network"]
         if record.state == "reclaimed":
             continue
+        state = stops[record.instance_id].state
         preview.append(
             {
                 "instance_id": str(record.instance_id),
                 "state": record.state,
-                "stop_state": _stop_state(record),
+                "stop_state": state,
                 "resources": [_resource(item) for item in removable],
-                "confirmation_required": _stop_state(record) != "confirmed",
+                "confirmation_required": state != "confirmed",
             }
         )
     return preview
@@ -119,13 +107,14 @@ def project_run_state(
 ) -> RunRuntimeView:
     """One Run's containers and gateways as the execution side records them right now."""
     instances = sorted(state.instances, key=lambda item: item.created_at)
+    stops = {fact.instance_id: fact for fact in state.stop_facts}
     sessions: list[SessionRuntimeView] = []
     for session in state.sessions:
         view = _session_view(session)
         view = view.model_copy(
             update={
                 "instances": [
-                    _instance_view(record)
+                    _instance_view(record, stops[record.instance_id])
                     for record in instances
                     if record.session_id == session.session_id
                 ]
@@ -145,7 +134,7 @@ def project_run_state(
         unaccounted=[_resource(item) for item in audit.unaccounted] if audit else [],
         missing=[_resource(item) for item in audit.missing] if audit else [],
         interrupted=list(audit.interrupted) if audit else [],
-        reclaimable=_reclaimable(instances),
+        reclaimable=_reclaimable(instances, stops),
     )
 
 

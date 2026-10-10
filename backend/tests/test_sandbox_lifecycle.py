@@ -31,7 +31,9 @@ from huntweave.execution.sandbox import (
     ContainerRuntime,
     ContainerSpec,
     EgressUpdate,
+    EnvironmentManifest,
     HaltRequest,
+    InstanceRecord,
     LeaseRenewal,
     ResourceNotFound,
     RuntimeUnavailable,
@@ -40,6 +42,7 @@ from huntweave.execution.sandbox import (
     SandboxProfile,
     SandboxRejected,
     SandboxSessionRequest,
+    StopFact,
     VolumeMount,
 )
 from huntweave.execution.server import create_runner
@@ -1177,6 +1180,58 @@ def test_a_stop_withdraws_the_permit_and_the_lease(
     assert stopped.egress.authorized == []
     assert stopped.egress.revoked_at is not None
     assert stopped.lease_expires_at is None, "a stopped instance holds no live claim"
+
+
+def test_the_stop_fact_is_the_only_statement_of_what_a_stop_means() -> None:
+    """One rule, one owner: only a recorded confirmation makes a stop confirmed.
+
+    These four cases are what the executor's claim about a process and the operator's projection
+    both rest on. An instance whose creation never finished is never "confirmed" — nobody may act
+    on resources held by an unfinished create — and one whose record was reclaimed without a
+    confirmation is not either, because removing containers is not proof about what they left.
+    """
+    now = datetime.now(UTC)
+
+    def record(state: str, confirmed: datetime | None) -> InstanceRecord:
+        return InstanceRecord(
+            instance_id=uuid4(),
+            session_id=uuid4(),
+            run_id=uuid4(),
+            scope_id=uuid4(),
+            scope_version=1,
+            policy_version=1,
+            state=state,  # type: ignore[arg-type]
+            environment=EnvironmentManifest(
+                profile_id="sandbox-lifecycle-v1",
+                profile_version=1,
+                image_digests={},
+                tool_inventory=[],
+                engine="test",
+                architecture="x86_64",
+                created_at=now,
+            ),
+            created_at=now,
+            stop_confirmed_at=confirmed,
+        )
+
+    unfinished = StopFact.of(record("creating", None))
+    assert (unfinished.state, unfinished.confirmed_at, unfinished.removed) == (
+        "unconfirmed",
+        None,
+        False,
+    )
+    interrupted = StopFact.of(record("interrupted", None))
+    assert interrupted.state == "unconfirmed"
+    running = StopFact.of(record("ready", None))
+    assert running.state == "running"
+    # A reclaim without a confirmation is not a stop: the fact says so rather than reporting the
+    # instance as accounted for.
+    reached_reclaim_only = StopFact.of(record("reclaimed", None))
+    assert (reached_reclaim_only.state, reached_reclaim_only.removed) == ("unconfirmed", True)
+    stopped = StopFact.of(record("stopped", now))
+    assert (stopped.state, stopped.confirmed_at, stopped.removed) == ("confirmed", now, False)
+    reclaimed = StopFact.of(record("reclaimed", now))
+    assert (reclaimed.state, reclaimed.confirmed_at, reclaimed.removed) == ("confirmed", now, True)
 
 
 def test_a_revert_archives_what_it_reconciled(

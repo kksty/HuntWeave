@@ -339,18 +339,19 @@ class RealRunner(CallLedger):
     def _stop_confirmed(self, instance_id: str | None) -> bool:
         """Whether the manager can prove this call's instance stopped.
 
-        The manager owns that fact: it says so only once its containers are stopped and the
-        confirmation is recorded, so this reads its recorded state instead of judging a container
-        again. An instance the manager cannot speak for — still running, or no longer part of its
-        record at all — answers "cannot confirm", never "stopped". The only "yes" that does not
-        come from the manager is the call that never had an instance: it cannot have left anything.
+        The manager owns that fact and answers it through its own interface: only it knows when a
+        stop was confirmed, and reading its instance ledger here would put a second copy of that
+        judgement beside the one the operator's projection already reads. An instance the manager
+        cannot speak for — still running, or no longer part of its record at all — answers "cannot
+        confirm", never "stopped". The only "yes" that does not come from the manager is the call
+        that never had an instance: it cannot have left anything.
         """
         if not instance_id:
             return True
-        instance = self.manager.instances.get(instance_id)
-        if instance is None:
+        try:
+            return self.manager.stop_fact(UUID(instance_id)).state == "confirmed"
+        except (SandboxRejected, ValueError):
             return False
-        return instance.state in {"stopped", "reclaimed"} and instance.stop_confirmed_at is not None
 
     def _stop_fact(self, record: ExecutionRecord) -> bool:
         """What the manager can say about the instance this call used, if it used one."""
@@ -490,17 +491,17 @@ class RealRunner(CallLedger):
             return
         if environment is None:
             return
-        record = self.manager.instances.get(str(instance_id))
-        if record is None:
-            return
+        # The record the halt returned is the manager's own statement about this instance, so the
+        # retained material is attributed from the answer to the request rather than from a second
+        # read of the manager's ledger.
         sizes = self.manager.volume_usage([item.id for item in report.retained])
         for volume in report.retained:
             try:
                 self.retention.record_artifact(
                     environment,
-                    run_id=record.run_id,
-                    session_id=record.session_id,
-                    instance_id=record.instance_id,
+                    run_id=halt.run_id,
+                    session_id=halt.session_id,
+                    instance_id=halt.instance_id,
                     resource_id=volume.id,
                     resource_name=volume.name,
                     size_bytes=sizes.get(volume.id),

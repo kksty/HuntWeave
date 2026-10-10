@@ -30,6 +30,7 @@ from uuid import UUID, uuid4
 
 from pydantic import AwareDatetime, Field
 
+from huntweave.contracts.execution import CallStopState
 from huntweave.contracts.runs import Contract
 from huntweave.execution.durable import atomic_write
 from huntweave.execution.network_policy import Endpoint, NetworkPolicy, ScopeDenied
@@ -74,6 +75,7 @@ __all__ = [
     "SandboxRejected",
     "SandboxSessionRequest",
     "SessionRecord",
+    "StopFact",
     "VolumeMount",
 ]
 
@@ -481,17 +483,61 @@ class SandboxObservation(Contract):
     observed_at: AwareDatetime | None = None
 
 
+class StopFact(Contract):
+    """What the trusted component can state about one instance's processes and connections.
+
+    This is the manager's own answer to "is the stop confirmed", and it is deliberately a fact
+    rather than a boolean: a reader that needs to date the confirmation, or to know whether the
+    instance's resources were also removed, asks the same question once instead of reading the
+    instance ledger for itself. ``state`` is the vocabulary the console already reads; it is
+    ``unconfirmed`` for an instance whose creation never finished, because nobody may act on
+    resources held by an unfinished create.
+    """
+
+    instance_id: UUID
+    state: CallStopState
+    confirmed_at: AwareDatetime | None = None
+    removed: bool = False
+
+    @classmethod
+    def of(cls, record: "InstanceRecord") -> "StopFact":
+        """The one place that decides what this component may claim about an instance's stop.
+
+        Only a recorded ``stop_confirmed_at`` makes a stop confirmed: an instance whose creation
+        never finished answers ``unconfirmed`` (nobody may act on resources held by an unfinished
+        create), and one that was reclaimed without a confirmation answers ``unconfirmed`` too
+        (removing containers is not proof about what they left behind). Every reader — the
+        executor that has to claim the process is gone, and the operator's projection — asks this
+        instead of reconstructing the rule from the record.
+        """
+        if record.state in {"creating", "interrupted"}:
+            state: CallStopState = "unconfirmed"
+        elif record.state in {"stopped", "reclaimed"}:
+            state = "confirmed" if record.stop_confirmed_at is not None else "unconfirmed"
+        else:
+            state = "running"
+        return cls(
+            instance_id=record.instance_id,
+            state=state,
+            confirmed_at=record.stop_confirmed_at if state == "confirmed" else None,
+            removed=record.state == "reclaimed",
+        )
+
+
 class SandboxRunState(Contract):
     """One Run's execution-side records, plus whatever the runtime audit could say about them.
 
     ``audit`` is optional on purpose: a runtime that cannot be read leaves the ledger's own answer
     standing and says so, rather than presenting "the ledger has nothing outstanding" as a
-    statement about the host.
+    statement about the host. ``stop_facts`` carries the manager's answer about each instance's
+    processes, so a read-side projection states a stop the same way the executor does rather than
+    deriving the rule again from the instance records.
     """
 
     run_id: UUID
     sessions: list[SessionRecord] = Field(default_factory=list)
     instances: list[InstanceRecord] = Field(default_factory=list)
+    stop_facts: list[StopFact] = Field(default_factory=list)
     audit: ResourceAudit | None = None
 
 
@@ -789,8 +835,21 @@ class SandboxManager:
                 # observation of what is currently out there.
                 audit = None
             return SandboxRunState(
-                run_id=run_id, sessions=sessions, instances=instances, audit=audit
+                run_id=run_id,
+                sessions=sessions,
+                instances=instances,
+                stop_facts=[StopFact.of(record) for record in instances],
+                audit=audit,
             )
+
+    def stop_fact(self, instance_id: UUID) -> StopFact:
+        """What this component may claim about one instance's processes and connections.
+
+        The only answer a caller needs to state a stop, and the only place the rule is written:
+        an executor that has to say whether the process it started is gone asks this, instead of
+        reading the instance ledger and rebuilding the judgement for itself.
+        """
+        return StopFact.of(self._instance(instance_id))
 
     def processes(self, instance_id: UUID, limit: int = 64) -> list[str]:
         container = self._container_of(self._instance(instance_id), "tool")
