@@ -210,7 +210,13 @@ class AuditEventView(Contract):
 
 class EventPage(Contract):
     events: list[AuditEventView]
-    # P0 keeps every committed event, so a cursor can only be ahead of the Run, never lost.
+    # This is the P0 page shape, kept because the console still reads it. Its comment used to read
+    # "P0 keeps every committed event, so a cursor can only be ahead of the Run, never lost" — that
+    # stopped being true when retention landed (issue #45): a cursor can now be *inside a pruned
+    # region*, which is neither ahead of the Run nor lost by accident, and it is answered by the
+    # timeline router with `event_cursor_expired` rather than by this contract. Nothing new should
+    # be built on `gap` here: `EventHistoryView` in `contracts/event_stream.py` is the shape that
+    # carries the three positions.
     next_cursor: int
     gap: bool
 

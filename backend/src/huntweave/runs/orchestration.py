@@ -2251,12 +2251,13 @@ class OrchestrationService:
 
         This stays the page shape `EventPage` (contracts/orchestration.py) already describes,
         because that contract belongs to another slice and its callers read it today. What changed
-        here is underneath: the page is now the *contiguous* prefix of the Run's cursors and reports
-        a real `gap` instead of a hard-coded `False`. A caller that wants the three positions apart
-        — `committed` / `published` / `retained_from` — reads `EventHistoryView`
+        here is underneath: the page is now the *contiguous* prefix of the Run's cursors, and a
+        cursor inside a pruned region is refused with `event_cursor_expired` before any page is
+        built. That is why `gap` is still always false in this response, and why this shape cannot
+        state a gap in a success body at all. A caller that wants the three positions apart —
+        `committed` / `published` / `retained_from` — reads `EventHistoryView`
         (contracts/event_stream.py) through the event router, which is the contract the console and
-        the graph are meant to merge on. Raising `event_cursor_expired` for a pruned cursor is the
-        same decision in both shapes: the events are gone, and the answer is a reload, not a page.
+        the graph are meant to merge on.
         """
         if after < 0 or not 1 <= limit <= 500:
             raise ServiceError("invalid_event_cursor", 422)
