@@ -12,7 +12,7 @@ from huntweave.config import database_url
 # direction: a schema this build does not know, either too old to have the columns it reads or
 # newer than what it was tested against. Adding a migration means adding its id here, in the same
 # commit as the migration itself.
-BUSINESS_REVISIONS = ("0008_retention_decisions",)
+BUSINESS_REVISIONS = ("0008_retention_decisions", "0009_planning_attempt_identity")
 
 
 def database_now(session: Session) -> datetime:

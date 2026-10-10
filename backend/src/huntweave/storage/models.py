@@ -75,10 +75,24 @@ class Run(Base):
 
 
 class ResearchTask(Base):
+    """One independent piece of work a role owes this Run.
+
+    A role is not a task. Two Workers of the same Run, or a Worker asked for a second round of
+    evidence after its first task finished, are different tasks with different sessions, model
+    attempts, decisions and calls. ``ordinal`` is what makes that difference part of the key, and
+    the unique constraint turns a collision into a refusal instead of two workers sharing a row.
+    """
+
     __tablename__ = "research_tasks"
+    __table_args__ = (
+        UniqueConstraint("run_id", "role", "ordinal", name="uq_research_tasks_run_role_ordinal"),
+        {"schema": "huntweave"},
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
     role: Mapped[str] = mapped_column(String(20))
+    # Which task of this role in this Run this is: 0 for the first one, 1 for a follow-up round.
+    ordinal: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20))
     step: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
@@ -100,12 +114,63 @@ class AgentSession(Base):
 
 
 class Decision(Base):
+    """One planning attempt: what was asked of the model, and what came back.
+
+    The row is written before the model is called, because the request intent has to be durable
+    before anything leaves the platform. ``status`` says how far it got: ``requested`` is an intent
+    with a frozen input and no answer yet, ``applied`` is an answer the Run committed (and its
+    ``content`` is the decision the graph and the console read), ``refused`` is an answer that
+    arrived after the Run stopped or after the versions it was prepared against moved on, and
+    ``abandoned`` is an intent a later lease generation took over.
+
+    ``content`` carries whatever the model proposed, including a suggestion that was refused: the
+    record keeps the source and the answer even when applying it would be wrong.
+
+    ``usage_state`` is deliberately not a number. A request the provider never accounted for reads
+    ``unknown`` and stays in the pending list; writing zero would claim a cost nobody measured.
+
+    ``task_id`` is what binds a decision to one independent task rather than to a role, and
+    ``input_snapshot`` is the frozen input the answer belongs to — the same content hashed into
+    ``input_hash``, so a replay can tell "the same question" from "a question that looks similar".
+    """
+
     __tablename__ = "decisions"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
     session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.agent_sessions.id"))
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.research_tasks.id"))
     step: Mapped[int] = mapped_column(Integer)
+    # Which attempt at this step this is: the identity of one question, not of the answer to it.
+    attempt_ordinal: Mapped[int] = mapped_column(Integer, default=0)
+    # requested / applied / refused / abandoned.
+    status: Mapped[str] = mapped_column(String(16), default="applied")
     content: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    # The frozen input of the request, and the watermark and versions it was prepared against.
+    input_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_watermark: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    budget_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    run_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    task_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scope_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lease_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Which model request this was, in the deployment's own terms. Plain strings: the harness owns
+    # every framework and vendor type, so no provider object is ever stored here.
+    prompt_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    # The provider's own accounting, verbatim. NULL is "no receipt", never "cost nothing".
+    usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    usage_state: Mapped[str] = mapped_column(String(16), default="unknown")
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The attempt this one retries, so an abandoned request's unknown usage is not lost when the
+    # same step is asked again under a later lease generation.
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("huntweave.decisions.id"), nullable=True
+    )
 
 
 class ToolCall(Base):

@@ -1,10 +1,30 @@
 """Business Interface for durable execution and human controls.
 
-All mutations serialize on the Run row. No Runner or graph call occurs inside a
-business transaction; stable IDs and the transactional outbox survive replay.
+All mutations serialize on the Run row, and each of them is short. The one thing that must never
+happen inside one of these transactions is a model request: a slow adapter would then hold the
+Run's row lock, and pause, cancel, lease renewal and reconciliation would all queue behind it.
+
+Planning is therefore three segments, and each one names where it runs (issue #43,
+`docs/specs/0003-agent-research.md` section 2.2):
+
+1. :meth:`OrchestrationService.begin_planning` — a short transaction. It holds the Run row lock and
+   the task row lock, and it commits the *intent*: the frozen input snapshot, its hash, the event
+   watermark, the budget picture and the versions the answer will be judged against. Then it
+   releases them.
+2. The caller (`harness.graph.plan_step`) builds the request and asks the adapter — outside every
+   transaction, holding no lock at all, for as long as the model takes.
+3. :meth:`OrchestrationService.commit_planning` — a short transaction. It checks the attempt's
+   generation, the task and Run versions and the authorization window it was prepared against, and
+   either commits the answer or records it as refused. A late answer keeps its source and its usage
+   and never restarts work the Run already stopped.
+
+No model, framework or vendor type crosses this module's boundary in a stored value: an adapter
+answer arrives as the harness's own :class:`~huntweave.harness.model.ModelSuggestion` and is stored
+as plain JSON.
 """
 
 import hashlib
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
@@ -35,7 +55,7 @@ from huntweave.contracts.resources import (
     stop_confirmed,
 )
 from huntweave.contracts.runs import ScopeSnapshot
-from huntweave.harness.model import DeterministicModel
+from huntweave.harness.model import PROMPT_VERSION, ModelSuggestion
 from huntweave.runs.events import append_event
 from huntweave.runs.service import RunService
 from huntweave.runs.suspension import Suspension, record_interruption, suspend
@@ -72,6 +92,18 @@ SCENARIOS: dict[str, Literal["success", "failure", "needs_evidence"]] = {
     "negative": "needs_evidence",
     "failure": "failure",
 }
+# A planning attempt is the row that carries one model request. Only `applied` counts as a decision
+# the Run made; the other three exist so an answer the Run would not act on is still recorded.
+ATTEMPT_REQUESTED = "requested"
+ATTEMPT_APPLIED = "applied"
+ATTEMPT_REFUSED = "refused"
+ATTEMPT_ABANDONED = "abandoned"
+# Model accounting is never a number the platform invented: a request the provider did not account
+# for reads `unknown` and stays on the pending list, which is what "仍待核对" means in the record.
+USAGE_KNOWN = "known"
+USAGE_UNKNOWN = "unknown"
+
+
 # The physical-slot reservation is serialised with two-int advisory locks, in a class of this
 # project's own so a new key cannot collide with the single-bigint keys the schema migration, the
 # scheduler lease and the checkpoint setup already hold. Every planner takes the global key first
@@ -107,6 +139,72 @@ def in_flight_call(owner: Any) -> Any:
 
 def stable(run_id: UUID, kind: str) -> UUID:
     return uuid5(run_id, kind)
+
+
+def task_identity(run_id: UUID, role: str, ordinal: int) -> UUID:
+    """The Nth task of one role in one Run.
+
+    A role is not an identity. Two Workers, or one role asked for a second round of evidence, are
+    different tasks; binding the id to the role alone is what made them collide.
+    """
+    return stable(run_id, f"task:{role}:{ordinal}")
+
+
+def session_identity(task_id: UUID) -> UUID:
+    """The session of one task, so a session belongs to the work rather than to the role."""
+    return stable(task_id, "session")
+
+
+def attempt_identity(task_id: UUID, step: int, ordinal: int) -> UUID:
+    """One planning attempt: a stable identity for one question about one step of one task.
+
+    Ordinal, not wall-clock time or a lease generation, is what makes the id reproducible: a replay
+    of the same request finds the same row, while a genuine second question about the same step gets
+    its own.
+    """
+    return stable(task_id, f"plan:{step}:{ordinal}")
+
+
+def model_usage_summary(attempts: list[Decision]) -> dict[str, Any]:
+    """The Run's model accounting, with the unaccounted requests kept apart.
+
+    A request the provider never accounted for is counted in ``unknown`` and named in
+    ``pending_attempt_ids``. It is never folded into the known part and never read as zero: the
+    record has no receipt for it, and a number nobody measured is not a cheaper number.
+    """
+    requests = [x for x in attempts if (x.request_count or 0) > 0]
+    unknown = [x for x in requests if x.usage_state != USAGE_KNOWN]
+    return {
+        "requests": len(requests),
+        "known": len(requests) - len(unknown),
+        "unknown": len(unknown),
+        "pending_attempt_ids": [x.id for x in unknown],
+    }
+
+
+def application_refusal(
+    *,
+    run_status: str,
+    window_refusal: str | None,
+    lease_matches: bool,
+    versions_match: bool,
+) -> str | None:
+    """Why an answer that just came back may not be applied, or ``None`` when it may.
+
+    The order is the operator's order, not the model's: a Run that stopped while the model was
+    thinking answers with the stop itself, before any question about how fresh the answer is. Every
+    code returned here already exists in the platform's vocabulary — a late suggestion is not a new
+    kind of refusal, it is an existing refusal applied to an answer that arrived too late.
+    """
+    if run_status != "running":
+        return "invalid_run_state"
+    if window_refusal is not None:
+        return window_refusal
+    if not lease_matches:
+        return "lease_stale"
+    if not versions_match:
+        return "version_conflict"
+    return None
 
 
 def resolve_target(decision: dict[str, Any], scope: ScopeSnapshot, ordinal: int) -> tuple[str, int]:
@@ -154,7 +252,6 @@ class OrchestrationService:
         self.engine = engine
         self.owner = uuid4()
         self.evidence_root = evidence_root
-        self.model = DeterministicModel()
         # Read once per process, from the deployment's environment: the slot counts are deployment
         # capacity, not something a caller decides per Run. `ResourcePolicy.policy_version` is what
         # a Run records, and `PROJECT.md` section 12 asks for a version bump when the numbers move.
@@ -174,6 +271,13 @@ class OrchestrationService:
         if record is None:
             raise ServiceError("run_not_found", 404)
         return record
+
+    @staticmethod
+    def _agent(session: Session, task: ResearchTask) -> AgentSession:
+        """The session of one task. A role may own several tasks, so the task decides."""
+        agent = session.scalar(select(AgentSession).where(AgentSession.task_id == task.id))
+        assert agent is not None
+        return agent
 
     @staticmethod
     def _event(
@@ -202,14 +306,57 @@ class OrchestrationService:
             )
             self._event(session, run, "tool_held", {"call_id": str(call_id), "reason_code": reason})
 
-    def _new_task(self, session: Session, run: Run, role: str) -> ResearchTask:
-        task_id = stable(run.id, "task:" + role)
+    @staticmethod
+    def _next_ordinal(session: Session, run_id: UUID, role: str) -> int:
+        """How many tasks of this role the Run already has, which is the next task's ordinal."""
+        return int(
+            session.scalar(
+                select(func.count())
+                .select_from(ResearchTask)
+                .where(ResearchTask.run_id == run_id, ResearchTask.role == role)
+            )
+            or 0
+        )
+
+    def _new_task(
+        self, session: Session, run: Run, role: str, *, reason: str = ""
+    ) -> ResearchTask:
+        """The task this role should be working on, created once per round.
+
+        Moving to the next role must not open a second task for a role that still has one; only a
+        completed, cancelled or failed round is finished, and a follow-up for a role that finished
+        (or a second Worker beside a live one) goes through :meth:`open_follow_up_task`.
+        """
+        existing = session.scalar(
+            select(ResearchTask)
+            .where(
+                ResearchTask.run_id == run.id,
+                ResearchTask.role == role,
+                ResearchTask.status.not_in({"completed", "cancelled", "failed"}),
+            )
+            .order_by(ResearchTask.ordinal)
+        )
+        if existing is not None:
+            return existing
+        ordinal = self._next_ordinal(session, run.id, role)
+        return self._create_task(session, run, role, ordinal, reason)
+
+    def _create_task(
+        self, session: Session, run: Run, role: str, ordinal: int, reason: str
+    ) -> ResearchTask:
+        """Create one task of a role with its own session and context.
+
+        The ordinal is part of the id, so a second Worker or a second round of evidence for one role
+        cannot land on the first round's task, session or decisions.
+        """
+        task_id = task_identity(run.id, role, ordinal)
         task = session.get(ResearchTask, task_id)
         if task is None:
             task = ResearchTask(
                 id=task_id,
                 run_id=run.id,
                 role=role,
+                ordinal=ordinal,
                 status="queued",
                 step=0,
                 version=1,
@@ -238,7 +385,7 @@ class OrchestrationService:
                     context["scenario"] = run.demonstration_scenario
             session.add(
                 AgentSession(
-                    id=stable(run.id, "session:" + role),
+                    id=session_identity(task.id),
                     run_id=run.id,
                     task_id=task.id,
                     role=role,
@@ -250,21 +397,17 @@ class OrchestrationService:
                 session,
                 run,
                 "task_created",
-                {"task_id": str(task.id), "role": role, "demonstration": not real},
+                {
+                    "task_id": str(task.id),
+                    "role": role,
+                    "ordinal": ordinal,
+                    "reason": reason,
+                    "demonstration": not real,
+                },
             )
         return task
 
     def claim(self, run_id: UUID | None = None) -> dict[str, Any] | None:
-        """Take the next scheduling turn for one Run, and one only.
-
-        One claim per turn is what makes the single scheduler fair, and it is only fair if the Run
-        it returns can actually move. A Run with a call already in flight cannot: an action is
-        planned only once the previous one is settled, and the dispatcher's own sweep is what keeps
-        that call's ledger and lease fresh. So those Runs are left out of the candidate set rather
-        than claimed and found unable to act — otherwise the oldest Run with a long call would take
-        every turn, and the Runs behind it would never be scheduled at all (ADR-0016: a research
-        item yields the scheduling opportunity once its call is out).
-        """
         with Session(self.engine()) as session, session.begin():
             now = database_now(session)
             query = select(Run).where(Run.status.in_(ACTIVE_RUNS), ~in_flight_call(Run.id))
@@ -277,9 +420,7 @@ class OrchestrationService:
                 .limit(100)
             )
             for run in candidates:
-                if run.status == "waiting":
-                    # Waiting on something that is not an in-flight call: an unconfirmed outcome, a
-                    # human decision or a dependency. None of those is this Run's turn to take.
+                if run.status == "waiting" and not self._active(session, run.id):
                     continue
                 if self._blockers(session, run.id, OUTCOME_UNSETTLED, STOP_UNCONFIRMED):
                     # An unconfirmed outcome is never retried automatically, and an unconfirmed
@@ -329,19 +470,37 @@ class OrchestrationService:
                     if run.status == "waiting"
                     else ("running" if run.status == "running" else run.status)
                 )
-                agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
-                if agent is not None:
-                    agent.status = task.status
+                agent = self._agent(session, task)
+                agent.status = task.status
                 return {
                     "run_id": str(run.id),
                     "task_id": str(task.id),
-                    "session_id": str(stable(run.id, "session:" + task.role)),
+                    "session_id": str(agent.id),
                     "lease_generation": task.lease_generation,
                     "step": task.step,
                 }
         return None
 
-    def plan(self, run_id: UUID, task_id: UUID | str, generation: int) -> dict[str, Any] | None:
+    def begin_planning(
+        self, run_id: UUID, task_id: UUID | str, generation: int
+    ) -> dict[str, Any] | None:
+        """Segment one: freeze what the model will be asked, then release every lock.
+
+        The transaction holds the Run row lock and the task row lock only long enough to write one
+        row: the attempt, carrying the frozen input snapshot, its hash, the event watermark, the
+        budget picture, and the versions and lease generation the answer will be judged against. No
+        adapter is called here, and none is called anywhere in this module.
+
+        It answers with the decision the Run already committed for this step (``kind: reuse``: a
+        replay must not ask the model a second time, and must not dispatch a second call), or with
+        the request to make (``kind: request``), or ``None`` when this Run has nothing to plan now.
+
+        One case sits between reuse and a fresh request: the answer is committed while its call is
+        not, because the physical slot was withheld or the process stopped between the two writes.
+        That answer is dispatched here rather than answered with a bare reuse, so a Run waiting for
+        a slot keeps one decision and one ``decision`` event and still gets its call once the slot
+        comes back.
+        """
         task_id = UUID(str(task_id))
         with Session(self.engine()) as session, session.begin():
             run = self._run(session, run_id)
@@ -357,23 +516,33 @@ class OrchestrationService:
                 raise ServiceError("lease_stale", 409)
             if run.status != "running":
                 return None
-            decision_id = stable(run.id, f"decision:{task.role}:{task.step}")
-            existing = session.get(Decision, decision_id)
-            replacing = (
-                self._redispatch_target(session, existing) if existing is not None else None
-            )
-            # A recorded decision whose call already exists is answered with that record: the graph
-            # replays nodes, and a replay is not a second action. The one case left in between is a
-            # decision that is committed while its call is not — the physical quota refused it, or
-            # the process stopped between the two. That is resumed below with the same decision,
-            # because a Run must not be wedged behind a decision no call can ever complete.
-            resuming = (
-                existing is not None
-                and replacing is None
-                and session.get(ToolCall, stable(existing.id, "call")) is None
-            )
-            if existing is not None and replacing is None and not resuming:
-                return {"id": str(existing.id), **existing.content}
+            agent = self._agent(session, task)
+            decided = self._applied_decision(session, task)
+            if decided is not None:
+                replacing = self._redispatch_target(session, decided)
+                if replacing is None:
+                    if session.get(ToolCall, stable(decided.id, "call")) is not None:
+                        # The answer is recorded and its call already exists: a replay is not a
+                        # second action, so it is answered with the record and no adapter is woken.
+                        return {
+                            "kind": "reuse",
+                            "decision": {"id": str(decided.id), **decided.content},
+                        }
+                    # The answer is committed while its call is not. The planner is completing it,
+                    # not deciding again: no model is asked, nothing is written twice, and the Run
+                    # is not left waiting behind a decision no call can ever complete.
+                    return self._dispatch(
+                        session, run, task, agent, decided, generation, now, replacing=None
+                    )
+                # An authorised re-dispatch is not a model question: the answer is already recorded
+                # and a verdict proved the original call never ran. It commits in this same short
+                # transaction, because no judgement and no adapter is involved.
+                redispatch = self._commit_redispatch(
+                    session, run, task, agent, decided, replacing, task.lease_generation, now
+                )
+                if redispatch is None:
+                    return None
+                return {"kind": "reuse", "decision": redispatch}
             # Reconcile an existing accepted call before any fresh decision.
             active = session.scalar(
                 select(ToolCall).where(
@@ -398,302 +567,717 @@ class OrchestrationService:
                     ),
                 )
                 return None
-            agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
-            assert agent is not None
-            if replacing is not None:
-                # The operator's verdict proved the original call never ran, so the same
-                # decision is dispatched again: a new call id, related to the call it
-                # replaces, and never a second action invented for the same step.
-                assert existing is not None
-                decision_id = replacing.decision_id
-                decision = existing.content
-                session.add(
-                    Decision(
-                        id=decision_id,
-                        run_id=run.id,
-                        session_id=agent.id,
-                        step=task.step,
-                        content=decision,
-                    )
-                )
-                session.flush()
+            attempt = self._open_attempt(session, run, task, agent, scope, generation, now)
+            return {
+                "kind": "request",
+                "attempt_id": str(attempt.id),
+                "role": task.role,
+                "step": task.step,
+                "input_hash": attempt.input_hash,
+                "prompt_version": attempt.prompt_version,
+                "context": dict(attempt.input_snapshot or {}),
+            }
+
+    def commit_planning(
+        self, attempt_id: UUID | str, suggestion: ModelSuggestion
+    ) -> dict[str, Any] | None:
+        """Segment three: judge an answer against what the Run still is, then commit or refuse it.
+
+        Short transaction; holds the Run row lock and the task row lock. The answer, its source and
+        its usage are stored either way — a suggestion the Run refuses is still a fact about this
+        Run, and the one thing that must not happen is applying it to a Run that has moved on. A
+        refused answer never restarts the work the Run already stopped.
+        """
+        attempt_id = UUID(str(attempt_id))
+        with Session(self.engine()) as session, session.begin():
+            attempt = session.get(Decision, attempt_id, with_for_update=True)
+            if attempt is None:
+                raise ServiceError("task_not_found", 404)
+            run = self._run(session, attempt.run_id)
+            task = session.get(ResearchTask, attempt.task_id, with_for_update=True)
+            if task is None:
+                raise ServiceError("task_not_found", 404)
+            agent = self._agent(session, task)
+            now = database_now(session)
+            if attempt.status != ATTEMPT_REQUESTED:
+                # Replaying a committed attempt returns what was committed. A refused or abandoned
+                # one has nothing to return, and asking the same stale question again would only
+                # spend a second request on an answer the Run has already declined.
+                if attempt.status == ATTEMPT_APPLIED:
+                    return {"id": str(attempt.id), **attempt.content}
+                return None
+            self._record_answer(attempt, suggestion, now)
+            scope = ScopeSnapshot.model_validate(run.scope_snapshot)
+            refusal = application_refusal(
+                run_status=run.status,
+                window_refusal=self._window_refusal(scope, now),
+                lease_matches=bool(
+                    task.lease_generation == attempt.lease_generation
+                    and task.lease_expires_at is not None
+                    and task.lease_expires_at > now
+                ),
+                versions_match=bool(
+                    task.version == attempt.task_version and run.version == attempt.run_version
+                ),
+            )
+            if refusal is not None:
+                self._refuse_attempt(session, run, task, attempt, refusal)
+                return None
+            attempt.status = ATTEMPT_APPLIED
+            self._event(
+                session,
+                run,
+                "decision",
+                {"decision_id": str(attempt.id), "session_id": str(agent.id), **attempt.content},
+            )
+            self._event(
+                session,
+                run,
+                "model_answered",
+                {
+                    "attempt_id": str(attempt.id),
+                    "task_id": str(task.id),
+                    "role": task.role,
+                    "step": task.step,
+                    "input_hash": attempt.input_hash,
+                    "provider": attempt.provider,
+                    "model": attempt.model_name,
+                    "prompt_version": attempt.prompt_version,
+                    "usage_known": attempt.usage_state == USAGE_KNOWN,
+                },
+            )
+            return self._dispatch(
+                session, run, task, agent, attempt, task.lease_generation, now, replacing=None
+            )
+
+    def record_model_usage(self, attempt_id: UUID | str, receipt: dict[str, Any]) -> dict[str, Any]:
+        """Attach the provider's late accounting to one model request.
+
+        This is how a request leaves the pending list: because a receipt now exists for it, never
+        because the platform decided its cost was zero. Changing a receipt that was already
+        recorded is refused rather than rewritten in place, the same way a reconciliation verdict is
+        — repeating the same receipt is idempotent.
+        """
+        attempt_id = UUID(str(attempt_id))
+        with Session(self.engine()) as session, session.begin():
+            attempt = session.get(Decision, attempt_id, with_for_update=True)
+            if attempt is None:
+                raise ServiceError("task_not_found", 404)
+            run = self._run(session, attempt.run_id)
+            if attempt.usage_state == USAGE_KNOWN:
+                if attempt.usage != receipt:
+                    raise ServiceError("reconciliation_conflict", 409)
+                return self._attempt_view(attempt, self._role_of(session, attempt))
+            attempt.usage = dict(receipt)
+            attempt.usage_state = USAGE_KNOWN
+            self._event(
+                session,
+                run,
+                "model_usage_recorded",
+                {
+                    "attempt_id": str(attempt.id),
+                    "input_hash": attempt.input_hash,
+                    "usage": dict(receipt),
+                },
+            )
+            return self._attempt_view(attempt, self._role_of(session, attempt))
+
+    def open_follow_up_task(self, run_id: UUID, role: str, reason: str = "") -> dict[str, Any]:
+        """Open another task for a role that already has one in this Run.
+
+        A second Worker, or a role asked for a second round of evidence, is a new task: its own
+        session, its own planning attempts, its own decisions and calls. `runs` owns task creation,
+        so the follow-up is committed here and the model only ever proposes it.
+        """
+        if role not in ROLES:
+            raise ServiceError("invalid_request", 422)
+        with Session(self.engine()) as session, session.begin():
+            run = self._run(session, run_id)
+            if run.status != "running":
+                raise ServiceError("invalid_run_state", 409)
+            task = self._create_task(
+                session, run, role, self._next_ordinal(session, run.id, role), reason
+            )
+            return {
+                "run_id": str(run.id),
+                "task_id": str(task.id),
+                "session_id": str(session_identity(task.id)),
+                "role": task.role,
+                "ordinal": task.ordinal,
+            }
+
+    def _open_attempt(
+        self,
+        session: Session,
+        run: Run,
+        task: ResearchTask,
+        agent: AgentSession,
+        scope: ScopeSnapshot,
+        generation: int,
+        now: datetime,
+    ) -> Decision:
+        """Write the intent to ask the model, with everything the answer will be judged against.
+
+        The snapshot is frozen by value and hashed: an answer that comes back later is compared with
+        the question that was really asked, even after the session context has moved on.
+        """
+        latest = self._latest_attempt(session, task)
+        if latest is not None and latest.status == ATTEMPT_REQUESTED:
+            if latest.lease_generation == generation:
+                # This generation already asked the question and nothing has answered it yet: the
+                # caller gets the same frozen input back rather than a second question.
+                return latest
+            # A later lease generation took the step over while the request was out. The old intent
+            # stays on the record with its usage unknown; this one is a new attempt that names it.
+            latest.status = ATTEMPT_ABANDONED
+            latest.finished_at = now
+        ordinal = int(
+            session.scalar(
+                select(func.count())
+                .select_from(Decision)
+                .where(Decision.task_id == task.id, Decision.step == task.step)
+            )
+            or 0
+        )
+        watermark = session.get(EventCursor, run.id)
+        deadline = min(
+            scope.expires_at,
+            run.started_at + timedelta(seconds=scope.budget.max_wall_seconds)
+            if run.started_at
+            else scope.expires_at,
+        )
+        budget: dict[str, Any] = {
+            "reserved_tool_calls": self._reserved(session, run.id),
+            "max_tool_calls": scope.budget.max_tool_calls,
+            "max_output_bytes": scope.budget.max_output_bytes,
+            "deadline_at": deadline.isoformat(),
+        }
+        snapshot: dict[str, Any] = {
+            **agent.context,
+            "task": {
+                "id": str(task.id),
+                "role": task.role,
+                "ordinal": task.ordinal,
+                "step": task.step,
+                "version": task.version,
+            },
+            "watermark": watermark.cursor if watermark else 0,
+            "budget": budget,
+            "outstanding_conditions": sorted(
+                {item for _, items in self._outstanding(session, run.id) for item in items}
+            ),
+        }
+        canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+        attempt = Decision(
+            id=attempt_identity(task.id, task.step, ordinal),
+            run_id=run.id,
+            session_id=agent.id,
+            task_id=task.id,
+            step=task.step,
+            status=ATTEMPT_REQUESTED,
+            content={},
+            attempt_ordinal=ordinal,
+            # The stored snapshot is the canonical form the hash was taken from, so re-serialising
+            # what the database returns gives the same digest the record names.
+            input_snapshot=json.loads(canonical),
+            input_hash=hashlib.sha256(canonical.encode()).hexdigest(),
+            input_watermark=watermark.cursor if watermark else 0,
+            budget_snapshot=budget,
+            run_version=run.version,
+            task_version=task.version,
+            scope_version=run.scope_version,
+            lease_generation=generation,
+            prompt_version=PROMPT_VERSION,
+            # The intent is one request. Whether the provider accounted for it is recorded
+            # separately, and starts as "no receipt", which is what keeps it on the pending list.
+            request_count=1,
+            usage=None,
+            usage_state=USAGE_UNKNOWN,
+            supersedes_id=latest.id if latest is not None else None,
+            created_at=now,
+        )
+        session.add(attempt)
+        session.flush()
+        self._event(
+            session,
+            run,
+            "model_requested",
+            {
+                "attempt_id": str(attempt.id),
+                "task_id": str(task.id),
+                "session_id": str(agent.id),
+                "role": task.role,
+                "step": task.step,
+                "input_hash": attempt.input_hash,
+                "prompt_version": attempt.prompt_version,
+                "watermark": attempt.input_watermark,
+                "run_version": run.version,
+                "task_version": task.version,
+                "lease_generation": generation,
+                "supersedes_id": str(latest.id) if latest is not None else None,
+            },
+        )
+        return attempt
+
+    @staticmethod
+    def _record_answer(attempt: Decision, suggestion: ModelSuggestion, now: datetime) -> None:
+        """Store what came back, before any judgement about whether it may be applied.
+
+        A missing receipt is stored as missing. It is not a zero, and it does not become one here.
+        """
+        receipt = suggestion.usage.receipt
+        attempt.content = dict(suggestion.content)
+        attempt.provider = suggestion.provider
+        attempt.model_name = suggestion.model
+        attempt.prompt_version = suggestion.prompt_version or attempt.prompt_version
+        attempt.usage = dict(receipt) if receipt is not None else None
+        attempt.usage_state = USAGE_KNOWN if suggestion.usage.known else USAGE_UNKNOWN
+        attempt.finished_at = now
+
+    def _refuse_attempt(
+        self, session: Session, run: Run, task: ResearchTask, attempt: Decision, refusal: str
+    ) -> None:
+        """Keep the answer and its source, refuse to apply it, and change no work of the Run's."""
+        attempt.status = ATTEMPT_REFUSED
+        attempt.reason_code = refusal
+        self._event(
+            session,
+            run,
+            "model_suggestion_refused",
+            {
+                "attempt_id": str(attempt.id),
+                "task_id": str(task.id),
+                "role": task.role,
+                "step": task.step,
+                "reason_code": refusal,
+                "input_hash": attempt.input_hash,
+                "provider": attempt.provider,
+                "model": attempt.model_name,
+                "usage_known": attempt.usage_state == USAGE_KNOWN,
+                "run_version": run.version,
+                "task_version": task.version,
+            },
+        )
+        if refusal == "authorization_expired":
+            # The window this answer was prepared under is gone, so the Run waits for a new
+            # authorization. Recording the answer is not a reason to re-open the research.
+            suspend(
+                session,
+                run,
+                Suspension(
+                    reason_code=refusal,
+                    recovery_condition="A new authorized Run is required after expiry.",
+                ),
+            )
+
+    def _commit_redispatch(
+        self,
+        session: Session,
+        run: Run,
+        task: ResearchTask,
+        agent: AgentSession,
+        decided: Decision,
+        replacing: Redispatch,
+        generation: int,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        """Dispatch one recorded decision again under a new call id.
+
+        A verdict proved the original call never ran, so the same answer goes out once more, related
+        to the call it replaces. The new row carries the original's provenance — it is the same
+        answer — and is not a new model request, so it adds nothing to the request count.
+        """
+        attempt = Decision(
+            id=replacing.decision_id,
+            run_id=run.id,
+            session_id=agent.id,
+            task_id=task.id,
+            step=task.step,
+            status=ATTEMPT_APPLIED,
+            content=dict(decided.content),
+            attempt_ordinal=decided.attempt_ordinal,
+            input_snapshot=decided.input_snapshot,
+            input_hash=decided.input_hash,
+            input_watermark=decided.input_watermark,
+            budget_snapshot=decided.budget_snapshot,
+            run_version=run.version,
+            task_version=task.version,
+            scope_version=run.scope_version,
+            lease_generation=generation,
+            prompt_version=decided.prompt_version,
+            provider=decided.provider,
+            model_name=decided.model_name,
+            request_count=0,
+            usage=None,
+            usage_state=USAGE_KNOWN,
+            created_at=now,
+        )
+        session.add(attempt)
+        session.flush()
+        self._event(
+            session,
+            run,
+            "decision",
+            {
+                "decision_id": str(attempt.id),
+                "session_id": str(agent.id),
+                "redispatch_of": str(replacing.replaced_call_id),
+                **attempt.content,
+            },
+        )
+        return self._dispatch(
+            session, run, task, agent, attempt, generation, now, replacing=replacing
+        )
+
+    def _dispatch(
+        self,
+        session: Session,
+        run: Run,
+        task: ResearchTask,
+        agent: AgentSession,
+        attempt: Decision,
+        generation: int,
+        now: datetime,
+        *,
+        replacing: Redispatch | None,
+    ) -> dict[str, Any] | None:
+        """Commit one accepted answer: the decision, and at most one call for it.
+
+        ``None`` is the one answer the Run records but does not turn into an action: a plan whose
+        named target is outside the authorization. The decision stays on the record and the Run
+        says why nothing was dispatched.
+        """
+        decision = attempt.content
+        decision_id = attempt.id
+        scope = ScopeSnapshot.model_validate(run.scope_snapshot)
+        if decision["action"] == "finish_research":
+            task.status = "completed"
+            task.version += 1
+            agent.status = "completed"
+            self._event(
+                session, run, "task_completed", {"task_id": str(task.id), "role": task.role}
+            )
+            index = ROLES.index(task.role)
+            if index < 2:
+                self._new_task(session, run, ROLES[index + 1])
+                run.phase = "researching" if index == 0 else "reviewing"
+                run.version += 1
+            else:
+                run.status = "waiting"
+                run.phase = "awaiting_human"
+                run.version += 1
                 self._event(
                     session,
                     run,
-                    "decision",
+                    "automatic_stage_finished",
                     {
-                        "decision_id": str(decision_id),
-                        "session_id": str(agent.id),
-                        "redispatch_of": str(replacing.replaced_call_id),
-                        **decision,
+                        "demonstration": run.execution_profile == "fake-p0-v1",
+                        "execution_profile": run.execution_profile,
+                        "version": run.version,
+                        "summary": (
+                            "Fixed fake execution; no real vulnerability conclusion."
+                            if run.execution_profile == "fake-p0-v1"
+                            else "Real execution against the real authorized targets; "
+                            "conclusions still need review."
+                        ),
                     },
                 )
-            elif resuming:
-                # The decision is already recorded and does not change: the planner is completing
-                # it, not deciding again. Nothing is written here, so a Run that waits several
-                # passes for a slot keeps one decision and one `decision` event.
-                assert existing is not None
-                decision_id = existing.id
-                decision = existing.content
-            else:
-                decision = self.model.decide(task.role, task.step, agent.context)
-                session.add(
-                    Decision(
-                        id=decision_id,
-                        run_id=run.id,
-                        session_id=agent.id,
-                        step=task.step,
-                        content=decision,
-                    )
+            return {"id": str(decision_id), **decision}
+        used = self._reserved(session, run.id)
+        output = (
+            session.scalar(
+                select(func.coalesce(func.sum(BudgetReservation.output_bytes), 0)).where(
+                    BudgetReservation.run_id == run.id
                 )
-                session.flush()
-                self._event(
-                    session,
-                    run,
-                    "decision",
-                    {"decision_id": str(decision_id), "session_id": str(agent.id), **decision},
-                )
-            if decision["action"] == "finish_research":
-                task.status = "completed"
-                task.version += 1
-                agent.status = "completed"
-                self._event(
-                    session, run, "task_completed", {"task_id": str(task.id), "role": task.role}
-                )
-                index = ROLES.index(task.role)
-                if index < 2:
-                    self._new_task(session, run, ROLES[index + 1])
-                    run.phase = "researching" if index == 0 else "reviewing"
-                    run.version += 1
-                else:
-                    run.status = "waiting"
-                    run.phase = "awaiting_human"
-                    run.version += 1
-                    self._event(
-                        session,
-                        run,
-                        "automatic_stage_finished",
-                        {
-                            "demonstration": run.execution_profile == "fake-p0-v1",
-                            "execution_profile": run.execution_profile,
-                            "version": run.version,
-                            "summary": (
-                                "Fixed fake execution; no real vulnerability conclusion."
-                                if run.execution_profile == "fake-p0-v1"
-                                else "Real execution against the real authorized targets; "
-                                "conclusions still need review."
-                            ),
-                        },
-                    )
-                return {"id": str(decision_id), **decision}
-            used = (
+            )
+            or 0
+        )
+        if (
+            used >= scope.budget.max_tool_calls
+            or output >= scope.budget.max_output_bytes
+            or (
+                run.started_at
+                and now >= run.started_at + timedelta(seconds=scope.budget.max_wall_seconds)
+            )
+        ):
+            suspend(
+                session,
+                run,
+                Suspension(
+                    reason_code="budget_exhausted",
+                    recovery_condition="Create a new Run with a sufficient budget; "
+                    "this reservation is not reset.",
+                ),
+                task=task,
+                agent=agent,
+            )
+            return {"id": str(decision_id), **decision}
+        replaces: UUID | None = None
+        if replacing is None:
+            call_id = stable(decision_id, "call")
+            planned_calls = (
                 session.scalar(
-                    select(func.count())
-                    .select_from(BudgetReservation)
-                    .where(BudgetReservation.run_id == run.id)
+                    select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run.id)
                 )
                 or 0
             )
-            output = (
-                session.scalar(
-                    select(func.coalesce(func.sum(BudgetReservation.output_bytes), 0)).where(
-                        BudgetReservation.run_id == run.id
-                    )
-                )
-                or 0
-            )
-            if (
-                used >= scope.budget.max_tool_calls
-                or output >= scope.budget.max_output_bytes
-                or (
-                    run.started_at
-                    and now >= run.started_at + timedelta(seconds=scope.budget.max_wall_seconds)
-                )
-            ):
+            try:
+                bound_ip, bound_port = resolve_target(decision, scope, planned_calls)
+            except ServiceError as error:
+                # No ticket, no reservation and no outbox entry: a plan aimed outside the
+                # authorization is refused before it can hold budget or reach the Runner.
                 suspend(
                     session,
                     run,
                     Suspension(
-                        reason_code="budget_exhausted",
-                        recovery_condition="Create a new Run with a sufficient budget; "
-                        "this reservation is not reset.",
+                        reason_code=error.reason_code,
+                        recovery_condition="Plan an authorized target, or widen the "
+                        "authorization snapshot.",
                     ),
                     task=task,
                     agent=agent,
                 )
-                return {"id": str(decision_id), **decision}
-            replaces: UUID | None = None
-            if replacing is None:
-                call_id = stable(decision_id, "call")
-                planned_calls = (
-                    session.scalar(
-                        select(func.count()).select_from(ToolCall).where(ToolCall.run_id == run.id)
-                    )
-                    or 0
-                )
-                try:
-                    bound_ip, bound_port = resolve_target(decision, scope, planned_calls)
-                except ServiceError as error:
-                    # No ticket, no reservation and no outbox entry: a plan aimed outside the
-                    # authorization is refused before it can hold budget or reach the Runner.
-                    suspend(
-                        session,
-                        run,
-                        Suspension(
-                            reason_code=error.reason_code,
-                            recovery_condition="Plan an authorized target, or widen the "
-                            "authorization snapshot.",
-                        ),
-                        task=task,
-                        agent=agent,
-                    )
-                    self._event(
-                        session,
-                        run,
-                        "scope_denied",
-                        {
-                            "decision_id": str(decision_id),
-                            "action": decision["action"],
-                            "planned_target_ip": decision.get("target_ip"),
-                            "planned_target_port": decision.get("target_port"),
-                            "authorized_targets": len(scope.targets),
-                            "authorized_ports": len(scope.ports),
-                        },
-                    )
-                    return None
-            else:
-                # A re-dispatch replays one original action, so it keeps that action's
-                # binding: the same plan must not act on a second endpoint the first one
-                # was never authorized to move to.
-                replaced = session.get(ToolCall, replacing.replaced_call_id)
-                assert replaced is not None
-                call_id = replacing.call_id
-                replaces = replacing.replaced_call_id
-                bound_ip, bound_port = (
-                    str(replaced.ticket["target_ip"]),
-                    int(replaced.ticket["target_port"]),
-                )
-            # The addresses this action will really reach. A ticket binds exactly one endpoint
-            # today, so this is one address; a ticket that later names several lists every one of
-            # them here, because the rule is "check every address the action really reaches" and a
-            # single-entry tuple is what makes that a one-line change rather than a new seam.
-            targets: tuple[str, ...] = (bound_ip,)
-            # The physical slot is reserved here, in the same short transaction as the budget, the
-            # call and the outbox entry: a refusal leaves nothing behind to release (spec 0006
-            # section 7). The lock is taken before the count so the count cannot be stale, and the
-            # call that consumes the slot is written under it.
-            self._lock_execution_slots(session, targets)
-            quota = self._execution_quota(session)
-            refused = slot_wait(quota, targets)
-            if refused is not None:
-                # Backpressure, not a refusal: the Run keeps its budget, its lease and its place,
-                # and the same action is offered again as soon as the slot is returned. Nothing is
-                # claimed here, so no budget, reservation or outbox entry is left for a call that
-                # never ran. A controlled re-dispatch is gated by the same rule because it is a
-                # real execution too.
                 self._event(
                     session,
                     run,
-                    "execution_backpressure",
+                    "scope_denied",
                     {
                         "decision_id": str(decision_id),
                         "action": decision["action"],
-                        "waiting_category": refused.category,
-                        "resource": refused.resource,
-                        "holders": refused.holders,
-                        "limit": refused.limit,
-                        "global_used": quota.global_used,
-                        "global_limit": quota.global_limit,
-                        "policy_version": quota.policy_version,
-                        "recovery_condition": refused.recovery_condition,
+                        "planned_target_ip": decision.get("target_ip"),
+                        "planned_target_port": decision.get("target_port"),
+                        "authorized_targets": len(scope.targets),
+                        "authorized_ports": len(scope.ports),
                     },
-                    # One entry per decision: a Run waiting several passes for the same slot says so
-                    # once, instead of appending the same sentence twice a second. A later step is a
-                    # different decision and gets its own entry.
-                    str(decision_id) + ":backpressure",
                 )
                 return None
-            reservation_id = stable(call_id, "reservation")
-            # The Run's own mode, narrowed to the profiles this build serves: a Run reads its
-            # profile once and every ticket it produces belongs to it.
-            profile: ExecutionProfile = (
-                "real-lab-v1" if run.execution_profile == "real-lab-v1" else "fake-p0-v1"
+        else:
+            # A re-dispatch replays one original action, so it keeps that action's
+            # binding: the same plan must not act on a second endpoint the first one
+            # was never authorized to move to.
+            replaced = session.get(ToolCall, replacing.replaced_call_id)
+            assert replaced is not None
+            call_id = replacing.call_id
+            replaces = replacing.replaced_call_id
+            bound_ip, bound_port = (
+                str(replaced.ticket["target_ip"]),
+                int(replaced.ticket["target_port"]),
             )
-            if profile == "fake-p0-v1":
-                fake = FakeParameters(
-                    scenario=SCENARIOS[run.demonstration_scenario],
-                    duration_ms=run.demonstration_duration_ms,
-                )
-                parameters = fake.model_dump()
-            else:
-                # A real plan carries the parameters of the action it named, and the ticket's own
-                # contract validates them against that action's schema. A plan that cannot be
-                # expressed is refused rather than passed on as something else.
-                parameters = dict(decision.get("parameters") or {})
-            deadline = min(
-                scope.expires_at,
-                now + timedelta(seconds=45),
-                run.started_at + timedelta(seconds=scope.budget.max_wall_seconds)
-                if run.started_at
-                else scope.expires_at,
-            )
-            try:
-                ticket = ExecutionRequest(
-                    call_id=call_id,
-                    run_id=run.id,
-                    session_id=agent.id,
-                    decision_id=decision_id,
-                    scope_id=run.scope_id,
-                    budget_reservation_id=reservation_id,
-                    action_id=decision["action"],
-                    parameters=parameters,
-                    parameters_hash=parameters_hash(parameters),
-                    scope_version=run.scope_version,
-                    policy_version=scope.policy_version,
-                    lease_generation=generation,
-                    lease_expires_at=task.lease_expires_at,
-                    deadline_at=deadline,
-                    authorized_until=scope.expires_at,
-                    execution_profile=profile,
-                    target_ip=ip_address(bound_ip),
-                    target_port=bound_port,
-                )
-            except ValidationError:
-                # The plan named an action this Run's profile does not serve, or parameters its
-                # schema does not accept: that call never runs, and the Run says why.
-                raise ServiceError("action_not_in_profile", 409) from None
-            session.add(
-                ToolCall(
-                    id=call_id,
-                    run_id=run.id,
-                    session_id=agent.id,
-                    decision_id=decision_id,
-                    status="planned",
-                    ticket=ticket.model_dump(mode="json"),
-                    created_at=now,
-                    replaces_call_id=replaces,
-                )
-            )
-            session.flush()
-            session.add(
-                BudgetReservation(
-                    id=reservation_id, run_id=run.id, call_id=call_id, settled=False, output_bytes=0
-                )
-            )
-            session.add(Outbox(call_id=call_id, acknowledged=False))
+        # The addresses this action will really reach. A ticket binds exactly one endpoint
+        # today, so this is one address; a ticket that later names several lists every one of
+        # them here, because the rule is "check every address the action really reaches" and a
+        # single-entry tuple is what makes that a one-line change rather than a new seam.
+        targets: tuple[str, ...] = (bound_ip,)
+        # The physical slot is reserved here, in the same short transaction as the budget, the
+        # call and the outbox entry: a refusal leaves nothing behind to release (spec 0006
+        # section 7). The lock is taken before the count so the count cannot be stale, and the
+        # call that consumes the slot is written under it.
+        self._lock_execution_slots(session, targets)
+        quota = self._execution_quota(session)
+        refused = slot_wait(quota, targets)
+        if refused is not None:
+            # Backpressure, not a refusal: the Run keeps its budget, its lease and its place,
+            # and the same action is offered again as soon as the slot is returned. Nothing is
+            # claimed here, so no budget, reservation or outbox entry is left for a call that
+            # never ran. A controlled re-dispatch is gated by the same rule because it is a
+            # real execution too.
             self._event(
                 session,
                 run,
-                "tool_planned",
+                "execution_backpressure",
                 {
-                    "call_id": str(call_id),
+                    "decision_id": str(decision_id),
                     "action": decision["action"],
-                    "parameters": parameters,
-                    "execution_profile": run.execution_profile,
-                    "demonstration": run.execution_profile == "fake-p0-v1",
+                    "waiting_category": refused.category,
+                    "resource": refused.resource,
+                    "holders": refused.holders,
+                    "limit": refused.limit,
+                    "global_used": quota.global_used,
+                    "global_limit": quota.global_limit,
+                    "policy_version": quota.policy_version,
+                    "recovery_condition": refused.recovery_condition,
                 },
+                # One entry per decision: a Run waiting several passes for the same slot says so
+                # once, instead of appending the same sentence twice a second. A later step is a
+                # different decision and gets its own entry.
+                str(decision_id) + ":backpressure",
             )
-            return {"id": str(decision_id), **decision}
+            return None
+        reservation_id = stable(call_id, "reservation")
+        # The Run's own mode, narrowed to the profiles this build serves: a Run reads its
+        # profile once and every ticket it produces belongs to it.
+        profile: ExecutionProfile = (
+            "real-lab-v1" if run.execution_profile == "real-lab-v1" else "fake-p0-v1"
+        )
+        if profile == "fake-p0-v1":
+            fake = FakeParameters(
+                scenario=SCENARIOS[run.demonstration_scenario],
+                duration_ms=run.demonstration_duration_ms,
+            )
+            parameters = fake.model_dump()
+        else:
+            # A real plan carries the parameters of the action it named, and the ticket's own
+            # contract validates them against that action's schema. A plan that cannot be
+            # expressed is refused rather than passed on as something else.
+            parameters = dict(decision.get("parameters") or {})
+        # The caller validated this lease before it committed the answer; the ticket carries it so
+        # the execution side can fence a control request that outlived it.
+        lease_expires_at = task.lease_expires_at
+        assert lease_expires_at is not None
+        deadline = min(
+            scope.expires_at,
+            now + timedelta(seconds=45),
+            run.started_at + timedelta(seconds=scope.budget.max_wall_seconds)
+            if run.started_at
+            else scope.expires_at,
+        )
+        try:
+            ticket = ExecutionRequest(
+                call_id=call_id,
+                run_id=run.id,
+                session_id=agent.id,
+                decision_id=decision_id,
+                scope_id=run.scope_id,
+                budget_reservation_id=reservation_id,
+                action_id=decision["action"],
+                parameters=parameters,
+                parameters_hash=parameters_hash(parameters),
+                scope_version=run.scope_version,
+                policy_version=scope.policy_version,
+                lease_generation=generation,
+                lease_expires_at=lease_expires_at,
+                deadline_at=deadline,
+                authorized_until=scope.expires_at,
+                execution_profile=profile,
+                target_ip=ip_address(bound_ip),
+                target_port=bound_port,
+            )
+        except ValidationError:
+            # The plan named an action this Run's profile does not serve, or parameters its
+            # schema does not accept: that call never runs, and the Run says why.
+            raise ServiceError("action_not_in_profile", 409) from None
+        session.add(
+            ToolCall(
+                id=call_id,
+                run_id=run.id,
+                session_id=agent.id,
+                decision_id=decision_id,
+                status="planned",
+                ticket=ticket.model_dump(mode="json"),
+                created_at=now,
+                replaces_call_id=replaces,
+            )
+        )
+        session.flush()
+        session.add(
+            BudgetReservation(
+                id=reservation_id, run_id=run.id, call_id=call_id, settled=False, output_bytes=0
+            )
+        )
+        session.add(Outbox(call_id=call_id, acknowledged=False))
+        self._event(
+            session,
+            run,
+            "tool_planned",
+            {
+                "call_id": str(call_id),
+                "action": decision["action"],
+                "parameters": parameters,
+                "execution_profile": run.execution_profile,
+                "demonstration": run.execution_profile == "fake-p0-v1",
+            },
+        )
+        return {"id": str(decision_id), **decision}
+
+    @staticmethod
+    def _reserved(session: Session, run_id: UUID) -> int:
+        return int(
+            session.scalar(
+                select(func.count())
+                .select_from(BudgetReservation)
+                .where(BudgetReservation.run_id == run_id)
+            )
+            or 0
+        )
+
+    @staticmethod
+    def _window_refusal(scope: ScopeSnapshot, now: datetime) -> str | None:
+        """The authorization window's own refusal code, or ``None`` while it covers the Run."""
+        try:
+            RunService._check_window(scope, now)
+        except ServiceError as error:
+            return error.reason_code
+        return None
+
+    @staticmethod
+    def _applied_decision(session: Session, task: ResearchTask) -> Decision | None:
+        """The decision this Run already committed for this step, if it made one.
+
+        The oldest row at the step: a later row with the same step is the re-dispatch of this
+        answer, and the verdict on the original is what drives that.
+        """
+        return session.scalar(
+            select(Decision)
+            .where(
+                Decision.task_id == task.id,
+                Decision.step == task.step,
+                Decision.status == ATTEMPT_APPLIED,
+            )
+            .order_by(Decision.created_at, Decision.id)
+            .limit(1)
+        )
+
+    @staticmethod
+    def _latest_attempt(session: Session, task: ResearchTask) -> Decision | None:
+        """The newest planning attempt recorded for this step of this task."""
+        return session.scalar(
+            select(Decision)
+            .where(Decision.task_id == task.id, Decision.step == task.step)
+            .order_by(
+                Decision.attempt_ordinal.desc(),
+                Decision.created_at.desc(),
+                Decision.id.desc(),
+            )
+            .limit(1)
+        )
+
+    @staticmethod
+    def _role_of(session: Session, attempt: Decision) -> str:
+        agent = session.get(AgentSession, attempt.session_id)
+        return agent.role if agent is not None else ""
+
+    @staticmethod
+    def _attempt_view(attempt: Decision, role: str) -> dict[str, Any]:
+        return {
+            "id": str(attempt.id),
+            "run_id": str(attempt.run_id),
+            "task_id": str(attempt.task_id),
+            "session_id": str(attempt.session_id),
+            "role": role,
+            "step": attempt.step,
+            "attempt_ordinal": attempt.attempt_ordinal or 0,
+            "status": attempt.status,
+            "input_hash": attempt.input_hash,
+            "input_watermark": attempt.input_watermark,
+            "budget_snapshot": attempt.budget_snapshot,
+            "run_version": attempt.run_version,
+            "task_version": attempt.task_version,
+            "scope_version": attempt.scope_version,
+            "lease_generation": attempt.lease_generation,
+            "prompt_version": attempt.prompt_version,
+            "provider": attempt.provider,
+            "model": attempt.model_name,
+            "request_count": attempt.request_count or 0,
+            "usage": {
+                "known": attempt.usage_state == USAGE_KNOWN,
+                "receipt": attempt.usage,
+            },
+            "reason_code": attempt.reason_code,
+            "supersedes_id": str(attempt.supersedes_id) if attempt.supersedes_id else None,
+            "suggestion": dict(attempt.content) if attempt.status != ATTEMPT_REQUESTED else None,
+            "created_at": attempt.created_at,
+            "finished_at": attempt.finished_at,
+        }
 
     def pending(self, run_id: UUID) -> list[dict[str, Any]]:
         with Session(self.engine()) as session:
@@ -725,6 +1309,7 @@ class OrchestrationService:
                 for call, verdict in rows
                 if call.status not in TERMINAL_CALLS or verdict is not None
             ]
+
 
     def reconcilable_runs(self, limit: int = 20, offset: int = 0) -> list[UUID]:
         """Live Runs with at least one call left to reconcile, oldest first, for a sweep."""
@@ -1184,8 +1769,8 @@ class OrchestrationService:
 
         Derived rather than kept in a second ledger: a slot is held exactly while the execution side
         has not confirmed that nothing the call started is still running, which is the same fact the
-        console shows as 停止未确认. One grouped query answers both limits, so the global count and
-        the per-address counts cannot come from two different moments.
+        console shows as a stop nobody confirmed. One grouped query answers both limits, so the
+        global count and the per-address counts cannot come from two different moments.
 
         `LIVE_SLOT_SQL` is the only reader of the rule in SQL; the Python spelling of the same rule
         is `holds_physical_slot`, and `tests/test_execution_quota.py` compares the two case by case.
@@ -1234,8 +1819,8 @@ class OrchestrationService:
             unsettled = verdict is None or verdict.outcome == "undetermined"
             if call.status == "unknown" and unsettled:
                 conditions.append(OUTCOME_UNSETTLED)
-            # The same rule the occupancy query counts with, read as the slot this call still holds:
-            # a call that keeps a physical slot is exactly a call whose stop is unconfirmed.
+            # The same rule the occupancy query counts with, read as the slot this call still
+            # holds: a call that keeps a physical slot is exactly a call whose stop is unconfirmed.
             if holds_physical_slot(call.observation):
                 conditions.append(STOP_UNCONFIRMED)
         return conditions
@@ -1336,9 +1921,8 @@ class OrchestrationService:
             ):
                 task.status = "cancelled" if cancelling else "paused"
                 task.version += 1
-                agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
-                if agent is not None:
-                    agent.status = task.status
+                agent = self._agent(session, task)
+                agent.status = task.status
             self._event(
                 session,
                 run,
@@ -1580,6 +2164,17 @@ class OrchestrationService:
             heartbeat = session.scalar(
                 text("SELECT heartbeat_at FROM huntweave.runtime_processes WHERE name='agentd'")
             )
+            attempts = list(
+                session.scalars(
+                    select(Decision)
+                    .where(Decision.run_id == run.id)
+                    .order_by(Decision.created_at, Decision.id)
+                )
+            )
+            sessions = list(
+                session.scalars(select(AgentSession).where(AgentSession.run_id == run.id))
+            )
+            roles = {agent.id: agent.role for agent in sessions}
             return {
                 # `demonstration` is derived from the execution profile on the way out, so it is
                 # left out of the payload here: the view that carries this Run to the console
@@ -1593,6 +2188,7 @@ class OrchestrationService:
                         "status": x.status,
                         "step": x.step,
                         "version": x.version,
+                        "ordinal": x.ordinal,
                         "lease_generation": x.lease_generation,
                     }
                     for x in session.scalars(
@@ -1601,14 +2197,26 @@ class OrchestrationService:
                 ],
                 "sessions": [
                     {"id": str(x.id), "role": x.role, "status": x.status, "context": x.context}
-                    for x in session.scalars(
-                        select(AgentSession).where(AgentSession.run_id == run.id)
-                    )
+                    for x in sessions
                 ],
+                # Only a decision the Run actually made is listed here. A request that is still in
+                # flight, or an answer that was refused, is not a decision of this Run; both are in
+                # `planning` below, where a reader can tell them apart.
                 "decisions": [
-                    {"id": str(x.id), "session_id": str(x.session_id), "step": x.step, **x.content}
-                    for x in session.scalars(select(Decision).where(Decision.run_id == run.id))
+                    {
+                        "id": str(x.id),
+                        "session_id": str(x.session_id),
+                        "task_id": str(x.task_id),
+                        "step": x.step,
+                        **x.content,
+                    }
+                    for x in attempts
+                    if x.status == ATTEMPT_APPLIED
                 ],
+                "planning": [
+                    self._attempt_view(x, roles.get(x.session_id, "")) for x in attempts
+                ],
+                "model_usage": model_usage_summary(attempts),
                 "calls": [self._call_view(session, x) for x in calls],
                 "budget": {
                     "reserved_tool_calls": len(reservations),

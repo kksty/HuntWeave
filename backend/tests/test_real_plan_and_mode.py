@@ -8,6 +8,7 @@ while the readiness gates are unmet, and a real call is never offered to a demon
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -15,7 +16,7 @@ import pytest
 from huntweave.contracts.errors import ServiceError
 from huntweave.contracts.execution import ExecutionRequest, parameters_hash
 from huntweave.contracts.runs import Budget, RunCreate, ScopeSnapshot
-from huntweave.harness.model import DeterministicModel
+from huntweave.harness.model import PROMPT_VERSION, DeterministicModel, ModelAdapter, ModelRequest
 from huntweave.runs.dispatch import ExecutionDispatcher
 from huntweave.runs.service import RunService
 
@@ -24,15 +25,29 @@ def context(**values: object) -> dict[str, object]:
     return {"execution_profile": "real-lab-v1", "candidate_ports": [7000, 7001], **values}
 
 
+def planned(role: str, step: int, context: dict[str, Any]) -> dict[str, Any]:
+    """Ask the shipped adapter the way the harness does: one request in, one suggestion out."""
+    suggestion = DeterministicModel().decide(
+        ModelRequest(
+            attempt_id="check-attempt",
+            role=role,
+            step=step,
+            input_hash="0" * 64,
+            prompt_version=PROMPT_VERSION,
+            context=context,
+        )
+    )
+    return suggestion.content
+
+
 def test_the_first_real_action_establishes_the_execution_identity() -> None:
-    decision = DeterministicModel().decide("collector", 0, context())
+    decision = planned("collector", 0, context())
     assert decision["action"] == "shell.exec"
     assert decision["parameters"] == {"command": "id -u", "timeout_seconds": 30}
 
 
 def test_successful_discovery_leads_to_a_request_and_an_empty_one_does_not() -> None:
-    model = DeterministicModel()
-    found = model.decide(
+    found = planned(
         "reviewer",
         1,
         context(
@@ -47,33 +62,53 @@ def test_successful_discovery_leads_to_a_request_and_an_empty_one_does_not() -> 
     assert "port" not in found["parameters"]
     # Without a recorded target the plan cannot name an endpoint: it asks to rotate instead of
     # inventing one, and the ticket builder validates whatever it names against the authorization.
-    unnamed = model.decide("reviewer", 1, context(last_summary={"open_ports": [7000]}))
+    unnamed = planned("reviewer", 1, context(last_summary={"open_ports": [7000]}))
     assert "target_port" not in unnamed
     # The counterexample: nothing listened, so there is nothing to request — a different action,
     # decided by what the target really answered rather than by a label chosen in advance.
-    empty = model.decide("reviewer", 1, context(last_summary={"open_ports": []}))
+    empty = planned("reviewer", 1, context(last_summary={"open_ports": []}))
     assert empty["action"] == "finish_research"
 
 
 def test_the_worker_only_discovers_after_it_can_show_it_ran() -> None:
-    model = DeterministicModel()
-    first = model.decide("worker", 0, context())
+    first = planned("worker", 0, context())
     assert first["action"] == "shell.exec"
-    second = model.decide("worker", 0, context(last_summary={"exit_code": 0}))
+    second = planned("worker", 0, context(last_summary={"exit_code": 0}))
     assert second["action"] == "discover_tcp_services"
     assert second["parameters"]["ports"] == [7000, 7001]
-    assert model.decide("worker", 1, context(last_summary={"open_ports": [7000]}))["action"] == (
+    assert planned("worker", 1, context(last_summary={"open_ports": [7000]}))["action"] == (
         "finish_research"
     )
 
 
 def test_the_demonstration_adapter_is_unchanged() -> None:
-    model = DeterministicModel()
-    assert model.decide("collector", 0, {"scenario": "positive"})["action"] == "fake.collect"
-    assert (
-        model.decide("worker", 0, {"scenario": "negative"})["action"] == "finish_research"
+    assert planned("collector", 0, {"scenario": "positive"})["action"] == "fake.collect"
+    assert planned("worker", 0, {"scenario": "negative"})["action"] == "finish_research"
+    assert planned("reviewer", 0, {})["action"] == "fake.review"
+
+
+def test_the_shipped_adapter_states_its_own_accounting_through_the_one_interface() -> None:
+    """Both adapters answer the same Interface, and an answer that used no provider says so.
+
+    Staying silent would mean "no receipt arrived", which is precisely the state the Run has to
+    keep pending; saying `billable: false` is a statement the platform can record as known.
+    """
+    adapter = DeterministicModel()
+    assert isinstance(adapter, ModelAdapter)
+    suggestion = adapter.decide(
+        ModelRequest(
+            attempt_id="check-attempt",
+            role="collector",
+            step=0,
+            input_hash="0" * 64,
+            prompt_version=PROMPT_VERSION,
+            context={"scenario": "positive"},
+        )
     )
-    assert model.decide("reviewer", 0, {})["action"] == "fake.review"
+    assert suggestion.usage.known
+    assert suggestion.usage.receipt == {"accounting": "not_applicable", "billable": False}
+    assert suggestion.provider == "deterministic" and suggestion.model
+    assert suggestion.prompt_version == PROMPT_VERSION
 
 
 def test_a_real_run_cannot_be_opened_while_the_gates_are_unmet() -> None:

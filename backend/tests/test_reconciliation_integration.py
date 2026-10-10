@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from _planning import plan_step
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 
@@ -63,7 +64,7 @@ def opened_call(service: OrchestrationService, run_id: UUID) -> UUID:
     """Claim and plan exactly one call, the way the scheduler does."""
     claim = service.claim(run_id)
     assert claim is not None and claim["run_id"] == str(run_id)
-    service.plan(run_id, claim["task_id"], claim["lease_generation"])
+    plan_step(service, run_id, claim["task_id"], claim["lease_generation"])
     calls = service.snapshot(run_id)["calls"]
     return UUID(calls[-1]["id"])
 
@@ -442,7 +443,7 @@ def test_a_proven_never_executed_call_is_dispatched_again_under_a_new_call_id(bu
 
     claim = service.claim(run_id)
     assert claim is not None
-    service.plan(run_id, claim["task_id"], claim["lease_generation"])
+    plan_step(service, run_id, claim["task_id"], claim["lease_generation"])
 
     first, second = service.snapshot(run_id)["calls"]
     assert first["id"] == str(call_id) and first["status"] == "cancelled"
@@ -455,7 +456,7 @@ def test_a_proven_never_executed_call_is_dispatched_again_under_a_new_call_id(bu
     assert [event["payload"]["call_id"] for event in planned] == [first["id"], second["id"]]
 
     # A graph replay of the same step must not dispatch a third call.
-    service.plan(run_id, claim["task_id"], claim["lease_generation"])
+    plan_step(service, run_id, claim["task_id"], claim["lease_generation"])
     assert len(service.snapshot(run_id)["calls"]) == 2
 
 
