@@ -21,15 +21,15 @@
     "reason_code": "real_execution_not_ready",
     "observed_at": "2026-10-11T09:00:00Z",
     "gates": [
-      {"gate": "profile_revalidation", "ready": false, "reason_code": "lab_host_required"},
+      {"gate": "profile_revalidation", "ready": false, "reason_code": "profile_unvalidated"},
       {"gate": "contract_expressiveness", "ready": true, "reason_code": null},
-      {"gate": "console_consumption", "ready": true, "reason_code": null},
-      {"gate": "deployment_revert", "ready": false, "reason_code": "deployment_revert_unverified"}
+      {"gate": "console_consumption", "ready": false, "reason_code": "console_not_consuming"},
+      {"gate": "deployment_revert", "ready": false, "reason_code": "revert_path_missing"}
     ]
   },
   "source": {
-    "file": "backend/src/huntweave/contracts/capabilities.py",
-    "lines": "14-19, 40-58",
-    "note": "Four ADR-0010 gate names and the readiness fields the response carries."
+    "file": "backend/src/huntweave/execution/capabilities.py",
+    "lines": "90-93",
+    "note": "The four gate names and their reason codes come from the `_gate(...)` calls that compute them, and the check resolves the list by importing that module — a reason string that the platform cannot actually produce fails the check instead of being frozen into the sample. `contract_expressiveness` is satisfied by the contract module itself (Gate 2 reads the model), so it is honestly `true` here; `console_consumption` reads the **built console bundle** (Gate 3), so it is `false` unless a build is present — this sample does not claim otherwise."
   }
 }

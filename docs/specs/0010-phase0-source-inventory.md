@@ -1,6 +1,6 @@
 # P2 Phase 0：来源盘点、六轴接口与冻结输入
 
-状态：盘盘与契约已固定，**未实施**。日期：2026-10-11。对应 [#38](https://github.com/kksty/HuntWeave/issues/38)，依据 [0006 §10](./0006-state-model-and-delivery.md#10-phase-0映射与兼容策略) 与 [0003 §8.1](./0003-agent-research.md#81-实施前-phase-0)。本文件是 **Phase 0 的契约交接件**：它盘点真实代码与迁移历史，固定后续 P2 切片共享的字段、引用方向、冻结输入与写入方。它不重新定义 P0，不提前实现 P2，也不宣称任何能力已交付。
+状态：盘点与契约已固定，**未实施**。日期：2026-10-11。对应 [#38](https://github.com/kksty/HuntWeave/issues/38)，依据 [0006 §10](./0006-state-model-and-delivery.md#10-phase-0映射与兼容策略) 与 [0003 §8 实施切片与验收](./0003-agent-research.md#8-实施切片与验收)（其中 §8.1 是实施前 Phase 0）。本文件是 **Phase 0 的契约交接件**：它盘点真实代码与迁移历史，固定后续 P2 切片共享的字段、引用方向、冻结输入与写入方。它不重新定义 P0，不提前实现 P2，也不宣称任何能力已交付。
 
 **本文件不复制 0006/0003 的设计文字**，只记录「真实代码里现在是什么」以及「后续切片在哪落脚」。取值与业务规则仍以 [0006](./0006-state-model-and-delivery.md)、[0004](./0004-finding-admission.md)、[0005](./0005-capability-claim-criteria.md) 为唯一来源；契约口径更正以 [ADR-0026](../adr/0026-contract-alignment-readiness-cidr-and-queue.md) 与[验证记录 0020](../validation/0020-contract-alignment.md) 为准。实际核对命令、输出与逐条验收判定见[验证记录 0023](../validation/0023-phase0-source-inventory.md)。
 
@@ -18,9 +18,9 @@
 | 6 | `EXECUTION_POLICY_VERSION` 与「策略版本随授权快照固定」 | **成立**：`contracts/runs.py:23` 定义，`:106` 写入 `ScopeSnapshot.policy_version`，旧 Run 不被当前构建改写 |
 | 7 | `BUSINESS_REVISIONS` ≡ 迁移 head | **成立**：`storage/database.py:15` 为 `("0008_retention_decisions",)`，与 §5 的链尾一致 |
 | 8 | 六轴是否已有载体 | **A1 / A2 / A4 完全没有载体**；A3 只有调用的那一半；A5 / A6 有部分载体（§6） |
-| 9 | 冻结输入是否可生产 | **不完整**：`MANIFEST_INPUTS` 共 43 个输入，其中 `available` 8、`partial` 16、`absent` 19（§7.3） |
+| 9 | 冻结输入是否可生产 | **不完整**：`MANIFEST_INPUTS` 共 49 个字段，其中 `available` 6、`partial` 13、`absent` 30（§7.3）；`manifest_gaps()` 另有 43 个缺口 |
 
-**评审判定：可以开工，但后续切片不得假设本文件之外的旧数据存在。** 三处必须在实施中处理的缺口：A4→A1 的单向引用没有载体（§6.2）、19 个冻结输入没有生产者（§7.3）、`dual_read` 目前无事可做（§8）。
+**评审判定：可以开工，但后续切片不得假设本文件之外的旧数据存在。** 三处必须在实施中处理的缺口：A4→A1 的单向引用没有载体（§5.1）、30 个冻结输入字段没有生产者（§7.3，即 `manifest_gaps()` 的 43 个缺口覆盖部分）、`dual_read` 目前无事可做（§8）。
 
 ## 2. 盘点基线与范围
 
@@ -111,7 +111,7 @@
 | `BUSINESS_REVISIONS` | `storage/database.py:15` | 本构建可服务的业务 schema 版本白名单 |
 | `SUPPORTED_PROFILE_VERSION = 1` | `execution/sandboxprofile.py:18` | 沙箱 profile 版本 |
 | `TARGET_LIMIT = 100` | `runs/inputs.py:13` | 单 Run 去重后目标上限（CIDR 未决，见 ADR-0026 §3） |
-| `TARGET_LIMIT` 相关行级拒绝 | `runs/inputs.py:53` | `target_limit_exceeded` 按行返回 |
+| `TARGET_LIMIT` 相关行级拒绝 | `runs/inputs.py:51-54` | `target_limit_exceeded` 按行返回 |
 | `DEFAULT_CANDIDATE_WINDOW_DAYS/RUNS`、`DEFAULT_CACHE_TTL_DAYS/CAPACITY_BYTES` | `contracts/retention.py:36-39` | 保留策略默认值（**部署配置，不属冻结输入**，见 §7.4） |
 | `protocol_version = "1"` | `contracts/execution.py:196`、`contracts/capabilities.py:40` | 执行/能力协议版本 |
 | `config_version = "p0-b-v1"` | `contracts/runs.py:89`、`:103` | 授权快照配置版本 |
@@ -210,7 +210,7 @@
 
 ### 7.2 完整输入清单
 
-机器可读版本为 `contracts/phase0.py` 的 `MANIFEST_INPUTS`（8 组、43 个字段）；下表是同一清单的阅读版。`状态` 列：`有`＝本构建可生产，`部分`＝有载体但不是 manifest 需要的那件事，`无`＝无载体，须由后续切片创建。**`无` 与 `部分` 是缺口记录，不是占位值**：早于 P2-D6 冻结的 manifest 必须如实记「该输入缺失」，不得为它编造值。
+机器可读版本为 `contracts/phase0.py` 的 `MANIFEST_INPUTS`（8 组、49 个字段；`manifest_gaps()` 另报 43 个缺口）；下表是同一清单的阅读版。`状态` 列：`有`＝本构建可生产，`部分`＝有载体但不是 manifest 需要的那件事，`无`＝无载体，须由后续切片创建。**`无` 与 `部分` 是缺口记录，不是占位值**：早于 P2-D6 冻结的 manifest 必须如实记「该输入缺失」，不得为它编造值。
 
 | 组 | 字段 | 类型 | 状态 | 载体 / owner |
 | --- | --- | --- | --- | --- |
@@ -276,7 +276,7 @@
 
 ### 7.4 缺口汇总
 
-43 个输入中 `available` **8**、`partial` **16**、`absent` **19**。19 个 `absent` 全部有明确 owner（P2-B/D/E/F 切片），没有一项是「待定归属」。**`partial` 的 16 项是本切片最需要注意的一类**：载体存在，但 manifest 需要的语义（冻结那一刻的事实）不存在——例如 `run_version` 有列而没有冻结值、`tool_artifact_versions` 有读模型而没有冻结快照。
+49 个字段中 `available` **6**、`partial` **13**、`absent` **30**。30 个 `absent` 全部有明确 owner（P2-B/D/E/F 切片），没有一项是「待定归属」。**`partial` 的 13 项是本切片最需要注意的一类**：载体存在，但 manifest 需要的语义（冻结那一刻的事实）不存在——例如 `run_version` 有列而没有冻结值、`tool_artifact_versions` 有读模型而没有冻结快照。
 
 ## 8. 单一写入口、有界 `dual_read`、漂移与回退读
 
@@ -413,7 +413,7 @@ cd backend; & <venv>\python.exe -m pytest tests/test_phase0_contracts.py -q -m "
 ## 13. 未决事项与限制
 
 - **CIDR 边界未决**（ADR-0026 §3）：保留 IP-only 与 `TARGET_LIMIT = 100`，本切片不改。
-- **19 个冻结输入无生产者**：owner 已登记（§7.4），实现随对应切片。
+- **30 个冻结输入字段无生产者**：owner 已登记（§7.4），实现随对应切片。
 - **本切片未做迁移**：没有新建/改写 Alembic revision，没有改动任何现有列。
 - **`dual_read` 目前无事可做**：没有任何已转换来源，因此兼容读路径只有定义与检查，没有运行中的双读。
 - **未做功能验收**：不启动新栈、不接触外部目标；对现存数据的查询是**只读**的 `information_schema` / `COUNT(*)` / `SELECT`。

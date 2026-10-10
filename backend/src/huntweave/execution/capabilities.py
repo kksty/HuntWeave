@@ -7,8 +7,10 @@ condition carries a reason code, so an operator sees which one is missing rather
 "unsupported".
 """
 
+import re
 from datetime import datetime
 from functools import lru_cache
+from pathlib import Path
 from typing import get_args
 
 from huntweave.config import CONSOLE_BUILD
@@ -61,6 +63,23 @@ def _console_consumes_capabilities() -> bool:
 
 def _gate(name: ReadinessGateName, ready: bool, reason_code: str) -> ReadinessGate:
     return ReadinessGate(gate=name, ready=ready, reason_code=None if ready else reason_code)
+
+
+@lru_cache(maxsize=1)
+def gate_reason_codes() -> dict[ReadinessGateName, str]:
+    """每道门槛在未满足时使用的**唯一**原因码，从调用 `_gate` 的那一处解析出来。
+
+    这是外部契约的一部分：响应里 `gates[].reason_code` 用的字符串必须来自这里。从源码解析
+    而不是另抄一份常量表，是为了让「改了这一行却忘了同步契约固定样例」变成一次失败——
+    固定样例（`docs/specs/0010` 与 `backend/tests/data/phase0/`）会用它核对，
+    而样例里写一个本平台根本产不出的原因码正是这条要拦的错。
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    calls = re.findall(
+        r'_gate\(\s*"(?P<gate>[a-z_]+)"\s*,[^,]*,\s*"(?P<reason>[a-z_]+)"\s*\)',
+        source,
+    )
+    return {gate: reason for gate, reason in calls}
 
 
 def evaluate(

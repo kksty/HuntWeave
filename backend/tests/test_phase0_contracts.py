@@ -24,6 +24,7 @@ mapping/design slice can prove. The runtime half of Phase 0 is recorded, with it
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Literal, get_args
 
@@ -47,6 +48,7 @@ from huntweave.contracts.phase0 import (
     manifest_field_names,
     manifest_gaps,
 )
+from huntweave.execution.capabilities import gate_reason_codes
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 BACKEND = REPOSITORY / "backend"
@@ -55,7 +57,13 @@ MODELS_FILE = SOURCE / "storage" / "models.py"
 VERSIONS_DIR = BACKEND / "migrations" / "versions"
 DATABASE_FILE = SOURCE / "storage" / "database.py"
 INVENTORY_DOC = REPOSITORY / "docs" / "specs" / "0010-phase0-source-inventory.md"
+PHASE0_RECORD = REPOSITORY / "docs" / "validation" / "0023-phase0-source-inventory.md"
 SAMPLES_DIR = Path(__file__).resolve().parent / "data" / "phase0"
+
+
+def read_text(path: Path) -> str:
+    """Documents are read as bytes-to-UTF-8: their counts are asserted, so decoding matters."""
+    return path.read_text(encoding="utf-8")
 
 # The schema the business role must find behind `alembic_version`. Read from `database.py` rather
 # than repeated here: a new migration has to add its id in the same commit, and this check is how
@@ -359,6 +367,67 @@ def test_a_not_ready_response_states_every_gate_of_the_execution_boundary() -> N
     for gate in payload["gates"]:
         if not gate["ready"]:
             assert gate["reason_code"], f"unmet gate {gate['gate']} names no reason"
+
+
+def test_the_not_ready_sample_only_uses_reason_codes_the_platform_can_produce() -> None:
+    """A gate's reason code is part of the public response, so a sample may not invent one.
+
+    This is the guard for a real defect: the first revision of this sample used
+    `lab_host_required` / `deployment_revert_unverified`, which no code path can produce, and the
+    old assertion only checked "the string is non-empty" — so a fabricated value was frozen into
+    the fixed sample and every check stayed green. The authoritative strings are resolved from the
+    `_gate(...)` calls that compute them, and the gate/ready pairing is checked too: claiming an
+    unmet gate is actually `ready` (or the reverse) is the same class of error.
+    """
+    sample = read_sample(SAMPLES_DIR / "not_ready.json")
+    produced = gate_reason_codes()
+    assert set(produced) == set(get_args(ReadinessGateName)), (
+        "every gate must have exactly one reason code in the `_gate(...)` table"
+    )
+    for gate in sample["payload"]["gates"]:
+        expected = produced[gate["gate"]]
+        if gate["ready"]:
+            assert gate["reason_code"] is None, (
+                f"{gate['gate']} is ready but still names a reason"
+            )
+        else:
+            assert gate["reason_code"] == expected, (
+                f"{gate['gate']} names {gate['reason_code']!r}; the platform produces {expected!r}"
+            )
+
+
+def test_the_documented_manifest_input_counts_match_the_contract() -> None:
+    """The Phase 0 documents quote counts, and the counts have to be the contract's own.
+
+    The first revision of `0010` (§1/§7.2/§7.4/§13) and `0023` said "43 inputs, 8/16/19" for the
+    frozen manifest. The real catalogue holds **49 fields (6 available / 13 partial / 30 absent)**;
+    43 is `manifest_gaps()` and 8/16/19 were the `gaps` split, so the field count and the gap count
+    had been conflated. No check noticed, because the only manifest assertion tested name
+    uniqueness and that the design-pinned fields stay available — never the totals. This binds the
+    documented totals to the contract so a future edit to either side fails loudly.
+    """
+    fields = [field for group in MANIFEST_INPUTS for field in group.fields]
+    counts = Counter(field.availability for field in fields)
+    assert len(fields) == len(manifest_field_names()) == 49
+    assert counts == {"available": 6, "partial": 13, "absent": 30}
+    assert len(manifest_gaps()) == 43
+    # The documents quote these; bind the quoted numbers to the contract so neither side can move
+    # alone. Only the body is checked: a record's correction log legitimately quotes the old numbers
+    # as a statement of what was fixed, and repeating them there is required, not drift. Everything
+    # from the correction heading onwards is therefore out of scope for the stale-form scan.
+    correction_heading = "## 两轴评审与本记录的更正"
+    record_text = read_text(PHASE0_RECORD)
+    body, _, log = record_text.partition(correction_heading)
+    assert log, f"{PHASE0_RECORD.name} lost its correction section"
+    drift_forms = {
+        INVENTORY_DOC: read_text(INVENTORY_DOC),
+        PHASE0_RECORD: body,
+    }
+    for path, text in drift_forms.items():
+        assert "49" in text, f"{path.name} no longer states the field total"
+        assert "43" in text, f"{path.name} no longer states the gap total"
+        for stale in ("43 个字段", "43 个输入", "8 / 16 / 19", "8/16/19"):
+            assert stale not in text, f"{path.name} still asserts the stale count {stale!r}"
 
 
 def test_an_unknown_call_is_not_read_as_a_claim_verdict() -> None:

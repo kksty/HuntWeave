@@ -37,9 +37,9 @@ PROJECT §14 要求每个 P2 切片开工前对照实际代码与前置能力完
 | 9 | #44 需要的 `Host`/`Service`/`WebEndpoint` | 同上 | **全部不存在**（`class Service` 唯一命中是 `ServiceError`） |
 | 10 | 旧 Finding 取值与实际数据 | 真实库 `COUNT(*)`/`DISTINCT` | **没有任何 Finding 记录或旧取值**；`reconciliation_decisions` 0 行；`tool_calls.status` 仅 `succeeded`/`cancelled` |
 | 11 | 六轴是否已有载体 | 逐轴对照真实表 | A1/A2/A4 **无载体**；A3 只有调用半边；A5/A6 部分载体 |
-| 12 | 冻结输入是否可生产 | `MANIFEST_INPUTS` + 源码 token 机械核对 | 43 项中 `available` 8 / `partial` 16 / `absent` 19 |
+| 12 | 冻结输入是否可生产 | `MANIFEST_INPUTS` + 源码 token 机械核对 | 49 项中 `available` 6 / `partial` 13 / `absent` 30（`manifest_gaps()` 为 43） |
 
-**评审判定：本切片可开工并可合入；后续切片可在 0010 的契约上并行，但不得假设本文件之外的旧数据存在。** 三处必须带进实施的缺口：A4→A1 单向引用无载体（0010 §5）、19 个冻结输入无生产者（0010 §7.3）、`dual_read` 目前没有已转换来源（0010 §8）。
+**评审判定：本切片可开工并可合入；后续切片可在 0010 的契约上并行，但不得假设本文件之外的旧数据存在。** 三处必须带进实施的缺口：A4→A1 单向引用无载体（0010 §5）、30 个冻结输入字段无生产者（0010 §7.3）、`dual_read` 目前没有已转换来源（0010 §8）。
 
 ### 0006 §10 与真实代码不一致之处（逐处）
 
@@ -174,7 +174,7 @@ waiting|10
 | 导出 | 内容 |
 | --- | --- |
 | `AXES` / `AxisSpec` | 六轴的取值集合、已存在载体、尚不存在载体、引用方向、写入方、必须分开的事实 |
-| `MANIFEST_INPUTS` / `ManifestField` | 8 组 **43 个**冻结输入，每个带 `type`、`availability ∈ {available,partial,absent}`、`source`、`search` |
+| `MANIFEST_INPUTS` / `ManifestField` | 8 组 **49 个**冻结输入，每个带 `type`、`availability ∈ {available,partial,absent}`、`source`、`search` |
 | `NOT_IN_MANIFEST` | 7 类**不进入**冻结 manifest 的内容（队列策略、积压实时值、保留阈值、就绪门槛、额度设置、路径、凭据） |
 | `LEGACY_VALUE_MAPPINGS` / `LEGACY_OBJECTS_PRESENT` / `LEGACY_OBJECTS_ABSENT` | 11 条旧值映射规则（全部 `executable=False`）、8 个已存在对象、14 个不存在对象 |
 | 常量 | `PHASE0_INVENTORY_SCHEMA_VERSION=1`、`FROZEN_MANIFEST_SCHEMA_VERSION=1`、`CLAIM_VERDICTS`、`REVIEW_PROCESSING_STATES`、`REVIEW_RESULTS`、`ATTEMPT_STATES`、`ADMISSION_STATES`、`IP_RESOURCE_STATES`、`CONFIRMATION_LEVELS`、`CLAIM_CLASSES` |
@@ -277,9 +277,9 @@ cd D:\code\huntweave-wt\38-phase0-contracts\backend
 | `test_the_migration_chain_is_linear_and_has_exactly_one_head` | 单一根、单一 head、无悬挂 `down_revision`、head ∈ `BUSINESS_REVISIONS` |
 | `test_the_inventory_document_lists_the_tables_the_code_really_has` | **0010 §3.3 的表清单与真实 schema/ORM 完全一致**；已删的 `login_buckets` 保留在清单里；checkpoint 的 4 张表被提及 |
 | `test_the_inventory_document_records_no_object_the_code_does_not_have` | 0010 逐名记录了 8 个已存在对象与 14 个不存在对象 |
-| `test_the_inventory_document_lists_every_frozen_manifest_input` | 0010 用 `\`字段名\`` 覆盖全部 43 个冻结输入 |
+| `test_the_inventory_document_lists_every_frozen_manifest_input` | 0010 用 `\`字段名\`` 覆盖全部 49 个冻结输入 |
 | `test_a_field_claimed_available_or_partial_has_a_carrier_in_the_real_source` | 8 个 `available` + 16 个 `partial` 的载体 token **真的存在于 `backend/src`** |
-| `test_a_field_claimed_absent_is_genuinely_nowhere_in_the_real_source` | 19 个 `absent` 的字段名**真的不在** `backend/src` 中（P2 实现后此检查会失败，迫使目录与实现同提交更新） |
+| `test_a_field_claimed_absent_is_genuinely_nowhere_in_the_real_source` | 30 个 `absent` 的字段名**真的不在** `backend/src` 中（P2 实现后此检查会失败，迫使目录与实现同提交更新） |
 | `test_every_sample_loads_into_the_contract_it_names` | 8 个样例都通过其声明的生产契约，且名字/来源/描述自洽 |
 | `test_error_samples_carry_the_single_error_envelope_and_no_prose` | 错误样例的键集合恰为 `{"reason_code"}`，且该码在源码中真实存在 |
 | `test_the_required_must_fail_states_each_have_a_loadable_sample` | 8 个必失败状态与样例一一对应，无重复无遗漏 |
@@ -292,7 +292,7 @@ cd D:\code\huntweave-wt\38-phase0-contracts\backend
 | `test_an_unknown_old_value_is_refused_rather_than_guessed_at` | 未知旧值 `KeyError`，不猜 |
 | `test_the_six_axes_keep_a4_pointing_at_a1_and_never_the_reverse` | **A4→A1 单向、A1 不引用任何轴**；六轴无自有表名 |
 | `test_the_axes_that_have_no_carrier_say_so_instead_of_borrowing_one` | A1/A2/A4 的 `existing_carriers` 为空 |
-| `test_the_frozen_manifest_inputs_are_a_closed_list_with_honest_availability` | 43 个字段名唯一、状态取值合法、缺口非空、5 个关键字段仍为 `available` |
+| `test_the_frozen_manifest_inputs_are_a_closed_list_with_honest_availability` | 49 个字段名唯一、状态取值合法、缺口非空（另有检查把 49 / 6 / 13 / 30 与 `manifest_gaps()=43` 钉在契约上）、5 个关键字段仍为 `available` |
 | `test_the_queue_policy_stays_out_of_the_frozen_manifest` | 队列策略配置不进入 manifest |
 | `test_the_confirmation_levels_and_claim_classes_are_the_locked_vocabulary` | 三个词汇表取值被固定 |
 | `test_a_sample_cannot_load_into_a_laxer_contract_than_the_production_one` | `extra="forbid"` 真的生效 |
@@ -336,7 +336,7 @@ cd D:\code\huntweave-wt\38-phase0-contracts\backend
 
 本切片按仓库约定做了 **Spec + Standards** 两轴评审。评审在本分支自验之后执行，**核对了真实文件而不是复述正文**，并做了以下两类验证：
 
-1. **逐项事实核对**：真实库的 20 张表名、`pg_attribute` 逐列、33 个索引、32 条外键、4 条 CHECK/唯一约束；`alembic_version`；`class X` 逐名匹配数；11 个 ORM 之外的对象；43 个冻结输入字段名；原因码扫描；8 个样例的加载；行数（`runs` 46 / `tool_calls` 52 / `reconciliation_decisions` 0 / `retention_decisions` 0 / `audit_events` 667 / `projects` 41）。
+1. **逐项事实核对**：真实库的 20 张表名、`pg_attribute` 逐列、33 个索引、32 条外键、4 条 CHECK/唯一约束；`alembic_version`；`class X` 逐名匹配数；11 个 ORM 之外的对象；49 个冻结输入字段名；原因码扫描；8 个样例的加载；行数（`runs` 46 / `tool_calls` 52 / `reconciliation_decisions` 0 / `retention_decisions` 0 / `audit_events` 667 / `projects` 41）。
 2. **变异验证（mutation testing）**：把 5 个错误分别注入代码，确认新检查**真的会失败**，不是恒真断言。
 
 | 变异 | 注入 | 结果 |
@@ -346,9 +346,29 @@ cd D:\code\huntweave-wt\38-phase0-contracts\backend
 | M3 | 把 `fragment_versions` 从 `absent` 改成 `available`（无载体却声明可生产） | **1 failed**, 29 passed |
 | M4 | `version_conflict.json` 的码改成 `totally_invented_code`（发明新码） | **3 failed**, 27 passed |
 | M5 | `0008` 的 `down_revision` 改成 `0006_call_runtime`（链出现两个 head） | **1 failed**, 29 passed |
-| M0 | 全部还原 | **30 passed** |
+| M6 | `0010` 把「49 个字段」改回「43 个字段」——**即独立复核查出的 I1 原缺陷** | **1 failed**（`test_the_documented_manifest_input_counts_match_the_contract`），还原后 passed |
+| M7 | `not_ready.json` 把 `profile_unvalidated` 改回 `lab_host_required`——**即独立复核查出的 I2 原缺陷** | **1 failed**（`test_the_not_ready_sample_only_uses_reason_codes_the_platform_can_produce`，报 `+ lab_host_required`），还原后 passed |
+| M0 | 全部还原 | **32 passed**（自评阶段 30 项 + 独立复核后新增的 2 项守卫） |
+
+M6/M7 是**专门针对独立复核查出的两个漏检**补的变异验证：在补上守卫之前，注入这两个错误**不会让任何检查变红**（这正是它们能进到"通过"的原因）；补上之后各自变红。注入后立即还原，`git status --short` 与注入前一致。
+
+**独立复核后本分支的检查总数**：`pytest -m "not integration" -q` → **285 passed, 8 skipped, 41 deselected**（自评阶段为 283；新增 2 项守卫：门槛原因码的真实性、文档计数与契约的一致性）。`ruff` 与 `mypy`（51 个源文件）通过。
+
+**关于「检查强度」的一条教训（写给后续切片）**：这两个漏检是**同一种失效模式**——检查存在，但守不住它所声称的结论，因此恒绿。判断一条机械检查是否真的在守结论，办法是**变异验证**：把结论写错，看它是否变红。本切片的自评只对「自己新写的检查」做了变异验证（M1–M5），**没有**对「文档与契约的数字一致性」和「固定样例里嵌套原因码的真实性」做，于是这两处正好是漏掉的。后续切片的新检查请一并做变异验证。
 
 变异注入仅作用于本 worktree 的文件，注入后立即还原，`git status --short` 与注入前一致（无残留）。
+
+### 独立复核（协调人委派，2026-10-11）
+
+本切片的自验与两轴评审**由同一会话完成**（该会话 `maxDepth=1`，无法委派子代理）。协调人因此另派一名**独立评审者**做第三方复核，只读、未起栈。结论：上面 5 处自报缺陷**全部确认已真修好**，但复核**查出两处自评审漏掉的、性质更重的契约事实错误**——都不是文档修辞，而是"检查存在但守不住它所声称的结论"，因此两边都恒绿：
+
+| # | 缺陷 | 严重度 | 处置 |
+| --- | --- | --- | --- |
+| I1 | **冻结输入字段总数与可用性分布全错**：`MANIFEST_INPUTS` 真实是 **49 个字段**（8 组）、`available` **6** / `partial` **13** / `absent` **30**；文档 11 处写成「43 个字段」与「8 / 16 / 19」这样的分布。43 其实是 `manifest_gaps()` 的**缺口数**，同一个三元组是缺口的分布——**字段总数与缺口数被混为一谈**。同一节（§7.2）的逐字段表有 49 行、能自证 49，正文却在同一节写 43 | 阻断（Standards） | 已按契约实数改正 `0010`（§1 表、§1 缺口句、§7.2 表头、§7.4 分布、§13 清单）、本记录 8 处与 `validation/README.md` 索引行；并把「43」统一改称 **`manifest_gaps()` 的 43 个缺口**，避免再次与字段总数混用。新增检查 `test_the_documented_manifest_input_counts_match_the_contract` 把 49 / 6 / 13 / 30 / `manifest_gaps()==43` 钉在契约上，并**禁止** `0010` 再出现旧写法（含 `8/16/19` 与 `19 个 absent`），见下方 M6。**注意**：本记录与首稿更正表在法律上仍会引用旧数字，因此该检查只把「旧写法」当作漂移的判据，引用形式（写在「」里的历史记录）不算漂移——这一点已写进检查的注释 |
+| I2 | **`not_ready.json` 的门槛原因码是编造的**：样例用 `lab_host_required` / `deployment_revert_unverified`，这两个串**全仓只出现在该 json 里**；生产值是 `execution/capabilities.py:90-93` 的 `profile_unvalidated` / `contract_not_expressible` / `console_not_consuming` / `revert_path_missing`。门原因码是普通 `str`，pydantic 不拒绝，而旧断言只查「非空」，所以编造值被固化进"公开接口固定样例"；且原因码检查只扫 `backend/src` 与本切片的顶层码，**扫不到 `tests/data/**`** | 阻断（Spec） | 两个码已改为生产真实值；新增检查 `test_the_not_ready_sample_only_uses_reason_codes_the_platform_can_produce`，它**从调用 `_gate(...)` 的那一处解析**权威原因码（`execution/capabilities.py` 的 `gate_reason_codes()`，不另抄常量表），并同时校验「ready 的门不得带原因码」，见下方 M7 |
+| I3 | **样例把 `console_consumption` 声明为 `ready: true` 不成立**：Gate 3 读**构建产物**（`CONSOLE_BUILD.glob("assets/*.js")` 里是否出现 `/api/v1/system/capabilities`），该产物是 gitignored、干净检出里不存在 ⇒ 该门实际为 **false**。声称 `true` 正是 #37 固定的「可表达不等于可执行」的同一类错误 | 应修（Spec） | `console_consumption` 改为 `ready: false` + `console_not_consuming`；`contract_expressiveness` 保留 `true`（Gate 2 读契约模型本身，确实成立）；`source.note` 写明哪一门依赖部署/构建产物、本样例不声称已验证 |
+
+**对首稿自查清单的更正**：`### 复核过的机械一致性` 首稿称「五份文件的全部链接与锚点逐个解析，坏链数 0」，但复核发现 `0010:3` 的 `#81-实施前-phase-0` 指不到 `0003` 的 `### 8.1 实施前 Phase 0`（同一文件里既有的同族链接都写成 `#9-图语义与调度的成对验收` 形式，该锚点不符合这个可用的形式）。已改为指向**父节** `[0003 §8 实施切片与验收](./0003-agent-research.md#8-实施切片与验收)` 并注明 §8.1 的位置——父节标题无空格歧义，比猜一个子标题锚点可靠。**该「坏链数 0」的声明因此不成立，属首稿自查的过度声称**，一并记为更正。
 
 ### 发现的缺陷与处置
 
@@ -390,7 +410,7 @@ cd D:\code\huntweave-wt\38-phase0-contracts\backend
 - **未在真实库上演练迁移**：`alembic upgrade head` 未运行（本切片不新增迁移，且共享部署正被其他会话使用）。单一 head 由静态检查与真实库的 `version_num` 两侧确认，**未做升级/降级演练**。
 - **真实库是共享部署**：核对对象是常驻 `huntweave` 项目的 Postgres。只读查询不影响其他会话，但该库的 46 个 Run 来自历史开发验证，**不是本切片产生的数据**；本记录不据此判定任何业务结论。
 - **`dual_read` 只有定义，无运行中的双读**：没有任何已转换来源，兼容读路径无法实测，只能验证其边界与退出条件被写清。
-- **43 个冻结输入中 19 个无生产者**：owner 已登记（0010 §7.4），实现随对应切片；本切片不建表。
+- **49 个冻结输入字段中 30 个无生产者**：owner 已登记（0010 §7.4），实现随对应切片；本切片不建表。
 - **`search` token 是启发式**：`test_a_field_claimed_absent_is_genuinely_nowhere_in_the_real_source` 靠字段名不出现在源码中作证。这是有效的必要条件而非充分条件——一个 `absent` 字段若被实现成同名变量会被正确抓到，但若被实现成另一个名字且目录未更新，则要等到 `partial`/`available` 的载体 token 检查或人工评审才能发现。
 - **本记录的完整原因码清单来自正则扫描**：176 处 raise 站点（96 个不同码）加 30 个仅以赋值形式出现的码。正则锚定在 5 个拒绝类型与 `reason_code`/`reason` 赋值上，因此**可能漏掉**以其他变量名传递的原因码（例如经函数参数转发）。既有的 `tests/test_reason_codes.py` 覆盖了另一个方向（前端映射闭合），两者互补但都不宣称穷尽。
 - **未复核 CI**：本分支未推送，未触发 `checks`。
