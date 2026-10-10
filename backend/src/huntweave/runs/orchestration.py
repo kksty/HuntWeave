@@ -30,6 +30,7 @@ from huntweave.contracts.resources import (
     LIVE_SLOT_SQL,
     ExecutionQuota,
     ResourcePolicy,
+    holds_physical_slot,
     slot_wait,
     stop_confirmed,
 )
@@ -89,6 +90,19 @@ def target_lock_key(address: str) -> int:
     rather than letting two calls share one.
     """
     return int.from_bytes(hashlib.sha256(address.encode()).digest()[:4], "big", signed=True)
+
+
+def in_flight_call(owner: Any) -> Any:
+    """The predicate "this Run has a call in flight", for the Run the caller is asking about.
+
+    One definition of in flight for both readers: `claim()` correlates it against the Runs it is
+    choosing between, and `_active()` asks it about one Run by id. Written once so the two cannot
+    come to disagree about which call statuses are settled — the disagreement this replaced was a
+    candidate filter and a resume check each spelling the status list out for themselves.
+    """
+    return exists(
+        select(ToolCall.id).where(ToolCall.run_id == owner, ~ToolCall.status.in_(TERMINAL_CALLS))
+    )
 
 
 def stable(run_id: UUID, kind: str) -> UUID:
@@ -253,14 +267,7 @@ class OrchestrationService:
         """
         with Session(self.engine()) as session, session.begin():
             now = database_now(session)
-            query = select(Run).where(
-                Run.status.in_(ACTIVE_RUNS),
-                ~exists(
-                    select(ToolCall.id).where(
-                        ToolCall.run_id == Run.id, ~ToolCall.status.in_(TERMINAL_CALLS)
-                    )
-                ),
-            )
+            query = select(Run).where(Run.status.in_(ACTIVE_RUNS), ~in_flight_call(Run.id))
             if run_id is not None:
                 query = query.where(Run.id == run_id)
             candidates = session.scalars(
@@ -566,7 +573,11 @@ class OrchestrationService:
                     str(replaced.ticket["target_ip"]),
                     int(replaced.ticket["target_port"]),
                 )
-            targets = self._actual_targets(bound_ip)
+            # The addresses this action will really reach. A ticket binds exactly one endpoint
+            # today, so this is one address; a ticket that later names several lists every one of
+            # them here, because the rule is "check every address the action really reaches" and a
+            # single-entry tuple is what makes that a one-line change rather than a new seam.
+            targets: tuple[str, ...] = (bound_ip,)
             # The physical slot is reserved here, in the same short transaction as the budget, the
             # call and the outbox entry: a refusal leaves nothing behind to release (spec 0006
             # section 7). The lock is taken before the count so the count cannot be stale, and the
@@ -1152,17 +1163,6 @@ class OrchestrationService:
         return stop_confirmed(observation)
 
     @staticmethod
-    def _actual_targets(bound_ip: str) -> tuple[str, ...]:
-        """Every address one action really touches, in a stable order.
-
-        A ticket binds exactly one endpoint today, so this is one address. It exists as one place
-        because the rule is "check every address the action really reaches": a ticket that later
-        names several must not inherit a check that only ever looked at the first, and the sorted
-        order is what lets two planners take overlapping addresses without deadlocking.
-        """
-        return (bound_ip,)
-
-    @staticmethod
     def _lock_execution_slots(session: Session, targets: tuple[str, ...]) -> None:
         """Serialise the reservation of the physical slots one action needs.
 
@@ -1186,6 +1186,9 @@ class OrchestrationService:
         has not confirmed that nothing the call started is still running, which is the same fact the
         console shows as 停止未确认. One grouped query answers both limits, so the global count and
         the per-address counts cannot come from two different moments.
+
+        `LIVE_SLOT_SQL` is the only reader of the rule in SQL; the Python spelling of the same rule
+        is `holds_physical_slot`, and `tests/test_execution_quota.py` compares the two case by case.
         """
         rows = session.execute(
             text(
@@ -1231,7 +1234,9 @@ class OrchestrationService:
             unsettled = verdict is None or verdict.outcome == "undetermined"
             if call.status == "unknown" and unsettled:
                 conditions.append(OUTCOME_UNSETTLED)
-            if not self._stop_confirmed(call.observation):
+            # The same rule the occupancy query counts with, read as the slot this call still holds:
+            # a call that keeps a physical slot is exactly a call whose stop is unconfirmed.
+            if holds_physical_slot(call.observation):
                 conditions.append(STOP_UNCONFIRMED)
         return conditions
 
@@ -1430,14 +1435,8 @@ class OrchestrationService:
 
     @staticmethod
     def _active(session: Session, run_id: UUID) -> bool:
-        return (
-            session.scalar(
-                select(ToolCall.id).where(
-                    ToolCall.run_id == run_id, ~ToolCall.status.in_(TERMINAL_CALLS)
-                )
-            )
-            is not None
-        )
+        """Whether this one Run has a call in flight, by the predicate `claim()` also selects on."""
+        return bool(session.scalar(select(in_flight_call(run_id))))
 
     def preview(self, run_id: UUID) -> dict[str, Any]:
         snapshot = self.snapshot(run_id)

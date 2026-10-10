@@ -37,7 +37,14 @@ def append_event(
     payload: dict[str, Any],
     source: str | None = None,
 ) -> None:
-    """Append one event to a Run's timeline, or do nothing if that source already landed."""
+    """Append one event to a Run's timeline, or do nothing if that source already landed.
+
+    Precondition: the caller's transaction must already hold the Run — it created it, or locked it.
+    `event_cursors.run_id` has a foreign key to `runs.id`, so a Run that does not exist in this
+    transaction fails the insert below with a foreign-key violation instead of quietly opening a
+    cursor for a Run nobody has. That is deliberate: an event belongs to a Run, and there is no such
+    thing as an event for a Run the database does not have.
+    """
     session.execute(
         text(
             "INSERT INTO huntweave.event_cursors (run_id, cursor) VALUES (:run_id, 0) "
