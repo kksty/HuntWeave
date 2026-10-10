@@ -105,7 +105,7 @@ operator.py:48      return "confirmed" if record.stop_confirmed_at is not None e
 4. **不引入新的顶层包。** 候选 1 的新模块留在 `runs/` 内。理由不是回避 ADR，而是 `timeline` 的真正缺口在**读侧**（`history()` 与 SSE 端点不在 `events.py` 里）；只把写侧搬出去、留下读侧散着，等于为对齐文档制造一个半截模块。`PROJECT §7.1` 的六个 Module 集合保持不变。
 5. **本轮不开 ADR。** 依据：24 份现有 ADR 中 0 份是关于代码组织的；(b) 类内容只以「哪个模块拥有哪个状态」出现，从不是布局。直接先例是 `sandbox.py` 拆出 `sandboxprofile.py`——记在 [验证记录 0011](../validation/0011-p1-sandbox-lifecycle.md) 里，没有 ADR。仓库的触发条件是「核心架构或产品边界变化」（`AGENTS.md:45`）与「变更核心选型」（`docs/adr/README.md:32`）；内部分层不属于二者。**唯一会跨进门槛的是改变六个 Module 的集合**，本轮刻意不改变它。
 6. **`reason_code` 不进入 `GLOSSARY.md`。** 词汇表里每条都是操作员或研究者会说的词；原因码是 Interface 约定（`PROJECT.md:394`），`domain-modeling` 要求词汇表不承载实现细节。它取得的是**代码归属模块**，不是术语。
-7. **证据读取缺少的范围校验另开切片，不并入本轮。** 本轮各条都是「结构变、行为不变」，评审方式简单；掺入一个授权判断会让同一次改动既含结构调整又含安全行为变化，两条轴的证据要求不同。
+7. **本条初稿有误，已撤回，且撤回后没有留下待办。** 初稿写「证据读取缺少一道范围校验，另开切片」。两处都不成立：本产品没有 user/租户模型可查（`PROJECT.md §3.2` 把企业多租户列为永久排除、把账号体系列为不建设，会话即全权），所以「调用者有权读的 Run」不是一个可检查的对象；而该路由已有的保护是**服务端会话鉴权**（`api/app.py:326` 的 `public` 白名单不含 `/api/v1/evidence/...`）、**路径包含校验**（`orchestration.py:1516`）、**逐字节 sha256+size 复核**（`:1530`）与**按契约形状作答的集成检查**（`tests/test_orchestration_integration.py:260`，按 `EvidenceView` 读回真实档案）。我随后又猜「缺的是那条集成检查」，同样错——它已经存在且通过。依据见文末「本记录的更正」第 8 条。
 
 ## 5. 明确排除
 
@@ -116,7 +116,7 @@ operator.py:48      return "confirmed" if record.stop_confirmed_at is not None e
 
 - **本轮未涉及候选 3、4、6**（选择性保留路由的四处转抄、`RunnerClient` 包装层、测试运行时搬出测试文件）。它们与 1、2 不在同一条接缝上，另行评估。
 - **「没有任何东西守着模块边界」记入待办，不在本轮处理。** 若本轮之后要加一条导入方向检查，那属于开发环境改动而非产品代码，按 [ADR-0018](../adr/0018-backend-first-and-layered-validation.md) 的验证顺序在切片落地后评估。
-- **证据读取缺范围校验**（`orchestration.evidence()` 有路径包含校验 `:1515` 与逐字节 sha256+size 复核 `:1529`，但不检查该证据属于调用者有权读的 Run）只作记录，按第 4 节第 7 条另开切片。
+- **证据路由没有任何遗留待办。** 初稿记过一条「缺范围校验」，第 4 节第 7 条已撤回：没有可查的 user/租户模型，而该路由的会话鉴权、路径包含校验、逐字节 sha256+size 复核与契约形状的集成检查都已存在。
 - **本轮所有结论均未经实现验证。** 落地后按 `docs/validation/` 体例新增一份验证记录，实际计数与命令输出写入该记录，不在本文件复述。
 
 ## 本记录的更正（2026-10-11，实施后的两轴评审）
@@ -130,3 +130,5 @@ operator.py:48      return "confirmed" if record.stop_confirmed_at is not None e
 5. **§4.3 的理由说过头了。** `StopFact.confirmed_at` / `removed` 目前**没有任何消费方**（`operator.py` 与 `real.py` 都只读 `state`）。接口取事实形态的真正依据是：这三件事由管理组件一次性知道，取事实可以让未来的读侧不必再读它的私有账本；但「第二个消费方已经需要它们」不是事实。
 6. **`record_interruption` 这个名字是评审中改出来的。** 初版叫 `interrupt`，与 LangGraph 自己的 `interrupt` 原语重名（`harness/graph.py:67` 调用它）。这不只是命名问题：原因码扫描器（`backend/tests/test_reason_codes.py:229`）以函数名锚定「原因在哪个位置」，重名让它把 LangGraph 调用的 `pending_call_ids` 当成了原因码。改名后扫描器锚点也一并更正。
 7. **一处未构造检查的极窄行为差异仍存在。** `RealRunner._release` 旧写法在「管理组件的账本不再认识该实例」时早退、不登记保留制品；新写法用 `halt_instance()` 返回的记录，不早退。要走到那里必须先通过 `halt_instance`，而实例一旦不被认识那条路径本身就会失败，因此只有「halt 成功而实例记录紧接着消失」这个瞬时窗口会不同。已记入验证记录。
+8. **「证据读取缺范围校验」整条撤回。** 该结论建立在两个未经查证的推断上。其一：以为存在「调用者有权读的 Run」这种可检查对象——实则本产品按 `PROJECT.md §3.2` 不建设账号体系、永久排除多租户，`WebSession`（`storage/models.py:25-35`）与 `Project`（`:38-43`）都没有 owner 字段，会话即全权。其二：随后又猜「真正缺的是那条集成检查」——`tests/test_orchestration_integration.py:260` 正是这条检查，它按 `EvidenceView` 契约读回真实档案并通过。**教训与本轮其他几处更正同形：理由必须查证，不能推断。** 撤回后该路由没有留下待办：会话鉴权（`api/app.py:326`）、路径包含校验（`orchestration.py:1516`）、逐字节 sha256+size 复核（`:1530`）与契约形状检查都已存在。
+9. **§2.1、§4.1、§4.3 与 §6 已就地更正**（第 1–5、8 条对应），其余原始结论保留。按 `docs/validation/README.md:30` 的同一约定，更正另立本节，不改写上文已成立的结论。

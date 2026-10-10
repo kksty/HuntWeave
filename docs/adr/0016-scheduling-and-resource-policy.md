@@ -1,6 +1,6 @@
 # ADR-0016：调度、槽位与资源政策
 
-日期：2026-10-10。状态：已采纳，待实施（设计已确定，能力未实现）。细化 ADR-0009/0011/0014；图语义与投影边界见 [ADR-0015](./0015-graph-semantics-and-projection-boundary.md)。保持六个 Module、`app/postgres/runner` 三常驻服务与单机 Compose；不引入多机调度、独立调度服务或第二套队列。
+日期：2026-10-10。状态：已采纳，待实施（设计已确定，能力未实现）。细化 ADR-0009/0011/0014；图语义与投影边界见 [ADR-0015](./0015-graph-semantics-and-projection-boundary.md)。保持六个 Module、`app/postgres/runner` 三常驻服务与单机 Compose；不引入多机调度、独立调度服务或第二套队列。**深度档位条款已由 [ADR-0025](./0025-remove-the-research-depth-tier.md) 部分替代（2026-10-11）：本节其余设计不受影响。**
 
 ## 背景
 
