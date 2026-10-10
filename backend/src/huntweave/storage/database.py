@@ -16,6 +16,7 @@ BUSINESS_REVISIONS = (
     "0008_retention_decisions",
     "0009_planning_attempt_identity",
     "0010_service_facts",
+    "0011_event_retention",
 )
 
 

@@ -1,0 +1,37 @@
+{
+  "name": "event_retention_view",
+  "kind": "response",
+  "materializes": {
+    "model": "event_retention",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": null
+  },
+  "describes": "A Run whose timeline was pruned at cursor 120 and still holds everything after it. `events_are_authority` is false by construction and `authoritative_sources` names the records that answer what the Run did, so 'the events were cleaned up' and 'the record of the action is gone' cannot be read as the same statement.",
+  "payload": {
+    "run_id": "99999999-9999-4999-8999-999999999999",
+    "committed": 240,
+    "retained_from": 120,
+    "retained_events": 120,
+    "pruned_events": 120,
+    "policy_enabled": true,
+    "keep_events": 120,
+    "events_are_authority": false,
+    "authoritative_sources": [
+      "huntweave.runs",
+      "huntweave.research_tasks",
+      "huntweave.decisions",
+      "huntweave.tool_calls",
+      "huntweave.tool_results",
+      "huntweave.evidence",
+      "execution_archive"
+    ]
+  },
+  "source": {
+    "file": "backend/src/huntweave/contracts/event_stream.py",
+    "lines": "136-164",
+    "note": "EventRetentionView; the prune itself is runs/events.py:prune_events, which deletes only from `audit_events`."
+  }
+}

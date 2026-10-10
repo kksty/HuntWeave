@@ -1,0 +1,22 @@
+{
+  "name": "session_expired",
+  "kind": "response",
+  "materializes": {
+    "model": "event_stream_failure",
+    "status": "200"
+  },
+  "reason_code": "authentication_required",
+  "state": {
+    "must_fail": "session_revoked"
+  },
+  "describes": "The terminal frame of a stream whose session stopped being valid while the connection was open. The reason code says which of expiry, revocation or key rotation happened, so the console replaces the timeline with a login and does not render a dead stream as a network blip.",
+  "payload": {
+    "reason_code": "authentication_required",
+    "detail": {"status_code": 401}
+  },
+  "source": {
+    "file": "backend/src/huntweave/api/events.py",
+    "lines": "63-97",
+    "note": "`stream_probe` returns the access service's own reason code; the stream yields it as `event: session_expired` and returns."
+  }
+}

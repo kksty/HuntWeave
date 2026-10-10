@@ -153,6 +153,7 @@ export const messages: Record<string, string> = {
   dependency_failed: '依赖或工具执行失败。', execution_unreachable: '执行端暂时不可达，等待重新对账。',
   lease_stale: '任务租约已过期。', invalid_evidence_range: '证据读取范围无效。',
   event_cursor_ahead: '事件游标超出当前已发布进度。',
+  event_cursor_expired: '事件游标已过期：该区间的事件已按保留策略清理，请重新读取状态快照后从快照游标继续。',
   // -- the execution ledger's refusals ---------------------------------------------------------
   runner_state_already_owned: '执行端账本已被其他进程占用。', runner_state_unavailable: '执行端账本不可用，固定假动作无法推进。',
   call_id_conflict: '同一调用 ID 配了不同的参数，已拒绝。', parameters_hash_mismatch: '票据的规范化参数 hash 与实际参数不一致。',

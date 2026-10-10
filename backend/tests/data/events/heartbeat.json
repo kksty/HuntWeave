@@ -1,0 +1,21 @@
+{
+  "name": "heartbeat",
+  "kind": "response",
+  "materializes": {
+    "model": "none",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": null
+  },
+  "describes": "The P1 heartbeat frame, unchanged by this slice: it carries the mode the platform is really in, emitted at most every five seconds so a quiet Run is distinguishable from a dead stream (PROJECT.md section 12.1).",
+  "payload": {
+    "mode": "demonstration"
+  },
+  "source": {
+    "file": "backend/src/huntweave/api/events.py",
+    "lines": "233-238",
+    "note": "The frame body is the capability mode; the existing console reads `event: heartbeat` and updates its last-heartbeat time."
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "event_cursor_ahead",
+  "kind": "error",
+  "materializes": {
+    "model": "error_envelope",
+    "status": "409"
+  },
+  "reason_code": "event_cursor_ahead",
+  "state": {
+    "must_fail": "cursor_ahead"
+  },
+  "describes": "The client's cursor is ahead of anything the Run has claimed, or sits inside a hole a rolled-back transaction left and will never fill. Both are 'nothing exists at or after this position', which is not the same as 'the events were pruned' and does not ask for a snapshot reload.",
+  "payload": {
+    "reason_code": "event_cursor_ahead"
+  },
+  "recovery": {
+    "required_action": "reread_current_cursor",
+    "note": "The cursor is not from this Run's timeline, or the client fabricated a position: read the timeline again from zero or from the last cursor it actually received."
+  },
+  "source": {
+    "file": "backend/src/huntweave/runs/events.py",
+    "lines": "193-203",
+    "note": "Pre-existing code (contracts/errors vocabulary), kept as the 'ahead' answer so it is never rendered as 'caught up'."
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "event_history_page",
+  "kind": "response",
+  "materializes": {
+    "model": "event_history",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": null
+  },
+  "describes": "A client that is current: its cursor caught up with everything a fresh read can continue through. `published == committed` is the statement that no writer is mid-claim, so the empty page is 'you are up to date', not 'we could not ask'.",
+  "payload": {
+    "run_id": "99999999-9999-4999-8999-999999999999",
+    "contract_version": 1,
+    "events": [
+      {
+        "cursor": 41,
+        "type": "tool_completed",
+        "payload": {"call_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "status": "succeeded"},
+        "created_at": "2026-10-11T09:00:04Z"
+      },
+      {
+        "cursor": 42,
+        "type": "decision",
+        "payload": {"decision_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "action": "finish_research"},
+        "created_at": "2026-10-11T09:00:05Z"
+      }
+    ],
+    "after": 40,
+    "committed": 42,
+    "published": 42,
+    "retained_from": 0,
+    "next_cursor": 42,
+    "gap": false,
+    "resync_required": false,
+    "reload_reason": null
+  },
+  "source": {
+    "file": "backend/src/huntweave/contracts/event_stream.py",
+    "lines": "58-96",
+    "note": "EventHistoryView; `committed`/`published`/`retained_from` are defined in backend/src/huntweave/runs/events.py."
+  }
+}

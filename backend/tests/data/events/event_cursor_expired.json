@@ -1,0 +1,28 @@
+{
+  "name": "event_cursor_expired",
+  "kind": "error",
+  "materializes": {
+    "model": "error_envelope",
+    "status": "409"
+  },
+  "reason_code": "event_cursor_expired",
+  "state": {
+    "must_fail": "cursor_expired"
+  },
+  "describes": "The client's Last-Event-ID is below the Run's retained timeline: the events were removed by the timeline retention policy, so the catch-up cannot be completed and the client must take the state snapshot again. The refusal is what stops a truncated timeline from being served as a complete one (PROJECT.md section 12.1).",
+  "payload": {
+    "reason_code": "event_cursor_expired"
+  },
+  "recovery": {
+    "required_action": "reload_snapshot",
+    "snapshot_endpoint": "/api/v1/runs/99999999-9999-4999-8999-999999999999/snapshot",
+    "resume_from_field": "cursor",
+    "retained_from": 120,
+    "committed": 240
+  },
+  "source": {
+    "file": "backend/src/huntweave/runs/events.py",
+    "lines": "186-192",
+    "note": "`page_events` raises it when `after < retained_from_cursor`; `event_cursor_ahead` stays a separate code for a cursor ahead of anything claimed."
+  }
+}

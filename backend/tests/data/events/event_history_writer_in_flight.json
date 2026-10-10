@@ -1,0 +1,31 @@
+{
+  "name": "event_history_writer_in_flight",
+  "kind": "response",
+  "materializes": {
+    "model": "event_history",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": null
+  },
+  "describes": "A writer holds the Run's event cursor row lock and has claimed cursor 43, which no other transaction can read yet. The page stops at what it can prove: `published` stays at 42 while `committed` is 43, so the client waits instead of resyncing and the reader never walks over the uncommitted event.",
+  "payload": {
+    "run_id": "99999999-9999-4999-8999-999999999999",
+    "contract_version": 1,
+    "events": [],
+    "after": 42,
+    "committed": 43,
+    "published": 42,
+    "retained_from": 0,
+    "next_cursor": 42,
+    "gap": false,
+    "resync_required": false,
+    "reload_reason": null
+  },
+  "source": {
+    "file": "backend/src/huntweave/runs/events.py",
+    "lines": "75-96",
+    "note": "`committed` is `EventCursor.cursor` (claimed under `with_for_update`, runs/events.py:88); `published` is the contiguous prefix a fresh read can see."
+  }
+}

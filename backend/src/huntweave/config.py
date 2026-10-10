@@ -128,6 +128,25 @@ def retention_sweep_seconds() -> int:
     return value
 
 
+def event_retention_keep() -> int:
+    """How many of a Run's most recent events this deployment keeps.
+
+    Zero disables pruning, which is the default: a timeline that is never pruned cannot report a
+    gap, and a deployment that has not decided how long an operator needs to replay a Run should not
+    have that decision made for it by a default. A positive value is the retention policy for the
+    *timeline* only — never for the business record or the archived evidence, which have their own
+    lifetimes (`PROJECT.md` section 12, `0002` section 3.8).
+    """
+    raw = os.environ.get("HUNTWEAVE_EVENT_RETENTION_KEEP", "0")
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError("HUNTWEAVE_EVENT_RETENTION_KEEP must be an integer") from None
+    if value < 0:
+        raise ValueError("HUNTWEAVE_EVENT_RETENTION_KEEP must not be negative")
+    return value
+
+
 def database_url(role: str = "app") -> URL:
     if role not in {"app", "checkpoint", "migrator"}:
         raise ValueError("Unsupported database role")

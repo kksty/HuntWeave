@@ -37,6 +37,7 @@ from sqlalchemy import Engine, exists, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from huntweave.contracts.errors import ServiceError
+from huntweave.contracts.event_stream import EVENT_STREAM_CONTRACT_VERSION
 from huntweave.contracts.execution import (
     ExecutionObservation,
     ExecutionProfile,
@@ -56,13 +57,12 @@ from huntweave.contracts.resources import (
 )
 from huntweave.contracts.runs import ScopeSnapshot
 from huntweave.harness.model import PROMPT_VERSION, ModelSuggestion
-from huntweave.runs.events import append_event
+from huntweave.runs.events import append_event, page_events, retained_from_cursor
 from huntweave.runs.service import RunService
 from huntweave.runs.suspension import Suspension, record_interruption, suspend
 from huntweave.storage.database import database_now
 from huntweave.storage.models import (
     AgentSession,
-    AuditEvent,
     BudgetReservation,
     Decision,
     EventCursor,
@@ -2247,36 +2247,96 @@ class OrchestrationService:
             }
 
     def history(self, run_id: UUID, after: int = 0, limit: int = 100) -> dict[str, Any]:
+        """The committed events after `after`, in the P0 page shape.
+
+        This stays the page shape `EventPage` (contracts/orchestration.py) already describes,
+        because that contract belongs to another slice and its callers read it today. What changed
+        here is underneath: the page is now the *contiguous* prefix of the Run's cursors and reports
+        a real `gap` instead of a hard-coded `False`. A caller that wants the three positions apart
+        — `committed` / `published` / `retained_from` — reads `EventHistoryView`
+        (contracts/event_stream.py) through the event router, which is the contract the console and
+        the graph are meant to merge on. Raising `event_cursor_expired` for a pruned cursor is the
+        same decision in both shapes: the events are gone, and the answer is a reload, not a page.
+        """
         if after < 0 or not 1 <= limit <= 500:
             raise ServiceError("invalid_event_cursor", 422)
         with Session(self.engine()) as session:
             if session.get(Run, run_id) is None:
                 raise ServiceError("run_not_found", 404)
-            cursor = session.get(EventCursor, run_id)
-            current = cursor.cursor if cursor else 0
-            if after > current:
-                raise ServiceError("event_cursor_ahead", 409)
-            events = list(
-                session.scalars(
-                    select(AuditEvent)
-                    .where(AuditEvent.run_id == run_id, AuditEvent.cursor > after)
-                    .order_by(AuditEvent.cursor)
-                    .limit(limit)
-                )
-            )
+            window = page_events(session, run_id, after, limit)
             return {
-                "events": [
-                    {
-                        "cursor": x.cursor,
-                        "type": x.type,
-                        "payload": x.payload,
-                        "created_at": x.created_at.isoformat(),
-                    }
-                    for x in events
-                ],
-                "next_cursor": events[-1].cursor if events else after,
-                "gap": False,
+                "events": window.events,
+                "next_cursor": window.next_cursor,
+                # Always false here, and deliberately so: this page is the contiguous prefix, and a
+                # cursor below the retained timeline is refused with `event_cursor_expired` before a
+                # page is built. A client that wants the gap *stated in a success body* — the shape
+                # the console and the graph merge on — reads `EventHistoryView` instead, which
+                # carries `resync_required` and `retained_from` together.
+                "gap": window.resync_required,
             }
+
+    def event_history(self, run_id: UUID, after: int = 0, limit: int = 100) -> dict[str, Any]:
+        """The resumable-timeline page: the contiguous events plus the positions that place them.
+
+        This is the shape `contracts/event_stream.py` describes and the one the console and the
+        graph are meant to merge on: `committed` vs `published` says whether a writer is still
+        mid-claim, and `retained_from` says how far back this Run's timeline still exists at all. A
+        cursor below that floor is refused with `event_cursor_expired` *before* any page is built —
+        the events are gone, so "here is the oldest survivor" would read as the beginning of the
+        timeline.
+        """
+        with Session(self.engine()) as session:
+            if session.get(Run, run_id) is None:
+                raise ServiceError("run_not_found", 404)
+            window = page_events(session, run_id, after, limit)
+            return {
+                "run_id": run_id,
+                "contract_version": EVENT_STREAM_CONTRACT_VERSION,
+                "events": window.events,
+                "after": after,
+                "committed": window.committed,
+                "published": window.published,
+                "retained_from": window.retained_from,
+                "next_cursor": window.next_cursor,
+                "gap": window.gap,
+                "resync_required": window.resync_required,
+                "reload_reason": window.reload_reason,
+            }
+
+    def event_stream_opening(self, run_id: UUID, after: int) -> dict[str, Any]:
+        """What a stream reports about its own coordinate before sending any increment.
+
+        A stream that begins with events but not with its position leaves a client unable to tell
+        whether the first increment continues its snapshot or belongs to a timeline that was pruned
+        underneath it; this is the frame that answers that, and it is why a cursor that cannot be
+        served is refused here, before the connection is established, rather than after.
+        """
+        with Session(self.engine()) as session:
+            if session.get(Run, run_id) is None:
+                raise ServiceError("run_not_found", 404)
+            # The widest page the contract allows, because this frame reports the Run's coordinate
+            # rather than a page's reach: `published` here is how far a fresh read of this timeline
+            # can continue, not how many events one request happened to carry.
+            window = page_events(session, run_id, after, 500)
+            return {
+                # `str`, not the UUID: this frame is serialized straight into the SSE body, and a
+                # `UUID` object there is a `TypeError` at stream time rather than at validation
+                # time.
+                "run_id": str(run_id),
+                "contract_version": EVENT_STREAM_CONTRACT_VERSION,
+                "snapshot_cursor": window.committed,
+                "committed": window.committed,
+                "published": window.published,
+                "retained_from": window.retained_from,
+                "resync_required": window.resync_required,
+                "reload_reason": window.reload_reason,
+                "opened_at": datetime.now(UTC).isoformat(),
+            }
+
+    def retained_from(self, run_id: UUID) -> int:
+        """How far this Run's timeline reaches back, for a stream that must say so when it ends."""
+        with Session(self.engine()) as session:
+            return retained_from_cursor(session, run_id)
 
     def evidence(self, evidence_id: UUID, offset: int = 0, limit: int = 65536) -> dict[str, Any]:
         if offset < 0 or not 1 <= limit <= 65536:

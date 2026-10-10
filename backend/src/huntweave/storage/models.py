@@ -599,6 +599,10 @@ class EventCursor(Base):
     __tablename__ = "event_cursors"
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), primary_key=True)
     cursor: Mapped[int] = mapped_column(Integer, default=0)
+    # The highest cursor whose events retention has removed. It is stored rather than derived:
+    # once the rows are gone, no query over `audit_events` can tell "pruned" from "never written",
+    # and a reader with an older Last-Event-ID is owed that distinction (PROJECT.md section 12.1).
+    retained_from_cursor: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class AuditEvent(Base):

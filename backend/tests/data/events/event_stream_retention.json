@@ -1,0 +1,29 @@
+{
+  "name": "event_stream_retention",
+  "kind": "response",
+  "materializes": {
+    "model": "event_stream",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": null
+  },
+  "describes": "The frame an SSE stream opens with, before any increment. It carries the coordinate the increments belong to, so a client whose snapshot cursor is behind `retained_from` learns that it must reload the snapshot instead of merging increments into an older context (0006 section 9).",
+  "payload": {
+    "run_id": "99999999-9999-4999-8999-999999999999",
+    "contract_version": 1,
+    "snapshot_cursor": 240,
+    "committed": 240,
+    "published": 240,
+    "retained_from": 120,
+    "resync_required": false,
+    "reload_reason": null,
+    "opened_at": "2026-10-11T09:10:00Z"
+  },
+  "source": {
+    "file": "backend/src/huntweave/contracts/event_stream.py",
+    "lines": "99-121",
+    "note": "EventStreamView; emitted by api/events.py as the first `event: retention` frame of the stream."
+  }
+}
