@@ -294,6 +294,20 @@ $env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE = "1"
 | — | 第 9 条判定原为「通过」 | **下调为「部分通过」**，并写明两项零值断言的实际证明范围 | 判定表第 9 行 |
 | — | 第 6 条判定原写「通过（控制面）／一项受限」 | 改为**「受限（部分）」**，正视「纯检查在证明一个生产代码今天永远不会传进来的形状」这一点 | 判定表第 6 行 |
 
+### 合入 `#43` 后的位置更正（2026-10-11，协调人补记）
+
+`#43` 删除了旧的整段 `plan()`，把一次计划拆成 `begin_planning → 事务外模型判断 → commit_planning`。本记录里「**`plan()`** 在同一短事务内预留物理额度」「`plan()` 在 `replacing` 路径之后、创建 `ToolCall` 之前检查」这类指向 `plan()` 的说法，因此**只描述 #21 交付时的位置**。语义未变，落点已变：
+
+| 本记录的说法 | 合入 `#43` 后的实际位置 |
+| --- | --- |
+| `plan()` 在创建 `ToolCall` 的同一短事务内、`BudgetReservation`/`Outbox` 之前取锁并统计物理占用 | `runs/orchestration.py::_dispatch`：`_lock_execution_slots` → `_execution_quota` → `slot_wait` 的道次，仍在写 `ToolCall`/`BudgetReservation`/`Outbox` 的同一短事务内 |
+| 先全局键、再按排序取目标键（锁先于计数） | 未变（`_lock_execution_slots` 仍在 `_execution_quota` 之前） |
+| 超限只写一条 `execution_backpressure` 后返回 `None`，不领取任何东西 | 未变；去重键 `str(decision_id) + ":backpressure"` 随移植保留 |
+| 受控复现（重派）走同一处门控 | 未变；额度门在 `replacing is None / Redispatch` 分支**之后**，两条路径共用 |
+| 「决策已提交但调用未预留」可续跑 | 未变，但在 `#43` 的结构下位于 `begin_planning` 的已提交分支 |
+
+`test_concurrency_integration.py` 与 `test_concurrency_stress.py` 的调用点也随 `#43` 改为经 `tests/_planning.py` 的 `plan_step` 走三段协议。**这两个文件在 `#43` 合入前一直在调用已删除的 `plan()`，而它们被 `-m "not integration"` 跳过，所以本记录第 6 条的额度门控当时其实没有任何检查在跑**（该缺陷、修复与变异验证见 [0024](./0024-model-outside-transactions.md) 的「合入基线、重放与 #21 的合成」）。本记录其余结论（容量、延迟、判定、限制）不受影响。
+
 ## 待人工确认
 
 - 本票**未** push、**未**关闭 Issue、**未**合并到 `main`、**未** rebase（历史的 rebase 由协调人执行）；分支 `codex/21-concurrency-acceptance` 上的提交由总协调人决定合入顺序。

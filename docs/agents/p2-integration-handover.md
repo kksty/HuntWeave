@@ -1,8 +1,10 @@
-# P2 多切片并行的集成交接（2026-10-11）
+# P2 多切片并行的集成交接（2026-10-11，第二轮）
 
 本文件是**一次协调会话的交接记录**，供下一个会话接续。它只记「当前进行到哪、还差什么、按什么顺序合」；阶段、能力与下一实施项仍只在 [STATUS](../STATUS.md) 维护，验收要求见 [0003 §8–9](../specs/0003-agent-research.md) 与 [PROJECT §14](../../PROJECT.md)，分批顺序见 [P2 切片分批执行计划](./p2-execution-batches.md)。
 
-## 1. 已合入并关闭（`main` 上已有）
+> **本文件先前的版本有三处判断错误，已更正**：① `#43` 的 rebase 状态并非「目录已不在、必须按 reflog 重建」——它是**可继续**的；② `#45` **不是**「加一行 `include_router`」的活，`api/app.py` 里有两条**必须删除**的重复路由；③ `#43` 的合成遗留了三处**只在集成后才可见**的缺陷，其中一处使移植过来的背压语义**零验证**。逐条见第 9 节。
+
+## 1. 已合入 `main`
 
 | 票 | 合入点 | 交付 | 验证记录 |
 | --- | --- | --- | --- |
@@ -10,77 +12,114 @@
 | [#33](https://github.com/kksty/HuntWeave/issues/33) V-A token 层与字体自托管 | `3ca3684` | `frontend/src/tokens.css`（唯一色值来源）、五个 OFL 字族自托管、`npm run check:design`（16 项，**已接入 CI**） | [0021](../validation/0021-visual-tokens.md) |
 | [#38](https://github.com/kksty/HuntWeave/issues/38) P2 Phase 0 | `c8033c8` | [0010 来源盘点与契约交接](../specs/0010-phase0-source-inventory.md)、`contracts/phase0.py`、8 个必失败样例 | [0023](../validation/0023-phase0-source-inventory.md) |
 | [#21](https://github.com/kksty/HuntWeave/issues/21) 多活跃 Run 并发压力验收 | `42cf892` | `contracts/resources.py` 版本化资源政策、同 IP 串行、额度耗尽背压、`claim()` 不再白占轮次 | [0022](../validation/0022-concurrency-quota.md) |
+| [#43](https://github.com/kksty/HuntWeave/issues/43) P2-A1 事务外模型请求 | `2ca7ca8`（**`main` 现 head**） | 三段协议 `begin_planning → 事务外模型判断 → commit_planning`、独立任务/会话/决策身份、`0009_planning_attempt_identity` | [0024](../validation/0024-model-outside-transactions.md) |
 
-`main` 当前 head：`8bfe9e8`（`docs/STATUS.md` 同步：`#21` 已关闭、**P1 切片全部交付、阶段未退出**）。
+`main` 现 head：`2ca7ca8`，比 `origin/main` **ahead 8**，**尚未 push**。GitHub 侧的 Issue 状态**一律未动**（未评论、未关闭、未改标签）：推送与关闭由维护者决定。
+
+`main` 上的纯检查（`cd backend`，`python -m pytest -m "not integration" -q`）：**331 passed, 16 skipped, 54 deselected**；ruff、mypy 干净。
 
 ## 2. 进行中（各有独立 worktree + 分支，**均未 push**）
 
 分支命名 `codex/<编号>-<slug>`，worktree 在 `D:\code\huntweave-wt\<编号>-<slug>`。
 
-**三支的工作都还在工作区里、尚未提交完成**（协调会话按用户要求停止时中断了它们）。接手的会话应把它们当作「**未完成的实现**」来处理：先看代码与报告，跑三条检查，必要时补完，再走评审与合入。
+**两支的工作都还在工作区里、尚未提交。** 本轮已为它们各打了一个**安全快照 tag**（先 `git add -A`，再 `git stash create` 取对象、打 tag，最后 `git reset`；工作区与分支都未被改动，快照含未跟踪新文件）：
 
-| 票 | 分支 / worktree | 状态 |
-| --- | --- | --- |
-| [#43](https://github.com/kksty/HuntWeave/issues/43) P2-A1 事务外模型请求 | `codex/43-p2-a1-model-outside-transactions` | **被中断的 rebase 残留**：detached HEAD、`orchestration.py` 有未合并索引项；3 个文件已 stage、其余已改。见下 |
-| [#44](https://github.com/kksty/HuntWeave/issues/44) P2-B1 服务事实与血缘 | `codex/44-p2-b1-facts-and-lineage` | 实现与守卫修改都在工作区（`contracts/facts.py`、`runs/facts.py`、`api/facts.py`、`0010_service_facts.py`、两个检查文件均为**未跟踪新增**）；待提交 |
-| [#45](https://github.com/kksty/HuntWeave/issues/45) P2-E2 事件保留与补拉 | `codex/45-p2-e2-event-retention-resync` | 同上（`contracts/event_stream.py`、`runs/event_retention.py`、`api/events.py`、`0011_event_retention.py`、固定夹具目录、两个检查文件未跟踪新增）；并已改 `frontend/src/workspace.ts` 加 `event_cursor_expired` 文案 |
+| 票 | 分支 / worktree | 安全快照 | 状态 |
+| --- | --- | --- | --- |
+| [#44](https://github.com/kksty/HuntWeave/issues/44) P2-B1 服务事实与血缘 | `codex/44-p2-b1-facts-and-lineage` / `D:\code\huntweave-wt\44-p2-b1-facts-and-lineage` | tag `wip-44-preintegration` = `969e50b` | 实现完整、未提交、未 rebase、**未接线** |
+| [#45](https://github.com/kksty/HuntWeave/issues/45) P2-E2 事件保留与补拉 | `codex/45-p2-e2-event-retention-resync` / `D:\code\huntweave-wt\45-p2-e2-event-retention-resync` | tag `wip-45-preintegration` = `4b642ec` | 同上 |
 
-### `#43` 的 worktree 处于**未完成的 rebase**（接手时先处理这一处）
+取回单个文件：`git -C <worktree> checkout <tag> -- <path>`；看整支差异：`git -C <worktree> diff <tag>`。
 
-`git -C <43 worktree> status` 显示：`HEAD` 处于 **detached**、`backend/src/huntweave/runs/orchestration.py` 仍有 **未合并索引项**（`ls-files -u` 有 stage 1/2/3），另有两处已 stage、其余 6 个文件已修改/新增。**rebase 目录已不在**，所以它是一个**被中断的 rebase 残留**，不是可继续的 rebase 状态。
+两支都从 `c8033c8` 切出（**早于 #21 与 #43**），因此都必须先 `git rebase main` 再补完。
 
-- **不要** `git rebase --abort` / `--skip` / `reset --hard` 就当作重来——那会丢掉已经解决的部分与三处已 stage 的改动。
-- 建议接手方式：先在 `orchestration.py` 里手工消除冲突标记并保留双方语义（见第 4 节），跑绿三条检查后再决定是 `git rebase --continue` 还是直接以 `HEAD` 重建提交。
-- **原始 6 个提交在 reflog 里仍可见**（`654da66` / `b81e9e5` / `07f503b` / `3c891c4` / `5df2a64` / `763aca1`，基线 `c8033c8`）；若决定重做，这是可靠的恢复点。
+## 3. 合入顺序与迁移链
 
-**注意**：worktree 的 `origin/main` ref 可能过期。**判断某分支的真实增量要用它的 merge-base**，不要用 `git diff origin/main..HEAD`（那会把别人已合入的提交显示成「被本分支删除」）。
-
-## 3. 合入顺序与迁移链（重要）
-
-三支各自新增了一条迁移，**都从 `0008_retention_decisions` 起步**，因此合入时必须**线性化**：
+`#43` 已合入，余下两支各自新增一条迁移，都仍指向 `0008_retention_decisions`，合入时**必须线性化**：
 
 | 顺序 | 票 | 迁移 | 合入时要做的 |
 | --- | --- | --- | --- |
-| 1 | #43 | `0009_planning_attempt_identity` | `down_revision` 已是 `0008_retention_decisions`，**不用改** |
-| 2 | #44 | `0010_service_facts` | 把 `down_revision` 改为 `0009_planning_attempt_identity` |
-| 3 | #45 | `0011_event_retention` | 把 `down_revision` 改为 `0010_service_facts` |
+| 1 | `#44` | `0010_service_facts` | `down_revision` 改为 `0009_planning_attempt_identity`；`storage/database.py` 的 `BUSINESS_REVISIONS` 补成线性 `("0008_retention_decisions", "0009_planning_attempt_identity", "0010_service_facts")`；迁移文件 docstring 里 `Revises: 0008_retention_decisions` 一行同步 |
+| 2 | `#45` | `0011_event_retention` | `down_revision` 改为 `0010_service_facts`；`BUSINESS_REVISIONS` 补到 `0011` |
 
-每步都要同步 `backend/src/huntweave/storage/database.py` 的 `BUSINESS_REVISIONS` 元组顺序，并保持**单一 head**。`tests/test_the_migration_chain_is_linear_and_has_exactly_one_head` 会抓分叉。
+每步保持**单一 head**，`tests/test_phase0_contracts.py::test_the_migration_chain_is_linear_and_has_exactly_one_head` 会抓分叉。注意同一文件的表清单守卫读 `0010-phase0-source-inventory.md` 里**声明为基线的 head**，改那句话会同时改守卫允许的表范围——两者要一起改。
 
-## 4. #43 合成的关键点（最需要复核的一处）
+## 4. `#43` 的合成：已做完，但本轮查出三处漏项
 
-`#43` **删除了旧的整段 `plan()`**，拆成 `begin_planning → ModelAdapter.decide → commit_planning`（模型调用**无事务无锁**）；而 `#21` 此前把**物理额度与背压**逻辑插进了那个旧 `plan()`。因此 rebase 的 6 处冲突不是二选一，而是**把 #21 的额度语义移植进 #43 的新结构**。复核时必须确认这些语义都还在：
+`#43` 删除了旧的整段 `plan()`；而 `#21` 此前把**物理额度与背压**逻辑插进了那个旧 `plan()`。所以重放不是二选一，而是**把 #21 的额度语义移植进 #43 的新结构**。逐条核对（均在 `runs/orchestration.py::_dispatch`），**语义全部在场**：锁先于计数、与 `ToolCall`/`BudgetReservation`/`Outbox` 同一短事务；背压写去重事件（`str(decision_id) + ":backpressure"`）后 `return None`、不留下任何行；受控重派走同一额度门（额度门在 `replacing` 分支之后）；`_reserved` 承载预算语义；「决策已提交但调用未预留」在 `begin_planning` 的已提交分支可续跑。
 
-- 额度检查与「锁定 + 计数 + 写 `ToolCall`」在**同一个短事务**内，**锁先于计数**；
-- 被背压时写去重的 `execution_backpressure` 事件、`return None`，**不留下 ToolCall / BudgetReservation / outbox 行**；
-- **受控重派也受同一额度门约束**；
-- 「预算不超限」语义在新结构里仍有承载（`_reserved` 一带）；
-- #21 的「decision 已提交但其 call 不存在（当时被额度拒绝，或进程在两步之间停止）」这个**可续跑**语义没有丢——丢了会把 Run 卡死。
+同一轮查出并修复三处**只在集成后才可见**的缺陷，细节与证据见 [0024](../validation/0024-model-outside-transactions.md)：
 
-`tests/test_execution_quota.py`（#21）与 #43 的身份/协议检查同时通过，是这次合成的真正验收。
+- **D1（最严重）**：`#43` 删了 `plan()`，但 `#21` 的 `test_concurrency_integration.py`（5 处）与 `test_concurrency_stress.py`（3 处）仍在调用它。两个文件都是 `pytestmark = integration`，纯检查与 CI 都跑 `-m "not integration"`，ruff 看不到属性、mypy 只扫 `src` —— 于是**移植过来的背压/额度语义当时没有任何检查在跑**。已改为经 `tests/_planning.py` 的 `plan_step` 走三段协议。
+- **D2**：`begin_planning` 的续跑分支直接 `return self._dispatch(...)`（形状里没有 `kind`），而唯一消费者 `harness/graph.py` 读 `handoff["kind"]` → 在「答案已提交、call 因额度被扣下、额度已归还」这条续跑路径上抛 `KeyError`。**这正是交接文档点名「丢了会把 Run 卡死」的那条语义。** 已包成 `{"kind": "reuse", "decision": ...}`，额度仍未归还时返回 `None`。
+- **D3**：`#43` 自己的 `settle()` 夹具不带 `ExecutionObservation`；按 `#21` 收紧后的规则「已结算」≠「已确认停止」，Run 因此不再可领取。已补上执行端的停止陈述。
 
-## 5. 共享面所有权（本轮的分配，后续批沿用）
+D1 与 D3 是同一类：**实现期的夹具按 `c8033c8` 的语义写，重放到语义已变的主线后，检查要么静默消失（D1）、要么变红（D3）**。下一个会话处理 `#44`/`#45` 时，默认预期同类问题：**先 `grep` 被 `#43`/`#21` 改动的符号（`plan(`、`.model`、`settle`、`ExecutionObservation`、`EventPage`、`history(`），再跑真库检查。**
 
-- `api/app.py` 的**路由装配归集成人**：实现会话在 `api/` 下写导出 router 工厂，把要加的 `include_router` 那一行写进报告，**不改 `app.py`**。
-  - **待加**（#44 已提供）：`from huntweave.api.facts import create_facts_router` + `app.include_router(create_facts_router(database))`。
-- `contracts/errors.py` 的原因码是共享面：新增必须在同一提交同步 `tests/test_reason_codes.py` 与 `frontend/src/workspace.ts` 的 `messages` 映射。#44/#43 已声明**零新增原因码**。
-  - **待办（#45 已新增一个，必须补齐三处）**：`#45` 的工作区里 `frontend/src/workspace.ts` 已加 `event_cursor_expired` 的文案，因此**必须**确认 `contracts/errors.py` 的权威载体与 `tests/test_reason_codes.py` 同提交收录该码；`#45` 交付时须逐条列出。这是本轮唯一新增的原因码。
-- `docs/specs/0010-phase0-source-inventory.md` 与 `contracts/phase0.py` 的事实维护：`#44` 新建 11 张表（`hosts`/`services`/`web_endpoints`/`observations`/`address_clues`/`research_lineage_references`/`service_bindings`/`service_coverage`/`service_navigation`/`service_cost_shares`/`service_settlements`），并会把 `Host`/`Service`/`WebEndpoint` 从 `LEGACY_OBJECTS_ABSENT` 移入 `LEGACY_OBJECTS_PRESENT`。**集成人要**把表清单补进 0010 §3.3 并修订「确实不存在」的表述。
-- `#38` 的表清单守卫由 `#44` 放宽为「`documented ⊆ expected` 保留；`expected - documented` 只允许**基线之后且被 `BUSINESS_REVISIONS` 收录**的迁移所建的表」——即按 revision 顺序判定，不用文件名前缀。
+## 5. `#44` 集成清单（已核对，可直接执行）
 
-## 6. 交接时确立、后续应继续沿用的做法
+- **`api/app.py`：加两行即可，无路由冲突。** `create_facts_router(engine: Callable[[], Engine])` 有 12 条全新路由，与 `main` 现有 39 条内联路由**零重叠**：`from huntweave.api.facts import create_facts_router` + `app.include_router(create_facts_router(database))`。
+- **迁移**：见第 3 节。`BUSINESS_REVISIONS` 当前被写成 `("0008...", "0010...")`（**跳过了 0009**），必须改。
+- **原因码：零新增**，`contracts/errors.py` 与 `frontend/src/workspace.ts` 都不用改。
+- **`contracts/phase0.py`**：把 `Host`/`Service`/`WebEndpoint` 从 `LEGACY_OBJECTS_ABSENT` 移入 `LEGACY_OBJECTS_PRESENT`（已做），并声明 11 张新表：`hosts`、`services`、`web_endpoints`、`observations`、`service_bindings`、`service_coverage`、`service_navigation`、`service_settlements`、`service_cost_shares`、`research_lineage_references`、`address_clues`（与 `models.py`、迁移三处一致）。
+- **`docs/specs/0010-phase0-source-inventory.md` 要改（协调人负责，`#44` 自己没改）**：`§3.3` 表补 11 行；`:15` 的「`Host`/`Service`/`WebEndpoint` **确实不存在**」改为存在；`:13`「另有 14 个对象」与 `:58`/`:77` 的「19 张业务表」按新的真实值改（对象 14→25、业务表 19→30）；`:73` 的「当前单一 head = `0008_retention_decisions`」随迁移线性化更新。
+- **两处待处理的实现问题**（评审判断项，可留可改，但不要当成已确认正确）：`runs/facts.py` 的 `_retention_limit` 里 `max(limit, now)` 分支不可达（死代码）；`contracts/facts.py` 的 `ATTRIBUTION_ANCHOR = "through"` 与 `ATTRIBUTION_PASSED_THROUGH = "anchor"` **名字与取值互换**。
+- **测试**：`tests/test_service_facts.py` 24 项纯检查；`tests/test_service_facts_integration.py` 29 项（`integration` 标记）。注意它的集成用例**自己挂载 router**（因为 `app.py` 当时没有 include），接线后应改为走打包好的 app，否则它证明不了生产路由集合。
 
-1. **每个切片两轴评审**（Standards + Spec）由**独立会话**做；实现会话若无法委派（`maxDepth=1`），其「两轴评审」是自评审，**必须另派独立复核**。#38 的独立复核查出两处自评审漏掉的**契约事实错误**（冻结输入 49 而非 43、样例用编造的门槛原因码），两处都是「检查存在但守不住结论 ⇒ 恒绿」。
-2. **新检查要做变异验证**：把结论写错一次，确认它变红，再还原。没有这一步就不知道检查是否真在守结论。
-3. **记录可复现性**：验证记录里的计数、hash、行号写**实际值**；引用历史时必须用真实路径，不要猜锚点（本轮踩过 `#81-实施前-phase-0` 与 `§6.2` 两个坏引用）。
-4. **不要用 shell 做中文文本的字符串手术**。本轮两次事故都出在这里：PowerShell 的 `Set-Content` 把 UTF-8 写成 ANSI 损坏了 `contracts/resources.py`；我的冲突解决脚本两次**静默丢掉** `docs/validation/README.md` 的索引行、一次把整表写空。**改用 Python 脚本按字节读写，并让脚本在「期望的行不存在」时拒绝写入**。
-5. **共享 Docker 验收环境**：常驻项目 `huntweave` 可能正被用户使用。只允许对其**只读**查询；需要写操作时用**一次性独立项目名 + 独立非默认回环端口**，用完只清理自己创建的项目。`deploy/compose.isolated-db.yaml` 的端口现为必填变量（缺变量即失败），这是有意的。
+## 6. `#45` 集成清单（已核对，可直接执行）
 
-## 7. 未决与待用户决定
+- **`api/app.py` 不是「加一行」，必须删两条内联路由。** `create_events_router(settings, database, mode_reader=None)` 注册 4 条路由，其中 `GET /api/v1/runs/{run_id}/event-history`（`app.py:460-466`）与 `GET /api/v1/runs/{run_id}/events`（`app.py:518-562`，SSE）与内联处理器**路径+方法完全相同**。两者都注册时 FastAPI 取先注册的（内联那条），**切片会被静默架空**。删掉这两段，再加 `from huntweave.api.events import create_events_router` + `app.include_router(create_events_router(settings, database, capabilities_probe.current))`（`mode_reader` 要传能力探针，SSE 心跳的 `mode` 从这里取）。
+- **删除后 `app.py` 变成未使用的导入**：`asyncio`、`time`、`json`、`AsyncIterator`、`StreamingResponse`、`EventPage`。**`SQLAlchemyError` 必须保留**（异常处理器仍在用），`run_in_threadpool` 也保留（中间件仍在用）；`Request` 保留。
+- **迁移**：见第 3 节。`BUSINESS_REVISIONS` 当前被写成 `("0008...", "0011...")`（**跳过 0009/0010**），必须改。
+- **原因码**：新增 `event_cursor_expired`（`runs/events.py`，409）。`contracts/errors.py` 里**没有任何原因码常量**（只有 `ServiceError`），所以「三处同步」的机械部分是 `tests/test_reason_codes.py` 的候选扫描——它会自动收录；`frontend/src/workspace.ts` 的文案已加（worktree 第 156 行）。**仍应人工确认 `test_reason_codes.py` 真的收录了它**（跑一次该文件即可），别只依赖「机械收录」的说法。
+- **`#43` 的连带损伤**：`tests/test_event_retention_integration.py:326` 调用被删除的 `orchestration.plan(...)`，rebase 后会 `AttributeError`（且它被 `integration` 标记挡住，纯检查看不见）。
+- **ruff 有 5 处 E501**：4 处在新增文件（`0011_event_retention.py` 3 处、`test_event_retention_and_resync.py` 1 处），1 处是既有的 `0007_drop_login_throttle.py:7`（不是本票引入，按仓库现状处理）。
+- **配置未文档化**：新增 `HUNTWEAVE_EVENT_RETENTION_KEEP`（默认 `0` = 不清理），`deploy/compose.yaml` 与 `README.md` 都**没有**记录它。README 的保留策略表只列了 `HUNTWEAVE_RETENTION_*`。
+- **前端未接**：`frontend/src/RunConsole.vue:178,185` 仍消费旧的 `{events, next_cursor, gap}` 形状与旧 SSE 帧。`EventHistoryView` 比旧的 `EventPage` 宽（`extra="forbid"`），所以旧客户端容忍；但前端换到新帧属另一票，别在本票顺手扩大范围。
+
+## 7. 共享面所有权（沿用，并补充本轮实测）
+
+- `api/app.py` 的**路由装配归集成人**：实现会话在 `api/` 下写导出 router 工厂，把要加的 `include_router` 一行写进报告，**不改 `app.py`**。本轮实测：**加一行前必须先确认有没有重复路由**（`#45` 就是反例）。
+- `contracts/errors.py` 的原因码是共享面。本轮确认：该文件**没有原因码常量**，权威载体是 `backend_candidates()` 扫描的源码用法 + `tests/test_reason_codes.py` + `frontend/src/workspace.ts` 的 `messages`。新增原因码时三处都要看。
+- `docs/specs/0010-phase0-source-inventory.md` 与 `contracts/phase0.py` 的事实维护归集成人（见第 5 节）。
+- Alembic 迁移链、`contracts/` 共享模型、前端路由表：同 [分批执行计划](./p2-execution-batches.md) 第 4 节。
+
+## 8. 遗留环境与清理
+
+- **一次性** Compose 项目仍在运行（都不是常驻项目）：
+  - `hw-review43-pg`：postgres，`127.0.0.1:18931`，已 migrate 到 `0009_planning_attempt_identity` —— `#43` 集成期用的库。**下一轮做 `#44`/`#45` 的迁移线性化与集成检查时可以直接复用它**（它就是为此建的）。
+  - `huntweave-i44-facts`：postgres，`127.0.0.1:18777` —— `#44` 的一次性库。
+  - `hw-e2-retention`：postgres，`127.0.0.1:18455` —— `#45` 的一次性库。
+  - 各自清理：`docker compose --project-name <name> -f <config files> down -v`；**不要**用日常项目名。
+- 常驻项目 `huntweave`（`huntweave-app-1`/`-runner-1`/`-postgres-1`，端口 8000）全程**只读**，未启停、未清理。
+- 连接一次性库跑集成检查的环境变量（本轮实测可用）：
+
+  ```powershell
+  $env:HUNTWEAVE_DATABASE_URL = "postgresql+psycopg://postgres@127.0.0.1:18931/huntweave"
+  $env:HUNTWEAVE_APP_DB_PASSWORD_FILE = "D:\code\HuntWeave\runtime\secrets\app_db_password"
+  $env:HUNTWEAVE_CHECKPOINT_DB_PASSWORD_FILE = "D:\code\HuntWeave\runtime\secrets\checkpoint_db_password"
+  $env:HUNTWEAVE_MIGRATOR_DB_PASSWORD_FILE = "D:\code\HuntWeave\runtime\secrets\migrator_db_password"
+  $env:HUNTWEAVE_RUNNER_TOKEN_FILE = "D:\code\HuntWeave\runtime\secrets\runner_token"
+  $env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE = "1"
+  ```
+
+  worktree 里没有 `.venv`，用主仓库的 `D:\code\HuntWeave\backend\.venv\Scripts\python.exe`，并在 **worktree 的 `backend/` 目录内**运行（pytest 按 rootdir 解析 `pythonpath=src`）。
+- 两个安全快照 tag（`wip-44-preintegration`、`wip-45-preintegration`）在两支交付并删除分支/工作树后一并删除。
+
+## 9. 本文件先前的错误（逐条更正）
+
+| # | 先前版本的说法 | 实际 | 影响 |
+| --- | --- | --- | --- |
+| 1 | 「rebase 目录已不在，所以它是一个被中断的 rebase 残留，不是可继续的 rebase 状态」；建议「以 `HEAD` 重建提交」 | `.git/worktrees/43-…/rebase-merge` **完整存在**，停在 3/6，`stopped-sha = 3c891c4`；冲突标记已在工作区消除但未 `git add`。正确做法是 `git add` 后以 `rebase-merge/message` 重建该提交并 `rebase --continue` | 按旧说法重建会丢掉已解决的合成结果；本轮按正确路径走完 6 步 |
+| 2 | 第 5 节只写「`#44` 已提供 `include_router` 那一行」，对 `#45` 未提 `app.py` | `#45` 有两条**重复路由必须删除**，否则切片被静默架空；`#43` 则确实不需要新入口 | 只加 include 会让 `#45` 看起来通过而实际走旧内联处理器 |
+| 3 | 第 4 节把「`tests/test_execution_quota.py` + #43 身份/协议检查同时通过」当作「这次合成的真正验收」 | 那一条**不足以**验收：#21 真正守住背压/额度语义的是两个 `integration` 文件，而它们当时在调用已删除的 `plan()`，**从未跑过** | 合成一度带着 D1/D2 两处缺陷进入「检查已通过」状态 |
+
+## 10. 未决与待用户决定（不变）
 
 - **CIDR 是否纳入范围**（`0008 §6` 的 5 项待确认，[ADR-0026](../adr/0026-contract-alignment-readiness-cidr-and-queue.md) 记为唯一未决项）：未决定前保留 IP-only 与 `TARGET_LIMIT = 100`，C-F（[#30](https://github.com/kksty/HuntWeave/issues/30)）不含 CIDR 展开。**只阻塞 C-F**。
-- **P1 阶段与里程碑**：P1 的切片已全部交付，规格第 5 节 tracer 顺序走完，但**真实执行仍未开放**——[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md) 四项门槛尚缺 `profile_revalidation`（`profile_unvalidated`）与 `deployment_revert`（`revert_path_missing`），产品继续拒绝创建真实 Run。门槛补齐归 [#39](https://github.com/kksty/HuntWeave/issues/39)。**阶段退出与里程碑关闭是维护者决定**，本文件不代为宣布。
+- **P1 阶段与里程碑**：P1 切片已全部交付，但**真实执行仍未开放**——[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md) 四项门槛尚缺 `profile_revalidation` 与 `deployment_revert`，产品继续拒绝创建真实 Run。门槛补齐归 [#39](https://github.com/kksty/HuntWeave/issues/39)。**阶段退出与里程碑关闭是维护者决定**，本文件不代为宣布。
+- **推送与关闭 Issue**：`main` 已 ahead 8 且未 push；GitHub 侧一律未动。这是维护者的动作。
 
-## 8. 后续可执行前沿（按依赖，不必等批次同步）
+## 11. 后续可执行前沿（不变）
 
-`#43`/`#44`/`#45` 合入后：`#46`/`#47`（维护收尾，等 `#40`–`#42`）、`#49`–`#52`（第二层）、以及关键路径上的 `#39`→`#59`→…。可选票 `#48`（Linux 宿主复验）在未被领取前不进入任何一批的可执行前沿；`#32` 是 **P1 期的实测票**（三个热点：`agentd` 顺序推进、`ledger._persist()` 全量序列化、事件游标行锁），与 `#21` **串行使用验收环境**、口径不同（`#32` 测单进程热点与成本曲线并判断「调参数还是改结构」；`#21` 已做完并发正确性与校准值，且**没有**替 `#32` 下结论）。
+`#44`/`#45` 合入后：`#46`/`#47`（维护收尾，等 `#40`–`#42`）、`#49`–`#52`（第二层），以及关键路径上的 `#39`→`#59`→…。可选票 `#48`（Linux 宿主复验）在未被领取前不进入任何一批的可执行前沿；`#32` 是 **P1 期的实测票**（三个热点：`agentd` 顺序推进、`ledger._persist()` 全量序列化、事件游标行锁），与 `#21` **串行使用验收环境**、口径不同。
