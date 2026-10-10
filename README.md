@@ -29,7 +29,7 @@ flowchart LR
     Gateway -.->|"授权 IPv4 / TCP"| Target["授权目标"]
 ```
 
-实线表示已搭建的服务及存储关系；虚线表示待接入产品的执行链路。默认 Runner 未挂载 Docker socket。每会话网关方案已通过本地靶场验证，P1 接入执行票据、租约、资源管理和 Kali 工具环境后复验。
+实线表示已搭建的服务及存储关系；虚线表示待接入产品的执行链路。默认 Runner 未挂载 Docker socket，也不启用沙箱管理；只有显式用 `deploy/compose.sandbox.yaml` 启用后，Runner 才获得收窄的固定操作集（见「沙箱管理」一节）。每会话网关方案已通过本地靶场验证，其无目标网络的固定生命周期已接入 Runner 的受信管理组件（验证记录 `0011`）；出口放行与真实动作派发仍待 #18/#17。
 
 目标工作流：`Collector → Worker × N → Reviewer → 人工复审`。技术栈为 Python、FastAPI、SQLAlchemy / Alembic、PostgreSQL、LangGraph OSS、Vue 3 / TypeScript 和 Docker Compose。
 
@@ -85,6 +85,8 @@ app/runner 共用控制镜像，因此先单独 `build app`，再启动三个服
 | Web 端口覆盖 | `HUNTWEAVE_WEB_PORT` |
 | 浏览器同源入口 | `HUNTWEAVE_PUBLIC_ORIGIN`，默认 `http://127.0.0.1:<Web 端口>` |
 | HTTPS Cookie | `HUNTWEAVE_COOKIE_SECURE=true`，要求 HTTPS Origin；远程 HTTP 配置拒绝启动 |
+| 沙箱管理 | `HUNTWEAVE_SANDBOX_MANAGEMENT=enabled` 才启用（默认关闭，其他取值一律不启用），仅应由 `deploy/compose.sandbox.yaml` 设置 |
+| 沙箱执行 profile | `HUNTWEAVE_SANDBOX_PROFILE`，默认 `sandbox-lifecycle-v1`；profile 文件由镜像内 `/opt/huntweave/profiles/` 提供 |
 | 平台、Runner 与数据库 secrets | `runtime/secrets/` |
 
 端口覆盖可写入仓库根目录的 `.env`：
@@ -121,6 +123,20 @@ docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up --build --wa
 前端源码与构建配置变化不再触发镜像重建：`npm run build:watch` 在宿主重建 `frontend/dist`，Compose Watch 只做文件同步（`action: sync`），app 按请求从磁盘读取静态资源，因此改前端既不重启服务，也不在容器内重跑 `npm ci` / `vite build`。前端构建失败时容器继续提供上一次成功产物，不会中断正在运行的服务；改动前端依赖后需在宿主重新 `npm ci`。类型检查与生产构建仍以 `npm run build`（含 `vue-tsc --noEmit`）和 CI 为准。
 
 开发构建阶段为非 root 用户提供可写源码目录，开发覆盖配置开放容器根文件系统写入；secret、证据挂载及服务权限沿用基础配置。该模式仅用于本地开发，服务重启会中断正在处理的请求和研究进程；数据库与证据卷保留。
+
+### 沙箱管理（默认关闭）
+
+Runner 内的受信管理组件是唯一接触容器管理接口的组件，它只实现一组固定操作（创建/启动/停止会话容器、创建与回收每会话网络、网关与私有工作区卷、按本项目标签查询资源与进程、读取有界日志、解析镜像），容器镜像、用户、挂载、网络模式、capabilities 与限额全部来自提交进仓库的版本化 profile。**启用前 Runner 没有任何容器管理能力**，升级不会静默打开真实出网。
+
+显式启用需要同时给出基础文件与该覆盖文件：
+
+```sh
+docker compose -f deploy/compose.yaml -f deploy/compose.sandbox.yaml up -d --build
+```
+
+覆盖文件只作用于 `runner`：挂载 `/var/run/docker.sock`、加入 `group_add: ["0"]`（本机 socket 为 `root:root 0660`，而 Runner 以 uid 10001 运行），并设置 `HUNTWEAVE_SANDBOX_MANAGEMENT=enabled` 与 `HUNTWEAVE_SANDBOX_PROFILE`。常驻服务仍是 `app`/`postgres`/`runner` 三个，`app` 永远没有 socket。
+
+启用管理**不等于**开放真实执行：`real_execution_ready` 仍由 ADR-0010 的四项门槛决定，`/api/v1/system/capabilities` 会把它作为独立的 `sandbox_management`（`disabled`/`ready`/`unavailable` 加原因码）报出。恢复默认部署用基础文件重启即可（`docker compose -f deploy/compose.yaml up -d --no-build runner`）。
 
 ### 部署模式
 
@@ -210,9 +226,12 @@ CI（`.github/workflows/checks.yml`）运行同一组纯检查与前端构建，
 python deploy/verify_startup.py
 python -m pip install --require-hashes -r deploy/verification-requirements.txt
 python deploy/verify_isolation.py
+python deploy/verify_lifecycle.py
 ```
 
 故障探针会短暂停止本项目服务；隔离探针创建独立靶场资源，只有可信管理容器获得 Docker API。结果保存在 `runtime/isolation/`，Windows 当前的探针计数、实际宿主版本与报告 hash 见[隔离验证记录](./docs/validation/0002-windows-isolation.md)；Linux 容器测试不替代原生 Linux 宿主验收。
+
+沙箱生命周期探针只跑**无目标网络**的固定生命周期检查：它在同样只有 Docker API 的容器里驱动产品自己的受信管理组件，创建一轮会话容器后读回事实、停止并回收，不创建目标网络、不发起任何目标流量，也不为跑测试把产品就绪门槛改成 true。结果保存在 `runtime/sandbox/`，计数、限制与待确认项见[验证记录 `0011`](./docs/validation/0011-p1-sandbox-lifecycle.md)。
 
 ## 项目资料
 
@@ -231,7 +250,7 @@ python deploy/verify_isolation.py
 
 验证记录
 
-- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突
+- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突 · `0011` P1 受信管理组件与真实容器生命周期
 
 开发协作
 
