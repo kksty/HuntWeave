@@ -168,6 +168,17 @@ Success: no issues found in 51 source files
 - **表清单守卫**：本切片**未新建表**，`tests/test_phase0_contracts.py::test_the_inventory_document_lists_the_tables_the_code_really_has` 保持通过（不需要协调人补 `0010 §3.3`）。
 - **迁移链**：新增 `0009_planning_attempt_identity`（`down_revision=0008_retention_decisions`），`BUSINESS_REVISIONS` 同提交同步；`down_revision` 未改，等协调人按 #43→#44→#45 顺序合入。
 
+## 合入基线与 #21 夹具的兼容性
+
+本分支从 `c8033c8` 切出；期间 `origin/main` 前进了 16 个提交（#21 的一次性数据库覆盖文件、`backend/tests/conftest.py`、并发/额度检查与验证记录 0022 已合入主线）。本切片**不 rebase、不合并**（集成由协调人做），因此记录如下两点：
+
+1. **与 #21 的 `conftest.py` 兼容**：把 `origin/main` 的 `backend/tests/conftest.py` 临时放进本工作树（不提交）后，在 `HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 下连跑两次同样的 27 项数据库检查，**两次都是 27 passed**（第二次复用同一个未重建的库，证明检查不依赖跨检查残留数据，也不受 autouse `TRUNCATE` 影响）。临时文件随后删除，`git status --short` 为空。
+2. **与前进后的 `origin/main` 重叠的文件**（合入时需要人工核对）：
+   - `backend/src/huntweave/runs/orchestration.py`：两边都改了同一文件（#21 侧改的是容量/额度相关区域：`SCENARIOS` 之后的新常量块、`OrchestrationService.__init__`、`claim`、`accept`/`_converge` 一带；本切片改的是 `plan()` 整段与其后的提交段）。这是本次合入的主要人工合成点。
+   - `backend/tests/test_orchestration_integration.py`：#21 侧改 `settle` 辅助与导入，本切片把 `service.plan(...)` 换成 `plan_step(...)`；冲突面小。
+   - `docs/validation/README.md`：两边各插一行（0022 与 0024），行不相邻。
+   - 本切片独占的 `contracts/orchestration.py` 与 #21 无重叠（#21 改的是 `contracts/resources.py`、`contracts/runs.py`）。
+
 ## 未达成与限制
 
 1. **未跑容器内检查与靶场探针**：本切片没有新的执行端行为，`deploy/verify_*.py` 与 checks 容器未复跑；`lab/isolation/action.py` 只做了适配新 Interface 的机械改动（`self.plan(...)`），**未在靶场复验**。
