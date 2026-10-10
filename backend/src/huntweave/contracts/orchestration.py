@@ -18,6 +18,9 @@ class TaskView(Contract):
     status: str
     step: int
     version: int
+    # Which task of this role in this Run this is. A role can own more than one: two Workers, or a
+    # second round of evidence, are separate tasks with separate sessions and decisions.
+    ordinal: int
     lease_generation: int
 
 
@@ -31,12 +34,78 @@ class AgentSessionView(Contract):
 class DecisionView(Contract):
     id: UUID
     session_id: UUID
+    # The independent task this decision was made for. A role can own more than one task in a Run,
+    # so the role alone does not say which piece of work an answer belongs to.
+    task_id: UUID | None = None
     step: int
     action: str
     summary: str
     expected: str
     stop_condition: str
     evidence_ids: list[UUID]
+
+
+class ModelUsageView(Contract):
+    """What the provider said this request cost, or that it never said.
+
+    ``known=False`` is a fact about the record, not a zero: the platform has no receipt for this
+    request, and the request stays in the pending list until one is recorded. Nothing here derives
+    a number the provider did not report.
+    """
+
+    known: bool
+    receipt: dict[str, Any] | None = None
+
+
+class PlanningAttemptView(Contract):
+    """One model request: its intent, the frozen input, and what came back.
+
+    The attempt is written before the model is called, so a slow or lost request is visible while
+    it is still in flight. ``status`` is ``requested`` while the answer is outstanding, ``applied``
+    once the Run committed it, ``refused`` when the answer arrived after the Run stopped or after
+    the versions it was prepared against moved on, and ``abandoned`` when a later lease generation
+    took the step over.
+
+    A refused attempt keeps its ``suggestion``: the point of recording it is that the platform knows
+    what the model proposed and still did not act on it.
+    """
+
+    id: UUID
+    run_id: UUID
+    task_id: UUID
+    session_id: UUID
+    role: str
+    step: int
+    # Which attempt at this step the id was derived from: `id` is a function of the task, the step
+    # and this ordinal, so a replay and a second question about the same step stay distinguishable.
+    attempt_ordinal: int = 0
+    status: str
+    input_hash: str | None = None
+    input_watermark: int | None = None
+    budget_snapshot: dict[str, Any] | None = None
+    run_version: int | None = None
+    task_version: int | None = None
+    scope_version: int | None = None
+    lease_generation: int | None = None
+    prompt_version: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    request_count: int = 0
+    usage: ModelUsageView
+    reason_code: str | None = None
+    supersedes_id: UUID | None = None
+    suggestion: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ModelUsageSummary(Contract):
+    """The Run's model accounting, with the unknown part kept separate from the known part."""
+
+    requests: int
+    known: int
+    unknown: int
+    pending_attempt_ids: list[UUID]
 
 
 class ReconciliationVerdict(Contract):
@@ -116,6 +185,11 @@ class RunSnapshot(Contract):
     tasks: list[TaskView]
     sessions: list[AgentSessionView]
     decisions: list[DecisionView]
+    # Every model request this Run made, including the ones that were refused or abandoned. This is
+    # where "the model was asked, and this is what it answered" survives independently of whether
+    # the answer was applied.
+    planning: list[PlanningAttemptView]
+    model_usage: ModelUsageSummary
     calls: list[ToolCallView]
     budget: BudgetView
     interruptions: list[InterruptionView]
