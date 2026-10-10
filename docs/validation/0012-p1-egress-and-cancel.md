@@ -24,11 +24,11 @@
 
 ## 验证
 
-环境：Windows 11 x86_64、Docker Desktop（Engine 29.7.2）、宿主 Python 3.14.5、`backend/.venv` Python 3.12。三份靶场报告都在提交 `e1efeca` 的工作树上取得（`source_tree_dirty=true`，即本切片提交前），记录末尾附提交后复跑结论。
+环境：Windows 11 x86_64、Docker Desktop（Engine 29.7.2）、宿主 Python 3.14.5、`backend/.venv` Python 3.12。下面三份靶场报告都在本切片的提交 `df5b0cb` 上、工作树干净时取得（`source_revision=df5b0cb…`、`source_tree_dirty=false`）；记录本身的文字修订不改代码，也不改变已取得的报告。
 
 | 行为 | 结果 |
 | --- | --- |
-| 出口与取消验收 | `python deploy/verify_egress.py` → **30 项检查全部通过**，`leftovers: 0`（探针自己的 5 个 fixture/桥在结束时移除）；报告 `runtime/sandbox/66ccfc328d344cdc9d2ba1565d6ece71/report.json`，sha256 `3ecd99b545e536932827067f9390cf472afb245f2730cfbad404bf0c03d188a5` |
+| 出口与取消验收 | `python deploy/verify_egress.py` → **30 项检查全部通过**，`leftovers: 0`（探针自己的 5 个 fixture/桥在结束时移除）；报告 `runtime/sandbox/a780e9e1dacf4873a89e29ca0417fbbf/report.json`，sha256 `3eda7a4b7fd34c244ece9c6350a3cfecf2c85a80f1fcf2abf13ad710171894e1` |
 | 规则先于进程 | 守护进程时间戳对照管理器记录：网关启动 `02:27:44.666` ≤ 策略应用 `02:27:45.587` ≤ 工具容器创建/启动 `02:27:45.807`（`the_policy_was_applied_before_the_tool_container_existed` 与 `..._before_the_tool_process_started` 均通过；后者用 `State.StartedAt`，即进程启动时刻） |
 | 就绪与默认拒绝 | `the_gateway_reported_ready_before_the_tool_started`（健康检查 `healthy`）、`the_gateway_holds_default_deny_plus_exactly_the_authorized_endpoints`（`INPUT/OUTPUT/FORWARD DROP`，恰好 4 条放行＝2 个授权端点×2 个方向）、`the_protected_ranges_are_dropped_explicitly` |
 | 范围与平台保护 | `the_authorized_endpoint_is_reachable`、`an_unauthorized_target_is_not_reachable`、`a_port_outside_the_authorization_is_not_reachable`、`the_control_network_is_not_reachable`、`the_metadata_address_is_not_reachable`、`the_host_side_of_each_bridge_is_not_reachable`（目标桥 `172.26.0.1` 与会话桥 `172.27.0.1` 均不可达）、`ipv6_is_disabled_in_the_session_namespace`、`the_tool_cannot_widen_its_own_boundary` |
@@ -36,8 +36,8 @@
 | 取消与回收 | `descendants_exist_before_the_cancel`（4 个进程，含脱离进程组的孤儿）、`the_cancel_confirms_the_stop`、`cancelling_reclaims_the_pid_namespace_and_the_connections`（工具、网关与一个**共享其 PID 命名空间的独立观察容器**全部停止） |
 | 租约到期 | `the_rebuild_reaches_its_target`、`a_lapsed_control_lease_is_closed_by_the_manager`（无人续租，管理器自行停止，`halt_reason=control_lease_expired`）、`the_expired_execution_is_stopped_and_its_egress_revoked` |
 | 回退 | `the_revert_sequence_completes_and_allows_withdrawal`（`state=complete`、`withdrew=true`）、`the_revert_archives_what_it_reconciled`（`reverts/operator_revert-98420b20.json`）、`a_revert_leaves_nothing_behind`（管理器视图、标签查询与对账三处皆空）、`repeating_the_revert_is_a_no_op` |
-| 生命周期探针未回归 | `python deploy/verify_lifecycle.py` → **29 项全部通过**、`leftovers: 0`；报告 `runtime/sandbox/3b06bf9dbdab40b19eecfc6cc5655dd3/report.json`，sha256 `ecc6fda8ef1e3e7924925106ff8b47e4d1d4acce9308349c4b7677f8bced1159`（探针入口改为带一张控制桥：管理器现在从自身容器发现平台网络并拒绝在无法识别时启动） |
-| 隔离探针未回归 | `python deploy/verify_isolation.py` → **40 项全部通过**、`cleanup_errors: 0`；报告 `runtime/isolation/a0bd498f424946acb896670b258db8fb/report.json`，sha256 `897314edaad8612f1620da369b5ecdd5200aff47d2a6242179f9ac6a56328c34`（lab 镜像新增 `egress` 目标后复跑） |
+| 生命周期探针未回归 | `python deploy/verify_lifecycle.py` → **29 项全部通过**、`leftovers: 0`；报告 `runtime/sandbox/440c24b45cb24a26b50dcfea503b8d19/report.json`，sha256 `1621d321a2ac54a1f7716ad4e2afe650d3d4c4372c99daf1efba828d08c942a5`（探针入口改为带一张控制桥：管理器现在从自身容器发现平台网络并拒绝在无法识别时启动） |
+| 隔离探针未回归 | `python deploy/verify_isolation.py` → **40 项全部通过**、`cleanup_errors: 0`；报告 `runtime/isolation/67a812d3dbfa49ab928ae76813550b55/report.json`，sha256 `e576d1c6841ab5c05b50bd9062909126f4c0cc9a57c6578edf4472b4d46f6e30`（lab 镜像新增 `egress` 目标后复跑） |
 | 本地纯检查 | `ruff check src tests` 通过；`mypy --config-file pyproject.toml src` 在 41 个源文件上无问题；`python -m pytest -m "not integration" -q` → **148 项通过、4 项跳过、38 项按标记排除**（`0011` 为 123 项通过） |
 | 两轴代码审查 | 对本轮改动跑 Standards 与 Spec 两轴（并行子代理，对照 AGENTS/PROJECT/GLOSSARY、规格第 3/5/6 节、ADR-0010/0014 与 Issue #18 正文）。**采纳并修复**：新增了 exec 类操作后补上「容器必须带本项目标签」与「未配置程序则什么都不运行」两道闸，并把策略命令与执行用户收进 profile 的 `egress`（此前 `user="0:0"` 写死在适配器）；把「源码 grep 断言固定操作集」改为断言整轮生命周期里向运行时发出的调用都属于固定集合；`revocation_seconds` 改为真正生效（回读核验的时限就是它）；`renew_instance_lease` 续租前重新核验执行端可达与内核规则；停止与回退都会清空许可；回退补上对账归档；桥接宿主地址与会话子网纳入保护；`halt_reason` 改用 `HaltReason`；`_network_subnet`/`_network_internal` 合并为一个 `_network_facts`；镜像里无程序可运行与容器不属本项目各有独立检查。**未采纳**：把请求改成携带票据（归 #17）、把探针的判读逻辑改成不读 daemon 时间戳（daemon 时间戳正是独立证据）。 |
 | 一项发现（并发缺陷） | 复跑时出现一次 `/results/state/sandboxes.pending -> sandboxes.json` 的 `FileNotFoundError`：总线（调用线程）与看门狗线程同时落盘争用同一临时文件。修法是看门狗取同一把锁，并让 `atomic_write` 每个写入者用唯一临时名。此前那次「策略核验失败」的偶发停止也是同一竞态的表现 |
