@@ -68,4 +68,6 @@ tracer 顺序（实现切片）：
 
 双模式相关能力同样**未实现**：`engagement_mode` 字段、准入层（PolicyGate）、按模式过滤的动作注册表与停止规则、按资产×服务与按主机的预算归属、有界非 Web 服务交互（`probe_service`）、带外接收端与有界确认调用、能力缺口记账与覆盖分母口径、覆盖矩阵与攻陷状态投影、批量导入（单 Run 上限、CIDR 展开预览、跨 Run 资产台账）。突破模式的持久会话、凭据复用校验与第二跳可达性只有设计决定，没有实施切片。**注意 `engagement_mode` 与既有的 `mode = demonstration / real` 是两个独立字段，不得复用一个。**
 
+视觉语言约束已确定（[ADR-0024](./adr/0024-nasa-punk-visual-language.md)、[视觉设计系统 0009](./specs/0009-visual-design-system.md)），前端换肤**未实施**：当前控制台仍是绿调浅色、圆角卡片与 Inter 字体，且**没有设计 token 层**，色值散落在 `frontend/src/style.css` 与 `RunConsole.vue`。切片 Issue：[#33](https://github.com/kksty/HuntWeave/issues/33) V-A token 层与字体自托管 → [#34](https://github.com/kksty/HuntWeave/issues/34) V-B 既有控制台换肤（依赖 #33）；[#35](https://github.com/kksty/HuntWeave/issues/35) V-D 模式标注与覆盖状态视图（依赖 #33 与 #25）。V-A/V-B 不依赖双模式后端。前端变更触发浏览器验收（[ADR-0018](./adr/0018-backend-first-and-layered-validation.md)）。
+
 研究过程可视化与调度政策的设计已确定（[ADR-0015](./adr/0015-graph-semantics-and-projection-boundary.md)、[ADR-0016](./adr/0016-scheduling-and-resource-policy.md) 与 [0005 能力类判据规格](./specs/0005-capability-claim-criteria.md)），但能力同样未实现：研究图页面与图投影查询、主张契约与前提门判据、槽位分池与公平调度、队列解释面板均未开工。这些设计不改变上述 P1 切片顺序，也不表示任何验收已经完成；其验收要求见 [P2 规格](./specs/0003-agent-research.md) 第 9 节，实施归属见 ADR-0015/0016 各节的实施归属。
