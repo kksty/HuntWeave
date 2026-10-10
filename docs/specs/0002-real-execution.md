@@ -1,6 +1,6 @@
 # P1：真实执行接入、透明控制台与选择性保留
 
-状态：已评审并采纳，随 tracer 切片实施中（`#15`、`#9`、`#13`、`#10`、`#11`、`#16`、`#18`、`#17` 已交付，其余见第 5 节；`#14` 规格 Issue 已关闭）。更新日期：2026-10-10。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)、[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md)、[当前状态](../STATUS.md)。相关决定另见 [ADR-0006](../adr/0006-windows-docker-development.md)（Windows 开发宿主）、[ADR-0007](../adr/0007-session-network-namespace.md)（每会话网络命名空间）、[ADR-0009](../adr/0009-adaptive-research-and-continuous-execution.md)（P2 持续自主执行）、[ADR-0005](../adr/0005-compose-kali-tool-retention-and-development.md)（工具保留与开发）。
+状态：已评审并采纳，随 tracer 切片实施中（`#15`、`#9`、`#13`、`#10`、`#11`、`#16`、`#18`、`#17`、`#19`、`#20` 已交付，其余见第 5 节；`#14` 规格 Issue 已关闭）。更新日期：2026-10-10。依据：[PROJECT.md](../../PROJECT.md)、[开发约定](../../AGENTS.md)、[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md)、[当前状态](../STATUS.md)。相关决定另见 [ADR-0006](../adr/0006-windows-docker-development.md)（Windows 开发宿主）、[ADR-0007](../adr/0007-session-network-namespace.md)（每会话网络命名空间）、[ADR-0009](../adr/0009-adaptive-research-and-continuous-execution.md)（P2 持续自主执行）、[ADR-0005](../adr/0005-compose-kali-tool-retention-and-development.md)（工具保留与开发）。
 
 本规格只描述 P1 的行为、失败分支与完成证据，不提前实现 P2 的真实模型、联网研究与 Run 内规划。[2026-10-09 架构评估](../research/2026-10-09-architecture-assessment.md)按 [ADR-0011](../adr/0011-planning-authority-and-evidence-revisions.md) 修正核对、回退、实时就绪和切片依赖；这些是待实现要求，不表示相关 Issues 已修复。真实执行的开放由部署配置与宿主 profile 决定，不由模型、提示词或单次请求决定。
 
@@ -111,7 +111,7 @@ P1 明确**不含**下列内容，后续归属与产品边界分别列明：
 
 第 [#16](https://github.com/kksty/HuntWeave/issues/16) 条 tracer 已按下列实现落地并关闭（2026-10-10，验收记录 `docs/validation/0011-p1-sandbox-lifecycle.md`）：
 
-- 收窄操作集落在 `ContainerRuntime` 这一层：创建/启动/停止/删除会话容器、创建与回收每会话网络、网关与私有工作区卷、按本项目标签查询资源与进程、读取有界日志、解析镜像。没有通用请求方法、没有命令执行、没有 `**options` 透传；Docker SDK 只在 `execution/dockerruntime.py` 出现。（#17 在该固定操作集内增加了唯一的执行操作 `exec_in_tool`，见下方 #17 条目。）
+- 收窄操作集落在 `ContainerRuntime` 这一层：创建/启动/停止/删除会话容器、创建与回收每会话网络、网关与私有工作区卷、按本项目标签查询资源与进程、读取有界日志、解析镜像。没有通用请求方法、没有命令执行、没有 `**options` 透传；Docker SDK 只在 `execution/dockerruntime.py` 出现。（#17 在该固定操作集内增加了唯一的执行操作 `exec_in_tool`，见下方 #17 条目；#20 增加了两个只读操作 `volume_facts`（按名读回一个卷及其标签，使所有权检查不依赖标签选择器）与 `volume_usage`（经 `/system/df` 读取卷占用；Docker 没有单卷体积接口），见下方 #20 条目。三者都是具名操作，不是通用代理。）
 - 固定 profile 是提交进仓库的版本化文件（`profiles/<profile_id>.json`），部署按 id 选择；镜像、用户、挂载、网络模式、capabilities、限额与命令都由它决定，请求契约只带标识与授权身份且拒绝多余字段。放宽沙箱的 profile 取值（tool 非普通用户或带 capability、网络非 internal、IPv6、镜像用 `latest`、可写根文件系统）在加载时以具名原因码拒绝。
 - 实例只在创建后读回运行事实并与 profile 逐项比对（用户、capabilities、no-new-privileges、只读根、挂载、网络命名空间）后才进入 `ready`，不匹配时报 `sandbox_profile_not_applied` 并留在中断态；创建中断的实例在重启后标记为 `interrupted` 并阻塞同一会话的新实例；回收按标签选择并二次核对名字前缀，不属本实例的资源报 `ownership_mismatch` 且不删除。
 - 会话与实例绑定其授权身份（`scope_id`、`scope_version`、`policy_version`），同一模型会话在授权或策略改变后不沿用旧会话。**票据到实例的绑定、动作参数与预算校验仍归 #17**；本轮不安装任何放行规则、不创建目标网络（归 #18）。
@@ -223,6 +223,14 @@ P1 的选择性保留只做三件事：候选统计、手动固定/取消固定/
 
 自动发布到共享工具库不在 P1。由于动态安装同样不在 P1，候选机制只对 P1 实际有固定来源、环境键和可复用只读制品的版本（例如预装 tool-base）验证统计与固定/回收。目标会话的可写层始终私有；手动固定可保护私有复现制品，但不能将其提升为共享工具。需要从新源码重建发布的能力随 P2 洁净准备路径交付，不为候选界面虚构共享产物。
 
+第 [#20](https://github.com/kksty/HuntWeave/issues/20) 条 tracer 已按下列实现落地并关闭（2026-10-10，验收记录 `docs/validation/0017-p1-selective-retention.md`）：
+
+- 一次调用结束后，它的私有工作区卷不再当场销毁，而是**进入保留策略**：真实执行器在回收实例时保留该卷（容器与每会话网络照旧回收），先把「有账本命名它」建立起来，再由保留账本记录为可回收的私有复现制品；账本写不下时把卷交回受信管理器删除，不留无名残留。这就是 §10.5 第二行「一次性任务环境……结束后按清理策略移除大环境」的落地：清理时机由策略决定，不由调用结束决定。
+- 环境键由不可变清单计算（固定 profile 的 id 与版本、解析后的基础/工具镜像 digest、工具清单、CPU 架构），**不含宿主容器引擎版本**——引擎升级不是换了一个工具。候选资格按**窗口内去重后的独立 Run 数**判定（默认 30 天 3 个 Run），同一 Run 内的重试只增加调用数，不增加候选计数。
+- 保留账本（`runner_state/retention.json`）持久记录版本、使用、制品、固定与决定；固定与缓存按部署配置（`HUNTWEAVE_RETENTION_CANDIDATE_RUNS`／`WINDOW_DAYS`／`TTL_DAYS`／`CAPACITY_BYTES`，默认 3／30／7 天／10 GiB），视图随身携带它所依据的这份策略。策略默认每 `HUNTWEAVE_RETENTION_SWEEP_SECONDS`（默认 300 秒，`0` 关闭）在 Runner 内自行执行一次：先按账本记录的体积判断是否有该回收的内容，有才去读运行时体积并执行，因此无人盯守时 TTL 与容量也真的约束磁盘，而空转不会往决定记录里灌条目；自动回收与操作员手动回收走的是同一个预览，固定与在用保护对它同样有效。
+- 回收预览给出会删除的制品、体积与受保护项及各自的规则（显式固定、版本固定、实例仍持有）；TTL 到期先删，容量压力下按最久未保留优先，**只在可回收项内**选择。可回收项删完仍超容量时报告 `retention_capacity_insufficient` 与差额，不以删除受保护材料凑数。删除只走受信管理器的按名读回与所有权校验，实例仍持有即拒绝（`retention_artifact_in_use`），不是本项目所有即拒绝（`ownership_mismatch`）；删除一次性环境不删除证据与清单引用。
+- 控制面只代理与留痕：操作员的每个固定/取消固定/删除/回收决定在业务库 `retention_decisions` 中留一行（执行端决定 id 为键，重发不产生第二条），并在每个受影响 Run 的时间线上追加一条 `retention_decision` 事件。`shared_tool_version` 恒为 false，且没有任何发布入口：P1 不把私有工作区提升为共享工具版本。
+
 ### 3.9 验收宿主与验收对象
 
 验收宿主只取本机 Windows 11 + Docker Desktop / WSL2（沿用已验证的每会话网关 profile，ADR-0006/0007）。验收对象只是 `lab/` 自建靶场中的固定回显容器；宿主管理入口绑定回环，工具流量只到内部网络的明确 IPv4/TCP 目标。真实 IP 的开放留到 P1 验收通过之后。
@@ -266,7 +274,7 @@ P0 验收关闭后的两轴代码审查发现三类问题。它们必须先解�
 
 ## 5. tracer 顺序与完成证据
 
-每个切片按下表演示，Issue 编号不代表安全依赖顺序。前置缺陷为 #9、#10、#11、#13：其中 [#9](https://github.com/kksty/HuntWeave/issues/9) 已交付并关闭（提交 `656ab22`，证据 `docs/validation/0007-p1-ticket-binding.md`），[#13](https://github.com/kksty/HuntWeave/issues/13) 已交付并关闭（提交 `c1a4ec2`，证据 `docs/validation/0008-p1-target-limit.md`），[#10](https://github.com/kksty/HuntWeave/issues/10)、[#11](https://github.com/kksty/HuntWeave/issues/11) 亦已交付并关闭（2026-10-10，证据 `docs/validation/0010-p1-capability-and-control-conflict.md`），四项①档前置至此全部关闭；#12 记录更正已人工确认关闭。真实集成路径明确为 **#16 容器生命周期 → #18 出口/取消 → #17 真实动作闭环 → #19 控制台 → #20 保留 → #21 压力验收**；其中 [#16](https://github.com/kksty/HuntWeave/issues/16) 已交付并关闭（2026-10-10，证据 `docs/validation/0011-p1-sandbox-lifecycle.md`），真实集成路径的剩余部分从 #19 继续（[#18](https://github.com/kksty/HuntWeave/issues/18) 已交付并关闭，2026-10-10，证据 docs/validation/0012-p1-egress-and-cancel.md）；#15 的核对契约必须在允许真实调用恢复之前完成。#17 的纯契约/假执行开发可提前，任何靶场目标动作必须等 #16/#18 的隔离与回收验证，不以功能切片尚未合并为由暂时开放出口。
+每个切片按下表演示，Issue 编号不代表安全依赖顺序。前置缺陷为 #9、#10、#11、#13：其中 [#9](https://github.com/kksty/HuntWeave/issues/9) 已交付并关闭（提交 `656ab22`，证据 `docs/validation/0007-p1-ticket-binding.md`），[#13](https://github.com/kksty/HuntWeave/issues/13) 已交付并关闭（提交 `c1a4ec2`，证据 `docs/validation/0008-p1-target-limit.md`），[#10](https://github.com/kksty/HuntWeave/issues/10)、[#11](https://github.com/kksty/HuntWeave/issues/11) 亦已交付并关闭（2026-10-10，证据 `docs/validation/0010-p1-capability-and-control-conflict.md`），四项①档前置至此全部关闭；#12 记录更正已人工确认关闭。真实集成路径明确为 **#16 容器生命周期 → #18 出口/取消 → #17 真实动作闭环 → #19 控制台 → #20 保留 → #21 压力验收**；其中 [#16](https://github.com/kksty/HuntWeave/issues/16) 已交付并关闭（2026-10-10，证据 `docs/validation/0011-p1-sandbox-lifecycle.md`），[#18](https://github.com/kksty/HuntWeave/issues/18) 已交付并关闭（2026-10-10，证据 `docs/validation/0012-p1-egress-and-cancel.md`），[#17](https://github.com/kksty/HuntWeave/issues/17) 已交付并关闭（2026-10-10，证据 `docs/validation/0013-p1-real-actions.md`），[#19](https://github.com/kksty/HuntWeave/issues/19) 透明控制台与 [#20](https://github.com/kksty/HuntWeave/issues/20) 选择性保留亦已交付并关闭（证据分别为 `docs/validation/0015-p1-transparent-console.md` 与 `docs/validation/0017-p1-selective-retention.md`），真实集成路径的剩余部分只到 **#21 多活跃 Run 并发压力验收**；#15 的核对契约必须在允许真实调用恢复之前完成。#17 的纯契约/假执行开发可提前，任何靶场目标动作必须等 #16/#18 的隔离与回收验证，不以功能切片尚未合并为由暂时开放出口。
 
 #16 单独验收仅运行无目标网络的固定生命周期检查；真实 Runner 集成测试使用显式隔离测试配置，不能为运行测试把产品就绪门槛改成 true。#21 的基础多 Run 公平/取消检查应随 #17/#18 前移，最终压力与容量校准仍在 #21。
 
@@ -277,7 +285,7 @@ P0 验收关闭后的两轴代码审查发现三类问题。它们必须先解�
 | 3 / [#18](https://github.com/kksty/HuntWeave/issues/18) 出口与取消（**已交付并关闭**，证据 docs/validation/0012-p1-egress-and-cancel.md） | 靶场出口默认拒绝、范围放行与失联停止 | 规则先于进程；IPv4/TCP 范围与平台地址保护；控制租约到期停止；父进程退出后仍回收子进程/连接；撤销/取消/回退时序真实 |
 | 4 / [#17](https://github.com/kksty/HuntWeave/issues/17) 真实动作闭环（**已交付并关闭**，证据 `docs/validation/0013-p1-real-actions.md`） | 三个真实动作走既有票据、预算、证据与恢复契约 | 不同目标正确绑定；先归档再标可用；固定真实返回/反例驱动后续分支；真假 Adapter 同一契约；运行中就绪失效可见，真实 Run 不改用假动作 |
 | 5 / [#19](https://github.com/kksty/HuntWeave/issues/19) 透明控制台 | 容器/网关、命令、输出、证据、预算与回收确认可见 | 截断/脱敏/存储满由实际路径产生；无法归档时阻断；事件延迟与心跳实测；控制冲突不静默重发，原因码与实际对齐 |
-| 6 / [#20](https://github.com/kksty/HuntWeave/issues/20) 选择性保留 | 候选统计、手动固定/取消固定/删除与回收预览可用 | 按独立 Run 计数；活跃/固定引用受保护；容量不足阻断；仅回收本项目无引用制品；不共享目标可写层、不删必要证据 |
+| 6 / [#20](https://github.com/kksty/HuntWeave/issues/20) 选择性保留（**已交付并关闭**，证据 `docs/validation/0017-p1-selective-retention.md`） | 候选统计、手动固定/取消固定/删除与回收预览可用 | 按独立 Run 计数；活跃/固定引用受保护；容量不足阻断；仅回收本项目无引用制品；不共享目标可写层、不删必要证据 |
 | 7 / [#21](https://github.com/kksty/HuntWeave/issues/21) 并发压力 | 多 Run 的公平、预算、主机锁与对账实测 | 轮转对账、同 IP 串行、全局预算/并发不超；受阻 Run 不饿死其他 Run；事件游标不越过未发布事件；给出容量和延迟数据 |
 
 本次新增验收并入既有 Issue 对应范围：#15 覆盖证据不足保持未决、确认已执行但进程仍活动、无输出但停止已确认；#17/#18 覆盖真实 Run 不降级为假执行、回退前收尾、运行中能力失效、固定输出反例；#16 覆盖只跑无目标网络的固定生命周期检查；#20 覆盖手动固定不得共享目标可写层。2026-10-09 已同步到 GitHub：#17 补上 #18、#15 两条原生阻塞边，#15/#16/#17/#18/#20/#21 正文已更新，ticket 标题不再带顺序号；实施顺序以本节表格为准，不能据旧 #17 的依赖清单跳过 #18。

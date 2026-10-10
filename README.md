@@ -87,6 +87,7 @@ app/runner 共用控制镜像，因此先单独 `build app`，再启动三个服
 | HTTPS Cookie | `HUNTWEAVE_COOKIE_SECURE=true`，要求 HTTPS Origin；远程 HTTP 配置拒绝启动 |
 | 沙箱管理 | `HUNTWEAVE_SANDBOX_MANAGEMENT=enabled` 才启用（默认关闭，其他取值一律不启用），仅应由 `deploy/compose.sandbox.yaml` 设置 |
 | 沙箱执行 profile | `HUNTWEAVE_SANDBOX_PROFILE`，默认 `sandbox-lifecycle-v1`；profile 文件由镜像内 `/opt/huntweave/profiles/` 提供 |
+| 选择性保留策略 | `HUNTWEAVE_RETENTION_CANDIDATE_RUNS`（默认 3）、`HUNTWEAVE_RETENTION_WINDOW_DAYS`（默认 30）、`HUNTWEAVE_RETENTION_TTL_DAYS`（默认 7）、`HUNTWEAVE_RETENTION_CAPACITY_BYTES`（默认 10 GiB）、`HUNTWEAVE_RETENTION_SWEEP_SECONDS`（默认 300，`0` 表示只在操作员手动回收时执行）；Runner 与 app 读同一组名字 |
 | 平台、Runner 与数据库 secrets | `runtime/secrets/` |
 
 端口覆盖可写入仓库根目录的 `.env`：
@@ -126,7 +127,7 @@ docker compose -f deploy/compose.yaml -f deploy/compose.dev.yaml up --build --wa
 
 ### 沙箱管理（默认关闭）
 
-Runner 内的受信管理组件是唯一接触容器管理接口的组件，它只实现一组固定操作（创建/启动/停止会话容器、创建与回收每会话网络、网关与私有工作区卷、按本项目标签查询资源与进程、读取有界日志、解析镜像），容器镜像、用户、挂载、网络模式、capabilities 与限额全部来自提交进仓库的版本化 profile。**启用前 Runner 没有任何容器管理能力**，升级不会静默打开真实出网。
+Runner 内的受信管理组件是唯一接触容器管理接口的组件，它只实现一组固定操作（创建/启动/停止会话容器、创建与回收每会话网络、网关与私有工作区卷、按本项目标签查询资源与进程、读取有界日志、解析镜像、按名读回单个卷与读取卷占用），容器镜像、用户、挂载、网络模式、capabilities 与限额全部来自提交进仓库的版本化 profile。**启用前 Runner 没有任何容器管理能力**，升级不会静默打开真实出网。
 
 显式启用需要同时给出基础文件与该覆盖文件：
 
@@ -139,6 +140,12 @@ docker compose -f deploy/compose.yaml -f deploy/compose.sandbox.yaml up -d --bui
 启用管理**不等于**开放真实执行：`real_execution_ready` 仍由 ADR-0010 的四项门槛决定，`/api/v1/system/capabilities` 会把它作为独立的 `sandbox_management`（`disabled`/`ready`/`unavailable` 加原因码）报出。恢复默认部署用基础文件重启即可（`docker compose -f deploy/compose.yaml up -d --no-build runner`）。
 
 所选 profile 同时决定出口：网关加入的目标网络、安装与回读放行规则的固定命令与执行用户、网关的就绪检查、以及就绪与撤销时限。管理器在网关报告就绪后才放行，并在每次放行后回读内核规则核对；平台自身网络、所用桥的宿主侧地址与固定保留网段一律拒绝，部署额外的宿主网段需写进该 profile 的 `network.protected`。回退由执行端的 `begin_revert` 顺序执行（拒绝新实例 → 撤销 → 停止 → 回收 → 对账归档），只有在没有未核清项时才报告可以撤除管理能力；面向操作员的入口随窗口控制台（#19）提供。
+
+### 选择性保留
+
+一次真实调用结束后，它的私有工作区卷不再当场删除，而是进入保留策略：TTL 到期先回收，超出容量时按最久未保留优先，且只在可回收项内选择；被固定（版本或单个制品）或仍被实例持有的制品不参与自动回收。策略默认每 300 秒在 Runner 内自行执行一次（`HUNTWEAVE_RETENTION_SWEEP_SECONDS`，`0` 关闭，只保留操作员手动回收）。候选资格按窗口内**去重后的独立 Run 数**（默认 30 天 3 个）判定，同一 Run 里的重试只增加调用数，不增加候选计数。其余四个数值用上面表格里的 `HUNTWEAVE_RETENTION_*` 按机器调整，视图会带上它所依据的那份策略。
+
+策略与制品记在 Runner 的 `runner_state/retention.json`；控制台「选择性保留」区块读 `GET /api/v1/retention`，手动固定/取消固定/删除与「回收预览所列内容」各走对应的 POST。每个决定都在业务库 `retention_decisions` 留一行，并在受影响 Run 的时间线上留一条 `retention_decision` 事件。删除只走受信管理器的按名读回与所有权校验：不是本项目所有、或实例仍持有的卷一律拒绝；删除一次性环境不删除证据与清单引用；可回收项删完仍超容量时报告容量阻断而不是删除受保护材料。P1 不把私有工作区发布为共享工具版本（`shared_tool_version` 恒为 `false`，也没有发布入口）。
 
 ### 部署模式
 
@@ -257,6 +264,7 @@ python deploy/verify_isolation.py
 python deploy/verify_lifecycle.py
 python deploy/verify_egress.py
 python deploy/verify_action.py
+python deploy/verify_retention.py
 ```
 
 故障探针会短暂停止本项目服务；隔离探针创建独立靶场资源，只有可信管理容器获得 Docker API。结果保存在 `runtime/isolation/`，Windows 当前的探针计数、实际宿主版本与报告 hash 见[隔离验证记录](./docs/validation/0002-windows-isolation.md)；Linux 容器测试不替代原生 Linux 宿主验收。
@@ -266,6 +274,8 @@ python deploy/verify_action.py
 出口探针 `deploy/verify_egress.py` 走同一条路，但它会在**本机靶场桥接网络**上创建三个固定回显容器（授权、未授权、控制网络各一个），验证默认拒绝、只放行授权 IPv4/TCP、平台地址与桥接宿主地址被拒、撤销在 profile 时限内生效、取消与租约到期后进程与连接回收、回退序列与对账归档。它不接触任何外部地址，也不改产品就绪门槛；结果见[验证记录 `0012`](./docs/validation/0012-p1-egress-and-cancel.md)。探针创建的资源按自己的标签与本轮 Run 身份回收，结束后报告 `leftovers` 必须为空。
 
 动作探针 `deploy/verify_action.py` 构建产品自己的 Runner（启用受信管理），向它的 HTTP 表面提交真实票据，让真实执行器在靶场容器里跑 `shell.exec`、`discover_tcp_services` 与 `probe_http`，并用 Docker SDK 与证据目录读回事实：命令以 profile 的普通用户在 profile 指定的工作目录（`workspace.mount`）内执行、stdout/stderr 与退出码按先文件后 hash 归档、放行只含票据的目标端点、调用结束后实例与许可都不残留，以及**按工具真实返回决定下一个动作并真的执行**（有端口的发现引出 HTTP 请求，无端口则结束研究）。它同样只用 `lab/` 靶场与回环入口，不接触外部地址；结果见[验证记录 `0013`](./docs/validation/0013-p1-real-actions.md) 与 [`0014`](./docs/validation/0014-p1-stop-confirmation-and-cwd.md)。
+
+保留探针 `deploy/verify_retention.py` 走同一条路：三个独立 Run 各跑一次真实动作，验证候选按独立 Run 计数（同一 Run 的重试只增加调用数）、每次调用留下的私有工作区卷由保留账本命名、固定项不被自动回收、显式删除只删该卷而保留证据与清单引用、容量不足时报告阻断而不是删除受保护材料，以及没有任何发布入口。它同样只使用 `lab/` 靶场，结果见[验证记录 `0017`](./docs/validation/0017-p1-selective-retention.md)。
 
 ## 项目资料
 
