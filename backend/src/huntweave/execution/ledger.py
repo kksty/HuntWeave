@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -29,6 +30,26 @@ from huntweave.contracts.execution import (
 from huntweave.execution.durable import atomic_write
 
 CallStatus = Literal["accepted", "running", "completed", "failed", "cancelled", "unknown"]
+
+# The statuses a call does not come back from. A transition into one of these is where the claim
+# about its processes has to be settled, so it is also where an unconfirmed stop is named.
+ENDED_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled", "unknown"})
+
+
+@dataclass(frozen=True)
+class StopOutcome:
+    """What an executor's attempt to stop one call actually achieved.
+
+    ``result`` is whatever evidence already exists, and ``stopped`` is a *claim about processes*:
+    true only when the executor has a trusted fact that nothing it started is still running. An
+    executor that cannot confirm this says so, and the record then reports "not confirmed" instead
+    of releasing the call's claim on its resources — the control plane's capacity rule and the
+    console's 停止未确认 both depend on that distinction (docs/specs/0006 section 7). It carries no
+    default: a claim is something a caller states, not something it inherits.
+    """
+
+    stopped: bool
+    result: ExecutionResult | None = None
 
 
 class RunnerRejected(Exception):
@@ -100,8 +121,11 @@ class CallLedger:
             record = ExecutionRecord.model_validate(_upgraded(item["record"]))
             if record.status in {"accepted", "running"}:
                 # A ledger that restarted cannot say what the call it was running did; that is
-                # exactly the state reconciliation exists for.
-                self._change(record, "unknown", "execution_unknown")
+                # exactly the state reconciliation exists for. And a restart is not a stop: the
+                # record keeps its process unaccounted for even on an executor that could prove a
+                # stop in flight, because the proof would be about the process that just died
+                # rather than about whatever it started (docs/specs/0002 section 4).
+                self._change(record, "unknown", "execution_unknown", stopped=False)
 
     # -- durability ---------------------------------------------------------------------------
 
@@ -132,24 +156,27 @@ class CallLedger:
         return any(event.type == "execution_started" for event in record.events)
 
     def _observation_after(
-        self, record: ExecutionRecord, status: CallStatus
+        self, record: ExecutionRecord, status: CallStatus, stopped: bool
     ) -> ExecutionObservation:
         """Report what this ledger can prove about the call's process, connection and lease.
 
         A ledger that stopped observing an execution cannot prove the process it started is
-        gone: a shell may have left descendants behind. Only a record that never started, or
-        one whose executor finished or was stopped, supports claiming a stop. A lease is live
-        only while the ledger would still renew it.
+        gone: a shell may have left descendants behind. So a process or connection is only
+        reported as finished when either the call provably never started one, or the executor
+        confirmed the stop; otherwise it stays unknown, which is what closes an unverified stop
+        out of reconciliation and capacity accounting rather than releasing it. The outcome and the
+        stop are separate facts here: a call whose result is still unproven can have a confirmed
+        stop, and one that ended with an outcome can still leave its process unaccounted for. A
+        lease is live only while the ledger would still renew it.
         """
         if status == "accepted":
             return self._observed(False, False, False, True)
         if status == "running":
             return self._observed(True, True, True, True)
-        if status == "unknown":
-            started = self._has_started(record)
-            unaccounted = None if started else False
-            return self._observed(started, unaccounted, unaccounted, False)
-        return self._observed(self._has_started(record), False, False, False)
+        started = self._has_started(record)
+        if started and not stopped:
+            return self._observed(True, None, None, False)
+        return self._observed(started, False, False, False)
 
     def _change(
         self,
@@ -157,27 +184,53 @@ class CallLedger:
         status: CallStatus,
         reason: str | None = None,
         result: ExecutionResult | None = None,
+        *,
+        stopped: bool | None = None,
     ) -> ExecutionRecord:
+        """Move one call to a new status, saying whether its processes are accounted for.
+
+        ``stopped`` is never assumed to be true: when the caller does not state it, the answer
+        comes from this executor's own stop fact (`_stop_fact`), which is conservative for an
+        executor that cannot prove one and exact for callers that know better (a stop attempt that
+        just failed, for instance). A call that ends without a confirmed stop keeps its process and
+        connection unknown and gets an event naming the gap, so an unverified stop is visible
+        instead of being released as if it were finished.
+        """
+        confirmed = self._stop_fact(record) if stopped is None else stopped
         now = datetime.now(UTC)
-        started = next(
+        started_at = next(
             (event.created_at for event in record.events if event.type == "execution_started"), now
         )
-        event = ExecutionEvent(
-            source_event_id=f"{record.request.call_id}:{len(record.events)}",
-            type="execution_started" if status == "running" else f"execution_{status}",
-            payload={
-                "reason_code": reason,
-                "elapsed_ms": int((now - started).total_seconds() * 1000),
-            },
-            created_at=now,
-        )
+        events = [
+            *record.events,
+            ExecutionEvent(
+                source_event_id=f"{record.request.call_id}:{len(record.events)}",
+                type="execution_started" if status == "running" else f"execution_{status}",
+                payload={
+                    "reason_code": reason,
+                    "elapsed_ms": int((now - started_at).total_seconds() * 1000),
+                },
+                created_at=now,
+            ),
+        ]
+        # Only a call that really started something can leave something behind, and only a status
+        # it does not come back from ends the question.
+        if not confirmed and status in ENDED_STATUSES and self._has_started(record):
+            events.append(
+                ExecutionEvent(
+                    source_event_id=f"{record.request.call_id}:{len(events)}",
+                    type="execution_stop_unconfirmed",
+                    payload={"outcome": status, "reason_code": reason},
+                    created_at=now,
+                )
+            )
         updated = ExecutionRecord(
             request=record.request,
             status=status,
             reason_code=reason,
             result=result,
-            events=[*record.events, event],
-            observation=self._observation_after(record, status),
+            events=events,
+            observation=self._observation_after(record, status, confirmed),
         )
         return self._store(updated)
 
@@ -323,7 +376,7 @@ class CallLedger:
                 if record.status == "unknown":
                     return self._stop(record)
                 return record
-        stopped = self._stop_call(record)
+        outcome = self._stop_call(record)
         with self.lock:
             current = self.query(call_id)
             if current is None:
@@ -334,7 +387,8 @@ class CallLedger:
                 current,
                 "cancelled",
                 "operator_cancelled",
-                stopped if stopped is not None else self._result(current, None),
+                outcome.result if outcome.result is not None else self._result(current, None),
+                stopped=outcome.stopped,
             )
 
     def _note(self, call_id: UUID, key: str, value: str) -> None:
@@ -365,10 +419,20 @@ class CallLedger:
         The ledger cannot say whether the action happened; it can say that whatever the call
         left running is stopped. That is a separate fact the control plane needs, and it is
         never derived from an operator's reconciliation verdict.
+
+        A stop this ledger cannot confirm is recorded as a gap instead: claiming the process ended
+        because an operator asked for it would be exactly the assertion the executor is declining
+        to make.
         """
         observation = record.observation
         if observation is not None and observation.process_active is False:
             return record
+        if not self._stop_fact(record):
+            return self._emit(
+                record,
+                "execution_stop_unconfirmed",
+                {"outcome": record.status, "reason_code": "operator_stopped"},
+            )
         stopped = self._emit(
             record,
             "execution_stopped",
@@ -394,14 +458,25 @@ class CallLedger:
         """Run one accepted call. Subclasses decide what that means and when it is over."""
         raise NotImplementedError
 
-    def _stop_call(self, record: ExecutionRecord) -> ExecutionResult | None:
+    def _stop_call(self, record: ExecutionRecord) -> StopOutcome:
         """Stop whatever this call is doing, before its record is marked cancelled.
 
-        The answer is the result (with whatever evidence exists) or ``None`` when nothing was
-        collected, and it is this hook that makes "cancelled" mean something on the real side
-        instead of only on the demonstration one.
+        The answer carries whatever evidence already exists *and* whether the stop is confirmed.
+        The default answer is this ledger's own stop fact, which is the conservative one: an
+        executor that cannot prove a stop must not claim one, and an executor that can (because the
+        call runs inside its own process) states that in `_stop_fact`.
         """
-        return None
+        return StopOutcome(stopped=self._stop_fact(record))
+
+    def _stop_fact(self, record: ExecutionRecord) -> bool:
+        """Whether this executor can prove nothing it started for this call is still running.
+
+        Read whenever a call ends without an explicit stop attempt — an expired lease, an archive
+        failure, a restart that cannot say what the call did — and when a stop was asked for but
+        not confirmed. The base answer is "cannot prove it": an executor that owns everything it
+        starts overrides this with a fact of its own rather than inheriting a claim.
+        """
+        return False
 
     # -- the hooks a subclass runs its call through -------------------------------------------
 
@@ -446,7 +521,13 @@ class CallLedger:
                 return None
             reason = self._expired_reason(record.request)
             if reason is not None:
-                self._change(record, "cancelled", reason, self._result(record, None))
+                self._change(
+                    record,
+                    "cancelled",
+                    reason,
+                    self._result(record, None),
+                    stopped=self._stop_fact(record),
+                )
                 return None
             if heartbeat_after is not None:
                 started = next(
@@ -530,8 +611,16 @@ class CallLedger:
         )
         return ExecutionResult(output=payload.decode(), exit_code=exit_code, evidence=[evidence])
 
-    def _failure(self, record: ExecutionRecord, reason: str) -> ExecutionRecord:
-        return self._change(record, "failed", reason, self._result(record, None))
+    def _failure(
+        self, record: ExecutionRecord, reason: str, *, stopped: bool | None = None
+    ) -> ExecutionRecord:
+        return self._change(
+            record,
+            "failed",
+            reason,
+            self._result(record, None),
+            stopped=stopped,
+        )
 
 
 def _evidence_id(call_id: UUID, name: str) -> UUID:

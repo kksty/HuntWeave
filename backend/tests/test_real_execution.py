@@ -251,6 +251,123 @@ def test_cancelling_a_running_command_stops_the_instance(tmp_path: Path) -> None
     assert settled.result is not None and "partial" in settled.result.output
 
 
+def test_an_action_runs_in_the_directory_the_profile_names(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    runner, manager, _ = build(tmp_path, runtime, command_stdout="ok\n")
+    request = real_ticket("shell.exec", {"command": "pwd"})
+    runner.submit(request)
+    record = settled(runner, request.call_id, "completed", "failed")
+
+    # The directory is stated on the exec itself out of the profile, instead of being left to the
+    # tool image's own default, and it is on the call's timeline — so a console shows where the
+    # action ran as a decision of this deployment.
+    assert runtime.command_workdirs == [manager.profile.workspace_mount]
+    announced = next(event for event in record.events if event.type == "execution_instance")
+    assert announced.payload["cwd"] == manager.profile.workspace_mount
+    assert announced.payload["cwd"] == runtime.command_workdirs[0]
+
+
+def test_a_confirmed_stop_is_what_lets_a_record_claim_the_process_is_gone(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    runner, _, _ = build(tmp_path, runtime, command_stdout="ok\n")
+    request = real_ticket("shell.exec", {"command": "id"})
+    runner.submit(request)
+    record = settled(runner, request.call_id, "completed", "failed")
+
+    assert record.observation is not None
+    assert record.observation.process_active is False
+    assert record.observation.connection_open is False
+    # A stop the manager confirmed needs no caveat, so the timeline carries none.
+    assert [event.type for event in record.events if "unconfirmed" in event.type] == []
+
+
+def test_a_stop_the_manager_cannot_confirm_is_not_reported_as_stopped(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    runner, manager, _ = build(tmp_path, runtime, command_stdout="ok\n")
+    runtime.refuse_stop = True
+    request = real_ticket("shell.exec", {"command": "id"})
+    runner.submit(request)
+    record = settled(runner, request.call_id, "completed", "failed")
+
+    # Nothing here releases what was not stopped: the instance is still there, so its process and
+    # its connection stay unknown and the record names the gap instead of claiming a reclamation.
+    assert record.status == "completed"
+    assert record.observation is not None
+    assert record.observation.process_active is None
+    assert record.observation.connection_open is None
+    gap = next(event for event in record.events if event.type == "execution_stop_unconfirmed")
+    assert gap.payload["outcome"] == "completed"
+    assert [item.state for item in manager.instances.values()] == ["ready"]
+
+
+def test_cancelling_with_an_unconfirmed_stop_does_not_claim_the_process_ended(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeRuntime()
+    gate = threading.Event()
+    runner, manager, _ = build(tmp_path, runtime, command_stdout="partial\n", command_gate=gate)
+    runtime.refuse_stop = True
+    request = real_ticket("shell.exec", {"command": "sleep 60"})
+    runner.submit(request)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not runtime.commands:
+        time.sleep(0.01)
+    assert runtime.commands, "the call never ran its command"
+
+    cancelled = runner.cancel(request.call_id, request.lease_generation)
+    # The operator's verdict ends the call but does not release the execution side's resources:
+    # that is the manager's fact to state, and it has not.
+    assert cancelled.status == "cancelled"
+    assert cancelled.reason_code == "operator_cancelled"
+    assert cancelled.observation is not None
+    assert cancelled.observation.process_active is None
+    assert cancelled.observation.connection_open is None
+    assert any(event.type == "execution_stop_unconfirmed" for event in cancelled.events)
+    assert [item.state for item in manager.instances.values()] == ["ready"]
+    gate.set()
+
+
+def test_a_stop_the_manager_cannot_speak_for_is_not_a_confirmed_stop(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    gate = threading.Event()
+    runner, manager, _ = build(tmp_path, runtime, command_stdout="partial\n", command_gate=gate)
+    request = real_ticket("shell.exec", {"command": "sleep 60"})
+    runner.submit(request)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not runtime.commands:
+        time.sleep(0.01)
+    assert runtime.commands, "the call never ran its command"
+    # The manager's record no longer covers this instance (a restarted Runner reading a fresh
+    # instance ledger, say). "It does not know" is not "it is stopped": the call keeps its
+    # process unaccounted for instead of inheriting a stop nobody can testify to.
+    manager.instances.clear()
+
+    cancelled = runner.cancel(request.call_id, request.lease_generation)
+    assert cancelled.status == "cancelled"
+    assert cancelled.observation is not None
+    assert cancelled.observation.process_active is None
+    assert cancelled.observation.connection_open is None
+    assert any(event.type == "execution_stop_unconfirmed" for event in cancelled.events)
+    gate.set()
+
+
+def test_a_failed_release_still_names_the_instance_the_call_used(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    runner, manager, _ = build(tmp_path, runtime, command_stdout="ok\n")
+    runtime.refuse_stop = True
+    request = real_ticket("shell.exec", {"command": "id"})
+    runner.submit(request)
+    record = settled(runner, request.call_id, "completed", "failed")
+    instance_id = str(next(iter(manager.instances)))
+
+    # The instance is still running, and the call must go on naming it: erasing the binding on a
+    # failed release would answer the next stop with "this call never had an instance", which is
+    # how a live container becomes invisible to the only record that owns it.
+    assert runner._noted(request.call_id, "instance_id") == instance_id
+    assert runner._stop_fact(record) is False
+    assert record.observation is not None and record.observation.process_active is None
+
+
 def test_a_call_that_cannot_prepare_is_reported_without_inventing_an_outcome(
     tmp_path: Path,
 ) -> None:

@@ -111,7 +111,7 @@ P1 明确**不含**下列内容，后续归属与产品边界分别列明：
 
 第 [#16](https://github.com/kksty/HuntWeave/issues/16) 条 tracer 已按下列实现落地并关闭（2026-10-10，验收记录 `docs/validation/0011-p1-sandbox-lifecycle.md`）：
 
-- 收窄操作集落在 `ContainerRuntime` 这一层：创建/启动/停止/删除会话容器、创建与回收每会话网络、网关与私有工作区卷、按本项目标签查询资源与进程、读取有界日志、解析镜像。没有通用请求方法、没有命令执行、没有 `**options` 透传；Docker SDK 只在 `execution/dockerruntime.py` 出现。
+- 收窄操作集落在 `ContainerRuntime` 这一层：创建/启动/停止/删除会话容器、创建与回收每会话网络、网关与私有工作区卷、按本项目标签查询资源与进程、读取有界日志、解析镜像。没有通用请求方法、没有命令执行、没有 `**options` 透传；Docker SDK 只在 `execution/dockerruntime.py` 出现。（#17 在该固定操作集内增加了唯一的执行操作 `exec_in_tool`，见下方 #17 条目。）
 - 固定 profile 是提交进仓库的版本化文件（`profiles/<profile_id>.json`），部署按 id 选择；镜像、用户、挂载、网络模式、capabilities、限额与命令都由它决定，请求契约只带标识与授权身份且拒绝多余字段。放宽沙箱的 profile 取值（tool 非普通用户或带 capability、网络非 internal、IPv6、镜像用 `latest`、可写根文件系统）在加载时以具名原因码拒绝。
 - 实例只在创建后读回运行事实并与 profile 逐项比对（用户、capabilities、no-new-privileges、只读根、挂载、网络命名空间）后才进入 `ready`，不匹配时报 `sandbox_profile_not_applied` 并留在中断态；创建中断的实例在重启后标记为 `interrupted` 并阻塞同一会话的新实例；回收按标签选择并二次核对名字前缀，不属本实例的资源报 `ownership_mismatch` 且不删除。
 - 会话与实例绑定其授权身份（`scope_id`、`scope_version`、`policy_version`），同一模型会话在授权或策略改变后不沿用旧会话。**票据到实例的绑定、动作参数与预算校验仍归 #17**；本轮不安装任何放行规则、不创建目标网络（归 #18）。
@@ -124,6 +124,13 @@ P1 明确**不含**下列内容，后续归属与产品边界分别列明：
 - 控制租约：实例可持有最长 15 秒的租约，续租前重新核验执行端可达与内核规则，看门狗在到期时自行撤销并停止（`control_lease_expired`），控制端失联因此不会让执行无限延续。
 - 回退：`begin_revert` 先拒绝新实例（`sandbox_reverting`），再逐个撤销 → 停止 → 回收 → 对账，并把对账结果归档到证据目录；仅当没有未记账资源、丢失资源或未确认停止时才报告可以撤除管理能力，重复请求是幂等空操作。
 - 面向操作员的回退入口与真实调用的「停止中/待核对」界面归 #19；把某次真实 `ToolCall` 的取消映射到其实例归 #17；`ToolCall` 状态机的 `cancelling`/`denied` 顺延 #17（规格第 4 节②档）。
+
+第 [#17](https://github.com/kksty/HuntWeave/issues/17) 条 tracer 已按下列实现落地并关闭（2026-10-10，验收记录 `docs/validation/0013-p1-real-actions.md`；停止确认与工作目录两项按 2026-10-10 的验收标准补充收紧，证据 `docs/validation/0014-p1-stop-confirmation-and-cwd.md`）：
+
+- 收窄操作集增加「在工具容器内以 profile 的普通用户执行一条命令」（`exec_in_tool`，命令在容器内由 `timeout` 有界监督、退出码 124 视为超时）。第 3.1 节 #16 条目中的「没有命令执行」据此不再成立，执行能力以本条为准；argv 由产品代码按动作与票据绑定组合，仍不接受请求中的命令字段以外的任意执行参数。
+- 动作的工作目录由 profile 的 `workspace.mount` 决定，并在每次执行时显式随调用传入（不依赖工具镜像的默认工作目录）；`execution_instance` 事件同时记录该值，使第 2 节第 11 条的 cwd 可见有事实可依。
+- 停止确认由执行端上报且必须对应原调用所用的实例：调用每次进入终止态都显式声明「停止是否被确认」，只有受信管理器给出实例 `stop_confirmed_at`（或该调用从未准备过任何实例）才算确认。未确认时记录的 `process_active`/`connection_open` 为 `null`、并追加 `execution_stop_unconfirmed` 事件（携带该调用最终结局），对账与资源释放不得把它读成已停止；租约到期、归档失败等没有显式停止尝试的路径同样取该事实，而非按状态推断。
+- 真实 Run 不降级：执行 profile 在创建 Run 时固定且须与授权快照一致，`real_execution_ready` 未逐项满足时拒绝创建（`real_execution_not_ready`），派发与续约前重读就绪，失效即挂起而不是改派假执行端。
 
 生命周期的执行顺序如下；它描述 Runner 的内部阶段与事实，不新增一套 Run/ToolCall 业务状态机：
 

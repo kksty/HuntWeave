@@ -156,7 +156,35 @@ class ActionCheck:
             and all(item.state == "reclaimed" for item in self.instances()),
         )
 
-        # 2. Discovery: the open port and the closed one come from the target itself.
+        # 2. The directory an action runs in is the profile's workspace mount, stated on the call
+        #    itself — and the container really starts there, which is what makes it worth showing.
+        where = self.call(
+            client,
+            "shell.exec",
+            {"command": "pwd", "timeout_seconds": 30},
+            target=addresses["tcp"],
+            port=7000,
+        )
+        announced = next(
+            (
+                event["payload"].get("cwd")
+                for event in where.get("events") or []
+                if event["type"] == "execution_instance"
+            ),
+            None,
+        )
+        reported = where["result"]["output"].strip() if where.get("result") else None
+        self.check(
+            "an_action_runs_in_the_directory_the_profile_names",
+            announced == manager.profile.workspace_mount
+            and where["status"] == "completed"
+            and reported == announced,
+            announced=announced,
+            reported=reported,
+            status=where["status"],
+        )
+
+        # 3. Discovery: the open port and the closed one come from the target itself.
         discovery = self.call(
             client,
             "discover_tcp_services",
@@ -173,7 +201,7 @@ class ActionCheck:
             summary=summary,
         )
 
-        # 3. HTTP: a real 200 from a real server, and a real non-HTTP answer as the counterexample.
+        # 4. HTTP: a real 200 from a real server, and a real non-HTTP answer as the counterexample.
         probe = self.call(
             client, "probe_http", {"path": "/", "method": "GET"}, target=addresses["http"], port=8080
         )
@@ -197,7 +225,7 @@ class ActionCheck:
             reason_code=blocked["reason_code"],
         )
 
-        # 4. A real failure keeps its stderr as evidence.
+        # 5. A real failure keeps its stderr as evidence.
         failure = self.call(
             client,
             "shell.exec",
@@ -223,7 +251,7 @@ class ActionCheck:
             status=failure["status"],
         )
 
-        # 5. What the tool really reported decides the next action, and that action really runs.
+        # 6. What the tool really reported decides the next action, and that action really runs.
         #    Two different observations lead to two different executed calls: one service answers
         #    HTTP, and the echo target does not.
         http_discovery = self.call(
@@ -280,7 +308,7 @@ class ActionCheck:
             decision=empty,
         )
 
-        # 6. Evidence is real bytes: every entry's hash matches the file that was written.
+        # 7. Evidence is real bytes: every entry's hash matches the file that was written.
         mismatches = [
             entry["relative_path"]
             for call in self.report["calls"]
@@ -289,7 +317,7 @@ class ActionCheck:
         ]
         self.check("every_evidence_file_matches_its_recorded_hash", not mismatches, mismatches=mismatches)
 
-        # 7. One surface, two executors: the demonstration profile still works, and a deployment
+        # 8. One surface, two executors: the demonstration profile still works, and a deployment
         #    without management refuses a real ticket instead of faking it.
         demonstration = client.post(
             "/v1/calls", headers=HEADERS, json=self.fake_ticket().model_dump(mode="json")

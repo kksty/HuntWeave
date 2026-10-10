@@ -25,6 +25,14 @@ def _fake_parameters(request: ExecutionRequest) -> FakeParameters:
 class FakeRunner(CallLedger):
     """Writes fixed fixture output for the demonstration actions, on the shared ledger."""
 
+    def _stop_fact(self, record: ExecutionRecord) -> bool:
+        """The fixtures this executor runs live in its own process, so ending a call ends them.
+
+        Nothing outside this process can be left behind, which is why this side — and only this
+        side — can answer "the stop is confirmed" without asking a container runtime.
+        """
+        return True
+
     def _emit(
         self, record: ExecutionRecord, event_type: str, payload: dict[str, Any]
     ) -> ExecutionRecord:

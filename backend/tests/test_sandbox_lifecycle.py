@@ -123,6 +123,7 @@ class FakeRuntime:
         self.health = "healthy"
         # What running a command inside the tool container produces.
         self.commands: list[list[str]] = []
+        self.command_workdirs: list[str | None] = []
         self.command_stdout = ""
         self.command_stderr = ""
         self.command_exit_code = 0
@@ -331,12 +332,18 @@ class FakeRuntime:
         )
 
     def exec_in_tool(
-        self, container_id: str, argv: Sequence[str], timeout_seconds: int
+        self,
+        container_id: str,
+        argv: Sequence[str],
+        timeout_seconds: int,
+        *,
+        workdir: str | None = None,
     ) -> CommandResult:
         self._record("exec_in_tool")
         if container_id not in self.containers:
             raise ResourceNotFound(container_id)
         self.commands.append(list(argv))
+        self.command_workdirs.append(workdir)
         if self.command_gate is not None:
             # Stands in for a command that is still running while the control plane reacts.
             self.command_gate.wait(timeout=10)
@@ -1332,9 +1339,12 @@ def test_a_lapsed_lease_is_halted_by_the_manager_itself(
         )
     )
     # The control plane stops answering: nobody renews, and the manager's own watchdog ends it.
+    # A halt lands as two writes (stop, then the reason), so wait for the finished halt rather
+    # than for the first of them: a state-only wait can read the instance mid-halt.
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
-        if manager.instances[str(instance.instance_id)].state == "stopped":
+        halted = manager.instances[str(instance.instance_id)]
+        if halted.state == "stopped" and halted.halt_reason is not None:
             break
         time.sleep(0.2)
     halted = manager.instances[str(instance.instance_id)]

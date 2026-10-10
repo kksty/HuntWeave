@@ -109,6 +109,9 @@ def test_unknown_after_restart_does_not_claim_a_stop_it_cannot_prove(tmp_path: P
     # connection it left behind: the ledger reports the gap instead of a stop.
     assert observation.started is True
     assert observation.process_active is None and observation.connection_open is None
+    # The gap is named on the call's own timeline, so a console can show 停止未确认 instead of
+    # reading "unknown" as "stopped".
+    assert sum(event.type == "execution_stop_unconfirmed" for event in record.events) == 1
 
 
 def test_cancelling_an_unknown_call_records_the_stop_and_keeps_the_outcome(tmp_path: Path) -> None:

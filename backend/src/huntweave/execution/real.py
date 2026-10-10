@@ -26,7 +26,7 @@ from huntweave.contracts.execution import (
     ProbeHttpParameters,
     ShellExecParameters,
 )
-from huntweave.execution.ledger import CallLedger, RunnerRejected, RunnerUnavailable
+from huntweave.execution.ledger import CallLedger, RunnerRejected, RunnerUnavailable, StopOutcome
 from huntweave.execution.sandbox import (
     AuthorizedEndpoint,
     CommandResult,
@@ -112,9 +112,9 @@ class RealRunner(CallLedger):
         manager: SandboxManager,
         profile: SandboxProfile,
     ):
-        super().__init__(state_dir, evidence_dir)
         self.manager = manager
         self.profile = profile
+        super().__init__(state_dir, evidence_dir)
 
     # -- submission ---------------------------------------------------------------------------
 
@@ -185,7 +185,7 @@ class RealRunner(CallLedger):
             return
         finally:
             if instance_id is not None:
-                self._release(call_id, instance_id)
+                self._release(instance_id)
 
         with self.lock:
             current = self._record(call_id)
@@ -221,6 +221,9 @@ class RealRunner(CallLedger):
                 reason = "execution_timeout"
             elif result.exit_code != 0:
                 reason = "action_failed"
+            # Every one of these transitions takes its claim about processes from this executor's
+            # own stop fact, read after the release above: the ledger asks whether the instance
+            # this call used is confirmed stopped, instead of this path asserting that it is.
             self._change(
                 current,
                 "completed" if result.exit_code == 0 else "failed",
@@ -237,13 +240,16 @@ class RealRunner(CallLedger):
             or record.status != "running"
         )
 
-    def _stop_call(self, record: ExecutionRecord) -> ExecutionResult | None:
+    def _stop_call(self, record: ExecutionRecord) -> StopOutcome:
         """Cancel: end the instance now and hand back whatever evidence already exists.
 
         Stopping the container ends the command that is running in it, so the call stops where it
         is rather than at its own deadline — and the transcript that was already archived stays
         the call's partial result. The request is recorded before it is acted on, so a cancel that
         arrives while the instance is still being prepared is honoured instead of racing it.
+
+        A halt the manager could not confirm is reported as exactly that: the call is cancelled,
+        but nothing claims its processes are gone.
         """
         call_id = record.request.call_id
         self._note(call_id, "halt_requested", "1")
@@ -255,14 +261,42 @@ class RealRunner(CallLedger):
                 )
             except (SandboxRejected, RuntimeUnavailable, ValueError):
                 pass
-        return self._result(record, None)
+        return StopOutcome(
+            result=self._result(record, None),
+            stopped=self._stop_confirmed(instance_id),
+        )
+
+    def _stop_confirmed(self, instance_id: str | None) -> bool:
+        """Whether the manager can prove this call's instance stopped.
+
+        The manager owns that fact: it says so only once its containers are stopped and the
+        confirmation is recorded, so this reads its recorded state instead of judging a container
+        again. An instance the manager cannot speak for — still running, or no longer part of its
+        record at all — answers "cannot confirm", never "stopped". The only "yes" that does not
+        come from the manager is the call that never had an instance: it cannot have left anything.
+        """
+        if not instance_id:
+            return True
+        instance = self.manager.instances.get(instance_id)
+        if instance is None:
+            return False
+        return instance.state in {"stopped", "reclaimed"} and instance.stop_confirmed_at is not None
+
+    def _stop_fact(self, record: ExecutionRecord) -> bool:
+        """What the manager can say about the instance this call used, if it used one."""
+        return self._stop_confirmed(self._noted(record.request.call_id, "instance_id"))
 
     # -- helpers ------------------------------------------------------------------------------
 
     def _announce(
         self, record: ExecutionRecord, request: ExecutionRequest, instance_id: UUID
     ) -> None:
-        """Record where the call is going to act, before it acts."""
+        """Record where the call is going to act, before it acts.
+
+        ``cwd`` is the profile's workspace mount — the directory the manager passes on the exec
+        itself — so a reader sees where the command ran as a decision of this deployment rather
+        than as whatever the tool image left as its default.
+        """
         self._emit(
             record,
             "execution_instance",
@@ -272,6 +306,7 @@ class RealRunner(CallLedger):
                 "profile_id": self.profile.profile_id,
                 "action": request.action_id,
                 "target": f"{request.target_ip}:{request.target_port}",
+                "cwd": self.profile.workspace_mount,
             },
         )
 
@@ -282,8 +317,13 @@ class RealRunner(CallLedger):
                 return
             self._failure(current, reason_code)
 
-    def _release(self, call_id: UUID, instance_id: UUID) -> None:
-        """Revoke, stop and reclaim the instance this call used, whatever the outcome was."""
+    def _release(self, instance_id: UUID) -> None:
+        """Revoke, stop and reclaim the instance this call used, whatever the outcome was.
+
+        The call keeps naming that instance afterwards, even when the release failed: the note is
+        how any later stop finds it, and erasing it would turn "this call still has an instance
+        running" into "this call never had one" — the opposite of what the manager is saying.
+        """
         try:
             halt = self.manager.halt_instance(
                 HaltRequest(instance_id=instance_id, reason="operator_cancelled")
@@ -293,8 +333,6 @@ class RealRunner(CallLedger):
             # A release that could not complete stays visible on the instance record and in the
             # manager's ledger; the call's own outcome is not rewritten to hide it.
             return
-        finally:
-            self._note(call_id, "instance_id", "")
 
     def _archive_result(
         self, record: ExecutionRecord, request: ExecutionRequest, result: CommandResult

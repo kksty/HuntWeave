@@ -239,7 +239,7 @@ python deploy/verify_action.py
 
 出口探针 `deploy/verify_egress.py` 走同一条路，但它会在**本机靶场桥接网络**上创建三个固定回显容器（授权、未授权、控制网络各一个），验证默认拒绝、只放行授权 IPv4/TCP、平台地址与桥接宿主地址被拒、撤销在 profile 时限内生效、取消与租约到期后进程与连接回收、回退序列与对账归档。它不接触任何外部地址，也不改产品就绪门槛；结果见[验证记录 `0012`](./docs/validation/0012-p1-egress-and-cancel.md)。探针创建的资源按自己的标签与本轮 Run 身份回收，结束后报告 `leftovers` 必须为空。
 
-动作探针 `deploy/verify_action.py` 构建产品自己的 Runner（启用受信管理），向它的 HTTP 表面提交真实票据，让真实执行器在靶场容器里跑 `shell.exec`、`discover_tcp_services` 与 `probe_http`，并用 Docker SDK 与证据目录读回事实：命令以普通用户执行、stdout/stderr 与退出码按先文件后 hash 归档、放行只含票据的目标端点、调用结束后实例与许可都不残留，以及**按工具真实返回决定下一个动作并真的执行**（有端口的发现引出 HTTP 请求，无端口则结束研究）。它同样只用 `lab/` 靶场与回环入口，不接触外部地址；结果见[验证记录 `0013`](./docs/validation/0013-p1-real-actions.md)。
+动作探针 `deploy/verify_action.py` 构建产品自己的 Runner（启用受信管理），向它的 HTTP 表面提交真实票据，让真实执行器在靶场容器里跑 `shell.exec`、`discover_tcp_services` 与 `probe_http`，并用 Docker SDK 与证据目录读回事实：命令以 profile 的普通用户在 profile 指定的工作目录（`workspace.mount`）内执行、stdout/stderr 与退出码按先文件后 hash 归档、放行只含票据的目标端点、调用结束后实例与许可都不残留，以及**按工具真实返回决定下一个动作并真的执行**（有端口的发现引出 HTTP 请求，无端口则结束研究）。它同样只用 `lab/` 靶场与回环入口，不接触外部地址；结果见[验证记录 `0013`](./docs/validation/0013-p1-real-actions.md) 与 [`0014`](./docs/validation/0014-p1-stop-confirmation-and-cwd.md)。
 
 ## 项目资料
 

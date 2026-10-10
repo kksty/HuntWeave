@@ -282,19 +282,27 @@ class DockerRuntime:
         return output.decode("utf-8", errors="replace")
 
     def exec_in_tool(
-        self, container_id: str, argv: Sequence[str], timeout_seconds: int
+        self,
+        container_id: str,
+        argv: Sequence[str],
+        timeout_seconds: int,
+        *,
+        workdir: str | None = None,
     ) -> CommandResult:
         """Run one command inside this project's tool container, as the profile's tool user.
 
         The command is wrapped in a bounded supervisor inside the container, so an action that
         hangs cannot outlive its ticket even if this process is busy: the timeout belongs to the
         call, not to the caller's patience.
+
+        ``workdir`` is passed on the exec itself, so the directory is a property of this call
+        rather than of the image's configuration.
         """
         container = self._container(container_id, require_project=True)
         user = self._tool_user()
         supervised = ["timeout", "-k", str(TOOL_KILL_GRACE_SECONDS), str(timeout_seconds), *argv]
         try:
-            result = container.exec_run(supervised, user=user, demux=True)
+            result = container.exec_run(supervised, user=user, demux=True, workdir=workdir)
         except DockerException as error:
             raise RuntimeUnavailable(str(error)) from error
         streams = result.output if isinstance(result.output, tuple) else (result.output, None)

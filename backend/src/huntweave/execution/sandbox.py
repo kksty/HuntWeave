@@ -250,7 +250,12 @@ class ContainerRuntime(Protocol):
     def container_processes(self, container_id: str, limit: int) -> tuple[str, ...]: ...
 
     def exec_in_tool(
-        self, container_id: str, argv: Sequence[str], timeout_seconds: int
+        self,
+        container_id: str,
+        argv: Sequence[str],
+        timeout_seconds: int,
+        *,
+        workdir: str | None = None,
     ) -> CommandResult: ...
 
     def container_logs(
@@ -748,6 +753,10 @@ class SandboxManager:
         under the permit the gateway holds, as the unprivileged user the profile names. The
         command itself is the caller's — that is the product's purpose — and everything else about
         where and how it runs was decided before the call arrived.
+
+        That includes the directory it runs in: the profile's workspace mount is stated explicitly
+        on the call rather than inherited from whatever the tool image happens to set, so a record
+        of where an action ran is the profile's decision and not an image's default.
         """
         record = self._instance(instance_id)
         if record.state != "ready":
@@ -756,7 +765,12 @@ class SandboxManager:
         if not argv or not all(isinstance(part, str) and part for part in argv):
             raise SandboxRejected("action_command_invalid")
         try:
-            return self.runtime.exec_in_tool(container.id, list(argv), timeout_seconds)
+            return self.runtime.exec_in_tool(
+                container.id,
+                list(argv),
+                timeout_seconds,
+                workdir=self.profile.workspace_mount,
+            )
         except ResourceNotFound:
             raise SandboxRejected("sandbox_resource_missing") from None
 
