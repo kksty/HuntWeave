@@ -135,9 +135,12 @@ class Observation(Base):
     an earlier one.
 
     The row has no update path in the service layer, and the database says the same thing: a trigger
-    refuses any statement that changes what was observed, so "the original cannot be overwritten" is
-    enforced rather than promised. What a record *currently* amounts to (superseded, retracted,
-    contradicted) is derived from the records that point at it, not written into it.
+    refuses any ``UPDATE`` that changes what was observed, so "the original cannot be overwritten"
+    is enforced rather than promised. The trigger covers ``UPDATE`` only — it is "no rewrite", not
+    "no deletion", and a ``DELETE`` is not refused by it (nothing in this build deletes an
+    observation, and the migrations own that reduction). What a record *currently* amounts to
+    (superseded, retracted, contradicted) is derived from the records that point at it, not written
+    into it.
     """
 
     __tablename__ = "observations"
@@ -309,8 +312,10 @@ class ServiceCostShareRecord(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
     call_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.tool_calls.id"), index=True)
     service_key: Mapped[str] = mapped_column(ForeignKey("huntweave.services.key"), index=True)
-    # `primary` marks the service that was directly verified; `shared` marks the ones the same call
-    # passed through. The flag is what makes "不按主锚点重复结算" visible in the data.
+    # `anchor` marks the service that was directly verified; `through` marks the ones the same call
+    # passed through. The values are the strings `runs/facts.py` writes
+    # (`ATTRIBUTION_ANCHOR`/`ATTRIBUTION_PASSED_THROUGH`); the flag is what makes
+    # "不按主锚点重复结算" visible in the data.
     attribution: Mapped[str] = mapped_column(String(20))
     share_units: Mapped[int] = mapped_column(Integer, default=0)
     rule_version: Mapped[int] = mapped_column(Integer, default=1)

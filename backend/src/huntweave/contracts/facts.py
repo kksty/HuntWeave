@@ -574,10 +574,15 @@ class SettlementWrite(Contract):
     output_bytes: int = Field(default=0, ge=0, strict=True)
     rule_version: int = Field(default=FACTS_IDENTITY_VERSION, ge=1, strict=True)
     #: The service the call *directly* verified, named by its computed key. It is first in the
-    #: derived shares and is what the share marked ``primary`` refers to. A key naming no
-    #: service
-    #: of this Run's project is refused rather than stored as a share pointing at nothing.
+    #: derived shares and is the one marked ``anchor``. A key naming no service of this Run's
+    #: project is refused rather than stored as a share pointing at nothing.
     primary_service_key: str = Field(min_length=1, max_length=200)
+    #: The other services the same call reached, named by their computed keys. Each becomes a share
+    #: marked ``through``: a cross-service call is charged once and reported once per service
+    #: (issue #44 criterion 3, *不按主锚点重复结算*). They are refused on exactly the same terms as
+    #: the primary key, and the service layer re-checks every one of them rather than trusting this
+    #: route's pre-check.
+    extra_service_keys: list[str] = Field(default_factory=list, max_length=64)
 
 
 class ClueWrite(Contract):

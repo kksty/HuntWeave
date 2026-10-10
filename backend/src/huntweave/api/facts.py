@@ -103,6 +103,14 @@ def create_facts_router(engine: Callable[[], Engine]) -> APIRouter:
         """ADR-0015 record 2: one measurement of what a Run covered on one service."""
         _actor(request)
         service = _service_of_run(engine, run_id, payload.service_key_value)
+        if payload.entry_key is not None:
+            # A measurement may name the entry it was taken on, and that entry is checked like the
+            # service is: one belonging to another project is refused, and one belonging to another
+            # service of the same project is refused too, because storing it would record a page
+            # under a service that never served it.
+            entry = _entry_of_run(engine, run_id, payload.entry_key)
+            if entry.service_key != service.key:
+                raise ServiceError("invalid_request", 422)
         return facts.cover(payload.model_copy(update={"run_id": run_id}), service)
 
     @router.post("/api/v1/runs/{run_id}/facts/anchor", status_code=201)
@@ -112,6 +120,12 @@ def create_facts_router(engine: Callable[[], Engine]) -> APIRouter:
         """ADR-0015 record 3: move the navigation anchor. It writes no coverage and no cost."""
         browser = _actor(request)
         entry = _entry_of_run(engine, run_id, payload.entry_key)
+        if entry.service_key != payload.service_key_value:
+            # An anchor is a choice of an *entry*, and every entry belongs to exactly one service.
+            # A payload naming a different service is refused rather than silently resolved in the
+            # entry's favour: the alternative records a choice the caller did not make, and leaves
+            # the stated service with no effect at all.
+            raise ServiceError("invalid_request", 422)
         return facts.navigate(
             payload.model_copy(update={"run_id": run_id}),
             entry,
@@ -125,9 +139,14 @@ def create_facts_router(engine: Callable[[], Engine]) -> APIRouter:
         """ADR-0015 record 4: charge one call once, however many services it touched."""
         _actor(request)
         # Checked before the write, so a key naming nothing this project may see produces no
-        # settlement row at all.
+        # settlement row at all. The service layer checks every key again inside its transaction.
         _service_of_run(engine, run_id, payload.primary_service_key)
-        return facts.settle(payload.model_copy(update={"run_id": run_id}))
+        for extra in payload.extra_service_keys:
+            _service_of_run(engine, run_id, extra)
+        return facts.settle(
+            payload.model_copy(update={"run_id": run_id}),
+            extra_service_keys=payload.extra_service_keys,
+        )
 
     @router.post("/api/v1/runs/{run_id}/lineage", status_code=201)
     def reference_history(

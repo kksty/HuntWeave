@@ -963,6 +963,85 @@ def test_an_unknown_run_is_refused_with_the_platforms_own_reason(client: TestCli
     assert response.json() == {"reason_code": "run_not_found"}
 
 
+def _two_subjects(fixture: Fixture) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Two observations of two different services, taken by the same call."""
+    direct = fixture.observe(fixture.run_a, call_id=fixture.call_a, host="app.example")
+    elsewhere = fixture.observe(
+        fixture.run_a, call_id=fixture.call_a, address="192.0.2.11", host="relay.example"
+    )
+    assert direct["service_key_value"] != elsewhere["service_key_value"]
+    return direct, elsewhere
+
+
+def test_the_public_api_refuses_a_service_and_an_entry_that_are_not_the_same_subject(
+    client: TestClient, fixture: Fixture
+) -> None:
+    """The keys are computed, but the caller still says *which* ones it means.
+
+    A payload naming an entry of one service and the key of another is refused rather than resolved
+    in the entry's favour: coverage would otherwise be stored under a service that never served the
+    page, and an anchor would record a choice the caller did not make.
+    """
+    headers = login(client)
+    direct, elsewhere = _two_subjects(fixture)
+
+    coverage = client.post(
+        f"/api/v1/runs/{fixture.run_a.id}/coverage",
+        headers=headers,
+        json={
+            "run_id": str(fixture.run_a.id),
+            "service_key_value": direct["service_key_value"],
+            "entry_key": elsewhere["entry_key"],
+            "directly_verified": True,
+        },
+    )
+    assert coverage.status_code == 422
+    assert coverage.json() == {"reason_code": "invalid_request"}
+    with Session(fixture.engine) as session:
+        assert list(session.scalars(select(ServiceCoverageRecord))) == []
+
+    anchor = client.post(
+        f"/api/v1/runs/{fixture.run_a.id}/facts/anchor",
+        headers=headers,
+        json={
+            "run_id": str(fixture.run_a.id),
+            "entry_key": direct["entry_key"],
+            "service_key_value": elsewhere["service_key_value"],
+            "reason": "a pair that names two subjects",
+            "run_version": _run_version(fixture.engine, fixture.run_a.id),
+        },
+    )
+    assert anchor.status_code == 422
+    assert anchor.json() == {"reason_code": "invalid_request"}
+
+
+def test_a_cross_service_settlement_is_reachable_through_the_public_api(
+    client: TestClient, fixture: Fixture
+) -> None:
+    """Issue #44 criterion 3 through the route: charged once, reported once per service."""
+    headers = login(client)
+    direct, elsewhere = _two_subjects(fixture)
+
+    response = client.post(
+        f"/api/v1/runs/{fixture.run_a.id}/settlements",
+        headers=headers,
+        json={
+            "call_id": str(fixture.call_a),
+            "run_id": str(fixture.run_a.id),
+            "cost_units": 5,
+            "primary_service_key": direct["service_key_value"],
+            "extra_service_keys": [elsewhere["service_key_value"]],
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["cost_units"] == 5
+    assert {share["service_key"]: share["attribution"] for share in body["shares"]} == {
+        direct["service_key_value"]: "anchor",
+        elsewhere["service_key_value"]: "through",
+    }
+
+
 def _run_version(engine: Engine, run_id: UUID) -> int:
     with Session(engine) as session:
         row = session.scalar(select(Run.version).where(Run.id == run_id))

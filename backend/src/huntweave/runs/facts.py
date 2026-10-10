@@ -69,18 +69,10 @@ from huntweave.storage.models import (
     WebEndpoint,
 )
 
-#: How long a cross-Run reference may be kept when the source's own retention is unknown. It is a
-#: period this deployment chooses, not a claim about how long the evidence proves anything: 0006
-#: section 5 forbids deriving a validity period from a retention period, and this number is only the
-#: latter.
-DEFAULT_LINEAGE_RETENTION_DAYS = 30
-
 #: The two placements a derived per-service cost share can have (ADR-0015's fourth record). They are
 #: labels on a statistic, never refusals: the console does not render them as explanations, and
 #: `tests/test_reason_codes.py` is deliberately not asked to map them. The service the call directly
-#: verified is the anchor; the ones it merely passed through are labelled as such — the names say
-#: what they mean, and this pair was previously written the other way round, which made every share
-#: carry its opposite label.
+#: verified is the anchor; the ones it merely passed through are labelled as such.
 ATTRIBUTION_ANCHOR = "anchor"
 ATTRIBUTION_PASSED_THROUGH = "through"
 
@@ -299,8 +291,14 @@ class ServiceFactsService:
                 )
             )
             if existing is not None:
-                # The same reading taken twice by one call is one record. The unique constraint says
-                # the same thing, so a replay and a race both land here.
+                # The same reading taken twice by one call is one record.
+                #
+                # This lookup is the whole of the de-duplication, and it only covers a reading that
+                # names a call: `source_call_id == NULL` never matches, and PostgreSQL treats NULLs
+                # as distinct, so `uq_observation_call` does not fire for them either. A reading
+                # written without a call id is therefore *not* de-duplicated — it does not name its
+                # producer, and two identical ones stay two rows. Callers that need replay safety
+                # (the Runner path) always name the call.
                 return _observation_view(
                     existing,
                     service_key=existing.service_key,
@@ -488,7 +486,7 @@ class ServiceFactsService:
         The primary key is the call id and ``budget_reservations`` is already unique per call, so a
         repeated settlement — from a re-dispatch, a retry or a replayed graph step — returns the
         first record instead of charging a second time. The per-service shares are written once,
-        beside it, and are marked ``primary``/``shared`` so
+        beside it, and are marked ``anchor``/``through`` so
         "不按主锚点重复结算" is a property of the stored data.
         """
         with Session(self.engine()) as session, session.begin():
@@ -576,7 +574,7 @@ class ServiceFactsService:
             if target.version != request.target_run_version:
                 raise ServiceError("version_conflict", 409)
             now = database_now(session)
-            retained_until = _retention_limit(session, source, now)
+            retained_until = _retention_limit(source)
             if retained_until <= now:
                 raise ServiceError("scope_denied", 409)
             row = ResearchLineageReference(
@@ -936,18 +934,19 @@ def _clue_key(request: ClueWrite, decision: ClueDecision) -> str:
     return clue_key_of(decision.address, request.transport, port)
 
 
-def _retention_limit(session: Session, source: Run, now: datetime) -> datetime:
+def _retention_limit(source: Run) -> datetime:
     """Until when the source Run's material is retained.
 
     The source Run's own authorization window is what this build can point at: material produced
     under an authorization that has expired is material whose retention this deployment stops
     guaranteeing. The value is a *retention* limit and is reported as one; 0006 section 5 forbids
     reading it as how long the evidence proves anything.
+
+    It answers with the authorization's expiry and nothing else — there is no separate retention
+    period in this build, and no default period is substituted when the source's own retention is
+    unknown (this deployment has no retention source for a Run beyond its authorization).
     """
-    scope = ScopeSnapshot.model_validate(source.scope_snapshot)
-    limit = scope.expires_at
+    limit = ScopeSnapshot.model_validate(source.scope_snapshot).expires_at
     if limit.tzinfo is None:
         limit = limit.replace(tzinfo=UTC)
-    if limit <= now:
-        return limit
-    return max(limit, now)
+    return limit
