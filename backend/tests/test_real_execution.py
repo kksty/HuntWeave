@@ -256,11 +256,16 @@ def test_cancelling_ends_the_running_command_and_keeps_what_was_collected(tmp_pa
             break
         time.sleep(0.05)
     assert [record.state for record in manager.instances.values()] == ["reclaimed"]
-    # Whether the command started is a genuine race with the cancel — the request is recorded
-    # before it is acted on, and the executor checks it around preparing the instance — so what is
-    # asserted is the property that must hold either way: a command does not outlive its call.
-    # The call is over, so anything that did start was stopped with the instance.
+    # Whether the command started is still a genuine race with the cancel — the request is
+    # recorded before it is acted on, and the executor checks it around preparing the instance.
+    # What the cancel settles is not: once a halt is requested, this call ends cancelled, and an
+    # action that refused to run because the instance was stopped mid-flight does not turn it into
+    # a failure. That status is therefore asserted above rather than left to which thread reached
+    # the ledger first.
     assert cancelled.observation is not None
+    # The call is over and the manager confirmed the stop, so nothing this call started outlives
+    # it. Had the stop been unconfirmed instead, `execution_started` would have kept the process
+    # unknown here rather than releasing it (see the unconfirmed-stop check below).
     assert cancelled.observation.process_active is False
     gate.set()
 

@@ -458,6 +458,15 @@ class RealRunner(CallLedger):
             current = self._record(call_id)
             if current is None or current.status != "running":
                 return
+            if self._noted(call_id, "halt_requested") == "1":
+                # A cancel was requested while this call was still running, so that path owns the
+                # terminal status. The action stopping here is the cancel taking effect — halting
+                # the instance is what makes the command refuse to run — and recording it as a
+                # failure would decide the call's status by which of the two racing threads
+                # reached the ledger first. The cancel writes `cancelled` with the operator's own
+                # reason code and keeps whatever evidence was already archived, so nothing is
+                # lost by leaving the transition to it.
+                return
             self._failure(current, reason_code)
 
     def _release(self, instance_id: UUID, environment: EnvironmentManifest | None) -> None:
