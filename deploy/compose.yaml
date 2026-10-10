@@ -66,6 +66,7 @@ services:
       HUNTWEAVE_COOKIE_SECURE: ${HUNTWEAVE_COOKIE_SECURE:-false}
       HUNTWEAVE_RUNNER_TOKEN_FILE: /run/secrets/runner_token
       HUNTWEAVE_RUNNER_URL: http://runner:8001
+      HUNTWEAVE_EVENT_RETENTION_KEEP: ${HUNTWEAVE_EVENT_RETENTION_KEEP:-0}
     secrets: [access_key, app_db_password, checkpoint_db_password, migrator_db_password, runner_token]
     volumes: ["evidence:/evidence:ro"]
     networks: [web, control, database]

@@ -270,6 +270,12 @@ def page_events(
         }
         for x in rows
     ]
+    # `published` is read from the rows themselves, so a writer that committed between the counter
+    # read above and the walk can leave it *above* that earlier reading. Reporting
+    # `published > committed` would state a contradiction inside one response ("you can continue
+    # further than anything is claimed"), so the counter is raised to what the walk really saw: the
+    # counter is at or above every committed row, and never below them.
+    committed = max(committed, published)
     return EventWindow(
         events=events,
         committed=committed,
@@ -290,8 +296,9 @@ def prune_events(session: Session, run_id: UUID, keep_from: int) -> int:
     execution side's own retention policy with its own pins and reasons).
 
     The prune leaves a mark in the timeline itself: an `event_retention_applied` event names the
-    cursors that are now gone, so the fact that a region was pruned survives the pruning even after
-    every later cursor has aged out too.
+    cursors that are now gone. That mark is an ordinary event of this timeline and ages out with it
+    — the durable record of how far pruning went is the Run's ``retained_from_cursor`` column, and
+    the mark is what a reader of the timeline sees without having to read that column.
     """
     cursor = session.get(EventCursor, run_id, with_for_update=True)
     if cursor is None:

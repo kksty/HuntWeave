@@ -191,7 +191,18 @@ def create_events_router(
                             stream_probe, database, settings, token
                         )
                         if reason != "ok":
-                            yield _frame("session_expired", {"reason_code": reason, **detail})
+                            # Two different situations, two different frames: a refused *identity*
+                            # ends the stream (the console must re-authenticate), while a storage
+                            # failure is a platform fault the client retries. Naming a database
+                            # blip `session_expired` would log an operator out of a platform whose
+                            # session is perfectly valid — and it is the same distinction the
+                            # mid-page handler below already makes.
+                            frame = (
+                                "storage_unavailable"
+                                if reason == "storage_unavailable"
+                                else "session_expired"
+                            )
+                            yield _frame(frame, {"reason_code": reason, **detail})
                             return
                         next_auth = time.monotonic() + STREAM_AUTH_INTERVAL_SECONDS
                     page = await run_in_threadpool(

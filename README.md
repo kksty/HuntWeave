@@ -99,6 +99,7 @@ app/runner 共用控制镜像，因此先单独 `build app`，再启动三个服
 | 沙箱管理 | `HUNTWEAVE_SANDBOX_MANAGEMENT=enabled` 才启用（默认关闭，其他取值一律不启用），仅应由 `deploy/compose.sandbox.yaml` 设置 |
 | 沙箱执行 profile | `HUNTWEAVE_SANDBOX_PROFILE`，默认 `sandbox-lifecycle-v1`；profile 文件由镜像内 `/opt/huntweave/profiles/` 提供 |
 | 选择性保留策略 | `HUNTWEAVE_RETENTION_CANDIDATE_RUNS`（默认 3）、`HUNTWEAVE_RETENTION_WINDOW_DAYS`（默认 30）、`HUNTWEAVE_RETENTION_TTL_DAYS`（默认 7）、`HUNTWEAVE_RETENTION_CAPACITY_BYTES`（默认 10 GiB）、`HUNTWEAVE_RETENTION_SWEEP_SECONDS`（默认 300，`0` 表示只在操作员手动回收时执行）；Runner 与 app 读同一组名字 |
+| 事件时间线保留 | `HUNTWEAVE_EVENT_RETENTION_KEEP`（默认 `0`，表示不按数量清理时间线）；设为正整数时，Run 的事件超过该数量后按保留策略清理，被清理的游标由水位记录，旧游标补拉得到 `event_cursor_expired` 而不是被静默回填（[PROJECT §12.1](./PROJECT.md)）。它不是 `HUNTWEAVE_RETENTION_*`：那组管的是私有工作区与工具制品，与事件时间线是两件事 |
 | 平台、Runner 与数据库 secrets | `runtime/secrets/` |
 
 端口覆盖可写入仓库根目录的 `.env`：
