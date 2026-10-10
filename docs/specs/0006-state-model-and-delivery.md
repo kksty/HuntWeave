@@ -166,7 +166,7 @@ Attempt 身份由稳定研究问题、实际目标绑定、相关访问条件版
 
 ### 0.1 旧语义映射
 
-下表的旧 Finding 值来自设计文档；只有实际导入了这种记录才执行相应转换，不能从没有数据的旧稿生成已完成评估。
+下表的旧 Finding 值来自设计文档；只有实际导入了这种记录才执行相应转换，不能从没有数据的旧稿生成已完成评估。**实际盘点（[0010 §4](./0010-phase0-source-inventory.md)）：截至 2026-10-11，业务库中没有任何 Finding 记录，也没有任何上述取值，因此本表当前不产生任何迁移事实**；`reconciliation_decisions` 亦为 0 行，现存 `ToolCall` 只有 `succeeded`/`cancelled`。
 
 | 旧对象/值 | 新对象与规则 | 不能推造的事实 |
 | --- | --- | --- |
@@ -187,6 +187,8 @@ Attempt 身份由稳定研究问题、实际目标绑定、相关访问条件版
 `verified` 不全局替换：旧 Finding 证据标签、工具验证结果、能力就绪、机器审阅与人工裁定先逐对象盘点。本规格的新字段分别称 claim confirmed、auto_reviewed、independent_reviewed、human_confirmed；旧人工 outcome 为 confirmed 时必须带 HumanDecision 对象，防歧义。历史 ADR、报告与验证记录保留原名称并标替代关系。
 
 顺序：0.1 来源盘点/映射与兼容读策略 → 0.2 verified 对象/语义映射 → 0.3 六轴及接口字段/引用方向 → 0.4 frozen manifest 完整输入 schema → 0.5 按 §3 锁定默认等级与有效要求版本。本文已固定设计要求；实际列/索引、来源数据盘点、转换作业和回退步骤须随实施补齐，不声称已执行迁移。
+
+**0.1–0.5 的实际盘点与契约交接见 [0010 §1–§12](./0010-phase0-source-inventory.md)**（[#38](https://github.com/kksty/HuntWeave/issues/38)）：它对照 `storage/models.py` 的全部 ORM 类、`backend/migrations/versions/` 的实际迁移链与现存数据记录真实表/写入方/版本引用，并把六轴载体、冻结输入 schema、单一写入口与有界 `dual_read` 落成可检查形式。本节首段的「现有源码保存 …」清单只是设计期概述，**不是完整来源清单**；以 0010 §3 为准。后续切片仍各自按 [PROJECT §14](../../PROJECT.md#14-开发顺序与验收门槛) 完成自己的实施评审，0010 不替代它们。
 
 ## 11. 成对验收与切片
 
