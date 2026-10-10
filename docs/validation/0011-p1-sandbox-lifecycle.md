@@ -31,18 +31,20 @@
 
 环境：Windows 11 x86_64（`Windows-11-10.0.26200-SP0`）、Docker Desktop（Engine 29.7.2）、宿主 Python 3.14.5（探针入口）、`backend/.venv` Python 3.12（纯检查）。生命周期探针自建 `huntweave-isolation-probe:p0` 与 `huntweave-sandbox-lifecycle:p1` 两个 lab 镜像，报告写入被忽略的 `runtime/sandbox/<run>/report.json`。
 
+下面两份靶场报告都在本切片的提交 `127b112` 上、工作树干净时取得（报告内 `source_revision=127b112d36ffec25c19416df3099e2dfc024bc22`、`source_tree_dirty=false`）；记录本身的后续文字修订不改代码，也不改变已取得的报告。
+
 | 行为 | 结果 |
 | --- | --- |
-| 无目标网络的固定生命周期检查 | `python deploy/verify_lifecycle.py` → **29 项检查全部通过**，`leftovers: 0`、`cleanup_failures: []`；报告 `runtime/sandbox/6abc3eb30ddf4f80ac5f21ee5aae4897/report.json`，sha256 `51b98612a82349dceb5a83ea2e03b7bbcde84f80660a9746cbe292721ad12ede`（运行时 revision `b644ecd`、`source_tree_dirty=true`，即本切片提交前的工作树） |
+| 无目标网络的固定生命周期检查 | `python deploy/verify_lifecycle.py` → **29 项检查全部通过**，`leftovers: 0`、`cleanup_failures: []`；报告 `runtime/sandbox/ffed416b90c94963812594bf9ce05dc2/report.json`，sha256 `55280708dd497efa4e65401fc85a100c400a4506e1be572ee4c27588ac690640` |
 | 固定 profile 生效 | `profile_keeps_the_tool_unprivileged`：profile 载入且在会话网络中 (`internal`)、tool 用户 `10001:10001`、无 capability、只读根与 `capabilities_drop=["ALL"]` |
-| 实例与标签 | `instance_is_ready`、`environment_manifest_records_what_ran`（引擎 29.7.2、x86_64、两个角色解析出镜像 digest）、`round_owns_a_volume_a_network_and_two_containers`、`every_resource_carries_the_project_labels`、`resource_names_are_derived_from_the_identities` 全部通过 |
+| 实例与标签 | `instance_is_ready`、`environment_manifest_records_what_ran`（引擎 29.7.2、x86_64、两个角色解析出 `huntweave-isolation-probe@sha256:01d041c4…`）、`round_owns_a_volume_a_network_and_two_containers`、`every_resource_carries_the_project_labels`、`resource_names_are_derived_from_the_identities` 全部通过 |
 | 普通用户与受控挂载 | `tool_runs_as_a_normal_user_in_a_read_only_filesystem`（SDK 读回 `Config.User=10001:10001`、`CapDrop=["ALL"]`、两容器均有 `no-new-privileges`、`ReadonlyRootfs=true`）、`tool_mounts_only_its_private_workspace`（唯一挂载是本轮私有卷）、`no_container_sees_a_management_socket`、`gateway_is_the_only_privileged_part`（gateway 仅 `NET_ADMIN`） |
 | 网络与出口 | `session_network_is_internal_and_isolated`（`Internal=true` 且 `gateway_mode_ipv4=isolated`）、`only_one_network_exists_for_this_round`、`the_tool_has_no_address_outside_the_session_network`（`lo` + `eth0=172.28.0.1`，唯一非回环地址落在会话子网 `172.28.0.0/16` 内）、`gateway_installs_default_deny_rules`（`INPUT/OUTPUT/FORWARD DROP`，无任何 ACCEPT 规则）；**本轮不创建目标网络、不发起任何目标流量** |
 | 进程与日志 | `tool_processes_are_visible_through_the_manager`（uid 10001 的 `/lab/fixture.py hold` 两个进程）、`log_read_is_bounded`（实测 0 字节 / 上限 65536；这两个固定镜像不打印内容，真正被截断的边界由单元检查覆盖） |
 | 证据归档 | `evidence_is_archived_for_this_instance`：写入 `<run>/<instance>/lifecycle.json`，102 字节，sha256 `48c9ff90…`，路径由管理器按身份拼装 |
 | 停止与回收 | `stop_is_confirmed_by_the_runtime`（`stop_confirmed_at` 晚于实际停止）、`no_container_is_running_after_the_stop`、`reclaim_removes_every_owned_resource`（容器×2/网络/卷四级全部移除、`failed: []`）、`the_round_leaves_nothing_behind`（管理器视图、SDK 按标签查询与 `audit()` 三处均为空） |
 | 身份与重建 | `ledger_survives_a_new_manager`（新进程读回同一会话与已回收实例及其环境清单）、`a_rebuild_is_a_new_instance_identity`（旧 `1e753fd3…` → 新 `e4697c43…`）、`the_old_instance_is_still_recorded`、`the_second_round_reclaims_completely` |
-| 隔离探针未因镜像重构回归 | `python deploy/verify_isolation.py` → **40 项检查全部通过**、`cleanup_errors: 0`；报告 `runtime/isolation/f5893680946f4e57a3dfe1354ce618a0/report.json`，sha256 `33c90ab6f1508386a5e7bc62b0b019efb6d34ed81e70cdf7619e1a634c2d3f24`（lab 镜像改为 `lab` 基础阶段 + `manager`/`sandbox` 目标后复跑） |
+| 隔离探针未因镜像重构回归 | `python deploy/verify_isolation.py` → **40 项检查全部通过**、`cleanup_errors: 0`；报告 `runtime/isolation/3a4fee6961d7464c80fd1e02677ec220/report.json`，sha256 `cdb0d407ed42e02c515adf25ece59c67c0fc85e1e3574958fced5ba2b10607d5`（lab 镜像改为 `lab` 基础阶段 + `manager`/`sandbox` 目标后复跑） |
 | 本地纯检查 | `ruff check src tests` 全部通过；`mypy --config-file pyproject.toml src` 在 **41 个源文件**上无问题（`0008`/`0010` 为 37 个）；`python -m pytest -m "not integration" -q` → **123 项通过、4 项跳过、38 项按标记排除**（`0010` 为 78 项通过，本轮 +45 = 生命周期 41 + 部署边界 4） |
 | 默认部署仍无管理能力 | `docker compose config --quiet` 对基础文件与覆盖文件均通过；两个文件的 `docker.sock` 挂载点分别为 `[]` 与 `["runner"]`，服务仍只有 `app`/`postgres`/`runner`。dev 栈实测 `/v1/capabilities`：`sandbox_management=disabled`、`sandbox_reason_code=null`、`mode=demonstration`、`real_execution_ready=false`、顶层原因 `environment_unsupported`，四项门槛仍为 `profile_revalidation=false`、`contract_expressiveness=true`、`console_consumption=true`、`deployment_revert=false` |
 | 显式启用后的实测 | 用 `-f deploy/compose.yaml -f deploy/compose.sandbox.yaml` 重建 runner：`sandbox_management=ready`、`sandbox_reason_code=null`，而 `real_execution_ready=false`、`mode=demonstration` 不变（启用管理不等于开放真实执行）。随后用基础文件恢复，runner 回到 `sandbox_management=disabled`、三服务 healthy |
