@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { create as createFont } from 'fontkit';
 import SevenZip from '7z-wasm';
 import subsetFont from 'subset-font';
-import { cacheDir, latinFaces, sarasaFaces, sources } from './font-manifest.mjs';
+import { CJK_PUNCT, HAN, cacheDir, latinFaces, sarasaFaces, sources } from './font-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontend = resolve(here, '..');
@@ -35,8 +35,8 @@ const charsetRoots = [
   { path: resolve(frontend, '..', 'docs'), exts: ['.md'] },
 ];
 
-const han = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
-const cjkPunct = /[\u3000-\u303f\uff00-\uffef\u2000-\u206f\u00b7\u2014\u2026]/;
+const han = HAN;
+const cjkPunct = CJK_PUNCT;
 
 const log = (...args) => console.log('[fonts]', ...args);
 

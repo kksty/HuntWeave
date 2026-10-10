@@ -247,6 +247,15 @@ cd backend
 # 前端源码或构建配置变化时
 npm run build
 
+# 设计系统机械检查（token 层唯一色值来源、对比度、字体许可与中文分工、产物体积）
+# 5b 读 frontend/dist，必须排在构建之后；不联网。CI 也跑这一条。
+npm run build && npm run check:design
+# 等价写法（顺序已内置）
+npm run check
+
+# 仅在需要重建中文子集时（需要网络；产物已入库，日常不需要）
+npm run fonts:build
+
 # 仅修改测试脚本时：检查类型，不重建页面产物
 npx vue-tsc --noEmit
 
@@ -259,6 +268,8 @@ npm run test:e2e
 # 集中验收：收集各用例结果
 npm run test:e2e:full
 ```
+
+`npm run check:design` 的判据与实测值见 [视觉设计系统](./docs/specs/0009-visual-design-system.md) §3/§4 与[验证记录 0021](./docs/validation/0021-visual-tokens.md)；色值的唯一来源是 `frontend/src/tokens.css`，新增色值只允许加在那里。
 
 浏览器默认每项上限 30 秒、导航上限 10 秒、页面交互与显示断言上限 5 秒，整轮上限 3 分钟，零自动重试。需要完整假 Run 结束的流程，先通过只读 API 轮询观察后端终态（最多 15 秒），再检查页面显示，仍受单项 30 秒限制。日常命令首个失败即停止；完整验收命令继续运行后续用例，仍受整轮上限约束。先解决服务不可用或公共准备失败，再运行完整验收；超时或未完成的轮次不能记为通过。这些参数仅约束开发检查，不改变目标工具执行、授权时间窗或控制租约。
 

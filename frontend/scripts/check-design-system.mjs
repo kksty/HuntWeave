@@ -17,6 +17,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { create as createFont } from 'fontkit';
+import { CJK_PUNCT, HAN } from './font-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontend = resolve(here, '..');
@@ -106,16 +107,65 @@ const notationHits = sourceFiles
   );
 record('1a2 无 rgb()/hsl() 绕过', notationHits.length === 0, notationHits.length ? notationHits.join(', ') : 'tokens.css 之外没有 rgb()/rgba()/hsl()/hsla() 字面量色值');
 
-// 规则文件：色值一律走 var(--hw-*)。
-const rulesCss = sourceFiles.filter((p) => extname(p) === '.css' && p !== tokensPath);
-const directHexInRules = rulesCss.flatMap((file) =>
-  read(file)
-    .split(/\r?\n/)
-    .flatMap((line, index) => [...line.matchAll(hexPattern)].map((m) => `${file.replace(repo, '.')}:${index + 1} ${m[0]}`)),
-);
-record('1b 样式规则内无十六进制色值', directHexInRules.length === 0, directHexInRules.length ? directHexInRules.join(', ') : `${rulesCss.map((p) => p.replace(repo, '.')).join(', ')} 内 0 处直接色值`);
+// ---------- 样式位置与色值写法 ----------
+// `.vue` 的 <style> 块与独立 .css 都是「样式位置」：V-A 之后色值一律走 var(--hw-*)，
+// 因此两者适用同一条判据。内联 style="" 是第三种位置，单独扫描。
+const stylesheetFiles = sourceFiles.filter((p) => ['.css', '.vue'].includes(extname(p)) && p !== tokensPath);
+const colorProps =
+  /(?<![\w-])(?:color|background|background-color|border|border-[a-z]+|outline|outline-color|fill|stroke|box-shadow|text-shadow|caret-color|accent-color|column-rule|text-decoration-color)\s*:\s*([^;}]+)/gi;
+const namedColors =
+  /\b(?:white|black|red|green|blue|gray|grey|silver|maroon|olive|lime|aqua|teal|navy|fuchsia|purple|orange|yellow|pink|brown|gold|beige|ivory|khaki|coral|salmon|tan|plum|orchid|azure|linen|snow|tomato|violet|indigo|crimson|chocolate|peru|sienna|thistle|wheat|moccasin|seashell|honeydew|mistyrose|lavenderblush|aliceblue|ghostwhite|whitesmoke|gainsboro|lightgray|lightgrey|darkgray|darkgrey|dimgray|dimgrey|slategray|slategrey)\b/i;
+// `transparent` 不是色板上的颜色，而是「没有颜色」的哨兵值；`currentColor`/`inherit` 同理。
+const colorSentinels = /^(?:transparent|currentcolor|inherit|initial|unset|revert|none|auto)$/i;
 
-// 换肤前 frontend/src/style.css（提交 7c56643）里写死的 25 个不同十六进制色值（29 处出现），
+/** 每个「样式位置」里的裸色值：十六进制、函数式表示法与命名色。 */
+const rawColorHits = (file) => {
+  const hits = [];
+  const text = read(file);
+  const styleBlocks = extname(file) === '.vue'
+    ? [...text.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1])
+    : [text];
+  for (const block of styleBlocks) {
+    for (const m of block.matchAll(hexPattern)) hits.push(m[0]);
+    for (const m of block.matchAll(/(?<![\w-])(?:rgba?|hsla?)\(/gi)) hits.push(m[0]);
+    for (const m of block.matchAll(colorProps)) {
+      const value = m[1].trim();
+      if (colorSentinels.test(value)) continue;
+      const named = value.match(namedColors);
+      if (named) hits.push(named[0]);
+    }
+  }
+  return hits;
+};
+const rawColorViolations = stylesheetFiles.flatMap((file) =>
+  rawColorHits(file).map((hit) => `${file.replace(repo, '.')} ${hit}`),
+);
+record(
+  '1b 样式位置内无裸色值（十六进制/rgb()/hsl()/命名色一律走 var(--hw-*)）',
+  rawColorViolations.length === 0,
+  rawColorViolations.length
+    ? rawColorViolations.join(', ')
+    : `${stylesheetFiles.map((p) => p.replace(repo, '.')).join(', ')} 内 0 处裸色值（.vue 的 <style> 块与 .css 同判）`,
+);
+
+const inlineStyle = sourceFiles
+  .filter((p) => extname(p) === '.vue')
+  .flatMap((file) =>
+    [...read(file).matchAll(/style\s*=\s*"([^"]*)"/gi)].flatMap((m) => {
+      const hits = [...m[1].matchAll(hexPattern)].map((h) => h[0]);
+      if (/(?<![\w-])(?:rgba?|hsla?)\(/i.test(m[1])) hits.push('rgb()/hsl()');
+      const named = m[1].match(namedColors);
+      if (named && /(?<![\w-])color\s*:/i.test(m[1])) hits.push(named[0]);
+      return hits.map((h) => `${file.replace(repo, '.')} 内联 style ${h}`);
+    }),
+  );
+record(
+  '1d 组件内联 style 不含色值',
+  inlineStyle.length === 0,
+  inlineStyle.length ? inlineStyle.join(', ') : '组件模板内联 style 属性里 0 处色值',
+);
+
+// 换肤前 frontend/src/style.css（提交 7c56643）里写死的 29 个不同十六进制色值（42 处出现），
 // 以及它们的去处。这份映射表就是 V-A 对 V-B 的交接内容：换了槽位、换了取值的地方都在 note 里写明理由。
 const legacyMap = {
   '#20382f': { token: 'hw-ink', note: '正文色：由绿调深色换成暖墨色' },
@@ -144,20 +194,28 @@ const legacyMap = {
   '#3c5348': { token: 'hw-ink', note: '调用进度与保留区小标题' },
   '#71582b': { token: 'hw-ink', note: '提示条文字' },
   '#a13d2d': { token: 'hw-accent-ink', note: '错误与无效标记文字' },
-  '#387550': { token: 'hw-accent-ink', note: '列表项悬停' },
-  '#fff0e9': { token: 'hw-base', note: '错误条底：改由 --hw-hazard 斜纹承担，底色仍是 base' },
-  '#e5bba9': { token: 'hw-ink', note: '错误条描边' },
+  '#387550': { token: 'hw-ink', note: '列表项悬停：悬停不是错误/无效标记，--hw-accent-ink 的允许用途不含它（0009 §3）' },
+  '#fff0e9': { token: 'hw-panel', note: '错误条底：改用面板面；--hw-hazard 斜纹只留给阻断/危险/越界（0009 §6、§11.5）' },
+  '#e5bba9': { token: 'hw-border-soft', note: '错误条描边' },
 };
 const legacyColors = Object.keys(legacyMap);
-const unusedLegacy = ['#61766c'];
-const badTokenNames = legacyColors.filter((c) => !tokenDeclarations.has(legacyMap[c].token));
-const unchanged = legacyColors.filter((c) => tokenDeclarations.get(legacyMap[c].token) === c);
+// 别名槽位（--hw-border-soft: var(--hw-line)）也是合法去处：它最终仍指向色板字面量。
+const aliasTargets = new Set(
+  [...withoutComments.matchAll(/--(hw-[\w-]+)\s*:\s*var\(--(hw-[\w-]+)\)\s*;/g)].map((m) => m[1]),
+);
+const knownToken = (name) => tokenDeclarations.has(name) || aliasTargets.has(name);
+const badTokenNames = legacyColors.filter((c) => !knownToken(legacyMap[c].token));
+const valueOf = (name) => tokenDeclarations.get(name) ?? tokenDeclarations.get(
+  [...withoutComments.matchAll(/--(hw-[\w-]+)\s*:\s*var\(--(hw-[\w-]+)\)\s*;/g)]
+    .find((m) => m[1] === name)?.[2] ?? '',
+);
+const unchanged = legacyColors.filter((c) => valueOf(legacyMap[c].token) === c);
 record(
   '1c 换肤前的色值全部有 token 去处',
   badTokenNames.length === 0,
   badTokenNames.length
     ? `映射指向了不存在的 token：${badTokenNames.join(', ')}`
-    : `${legacyColors.length} 个换肤前色值逐个映射到 token 槽位（${unchanged.length} 个取值不变、${legacyColors.length - unchanged.length} 个按 0009 §3 换成新值；其中 ${unusedLegacy.join('/')} 在原样式表里未被实际使用，仅记录在案）；映射表同时写在 docs/validation/0021-visual-tokens.md`,
+    : `${legacyColors.length} 个换肤前色值逐个映射到 token 槽位（${unchanged.length} 个取值不变、${legacyColors.length - unchanged.length} 个按 0009 §3 换成新值）；映射表逐行与 7c56643 的实际色值集合核对的结论见 docs/validation/0021-visual-tokens.md`,
 );
 
 // ---------- 2. 对比度实测与文档一致性 ----------
@@ -191,22 +249,35 @@ const sanity = contrast('#ffffff', '#000000');
 record('2a 公式自检（#FFFFFF / #000000 必须为 21.0000）', Math.abs(sanity - 21) < 1e-9, `实测 ${sanity.toFixed(4)}`);
 
 const spec = read(specPath);
-const documented = [
-  { token: '--hw-accent', bg: '--hw-base', label: '#D63A2C 对 #ECE5D6' },
-  { token: '--hw-accent', bg: '--hw-panel', label: '#D63A2C 对 #F6F2E9' },
-  { token: '--hw-accent-ink', bg: '--hw-base', label: '#A8432F 对 #ECE5D6' },
-  { token: '--hw-accent-ink', bg: '--hw-panel', label: '#A8432F 对 #F6F2E9' },
-];
+// 0009 §3 的实测表逐行比对：每一行形如
+//   | `#D63A2C` `--hw-accent` | `#ECE5D6` `--hw-base` | 3.7205 | 3.72:1 | … |
+// 全部 9 组都要比，且必须落在同一行里——首稿只比 accent/accent-ink 四组、又用整文件
+// 子串命中，导致最重要的 --hw-line 修订（2 行）改成任何数字都能过。
+const specRows = spec
+  .split(/\r?\n/)
+  .filter((line) => line.startsWith('|') && /--hw-/.test(line))
+  .map((line) => ({
+    line,
+    tokens: [...line.matchAll(/--hw-[a-z0-9-]+/g)].map((m) => m[0]),
+    ratios: [...line.matchAll(/(\d+\.\d{2}):1/g)].map((m) => `${m[1]}:1`),
+  }));
 const mismatches = [];
-for (const item of documented) {
-  const value = measured.find((m) => m.fg === item.token && m.bg === item.bg);
-  const rounded = (Math.round(value.ratio * 100) / 100).toFixed(2);
-  if (!spec.includes(`${rounded}:1`)) mismatches.push(`${item.label} 实测 ${rounded}:1 未出现在 0009 §3`);
+for (const item of measured) {
+  const expected = (Math.round(item.ratio * 100) / 100).toFixed(2) + ':1';
+  const row = specRows.find((r) => r.tokens.includes(item.fg) && r.tokens.includes(item.bg));
+  if (!row) mismatches.push(`${item.fg} on ${item.bg} 在 0009 §3 没有对应行`);
+  else if (!row.ratios.includes(expected)) {
+    mismatches.push(`${item.fg} on ${item.bg} 实测 ${expected}，该行记录 ${row.ratios.join('/') || '空'}`);
+  }
 }
 record(
-  '2b 0009 §3 记录的对比度与现算值一致',
+  `2b 0009 §3 记录的对比度与现算值逐行一致（${measured.length} 组）`,
   mismatches.length === 0,
-  mismatches.length ? mismatches.join('; ') : documented.map((d) => `${d.label} → ${measured.find((m) => m.fg === d.token && m.bg === d.bg).ratio.toFixed(4)}（取整 ${(Math.round(measured.find((m) => m.fg === d.token && m.bg === d.bg).ratio * 100) / 100).toFixed(2)}:1）`).join('；'),
+  mismatches.length
+    ? mismatches.join('; ')
+    : measured
+        .map((m) => `${m.fg} on ${m.bg} → ${m.ratio.toFixed(4)}（取整 ${(Math.round(m.ratio * 100) / 100).toFixed(2)}:1）`)
+        .join('；'),
 );
 console.log('      全部实测值：');
 for (const m of measured) console.log(`        ${m.fg} on ${m.bg} = ${m.ratio.toFixed(4)}`);
@@ -224,14 +295,31 @@ const fontFiles = walkFiles(repo, (p) => fontBinaryExt.has(extname(p).toLowerCas
 const distFontFiles = existsSync(dist) ? walkFiles(dist, (p) => fontBinaryExt.has(extname(p).toLowerCase())) : [];
 const commercialNames = ['univers', 'helvetica', 'neue', 'arial', 'times'];
 const commercialHits = [];
+const commercialEmbedded = [];
 for (const file of [...fontFiles, ...distFontFiles]) {
   const base = file.toLowerCase();
   if (commercialNames.some((n) => base.includes(n))) commercialHits.push(file.replace(repo, '.'));
+  // 文件名干净不等于字体干净：真正要证明的是嵌入的族名/全名。
+  if (fontBinaryExt.has(extname(file).toLowerCase()) && extname(file).toLowerCase() === '.woff2') {
+    let font;
+    try {
+      font = createFont(readFileSync(file));
+    } catch {
+      continue;
+    }
+    const names = [font.familyName, font.fullName, font.postscriptName]
+      .filter(Boolean)
+      .map((n) => String(n).toLowerCase());
+    const hit = names.find((n) => commercialNames.some((c) => n.includes(c)));
+    if (hit) commercialEmbedded.push(`${file.replace(repo, '.')} 嵌入名 ${hit}`);
+  }
 }
 record(
-  '3a 仓库与构建产物不含商业字体文件',
-  commercialHits.length === 0,
-  commercialHits.length ? commercialHits.join(', ') : `仓库内字体文件 ${fontFiles.length} 个、产物内 ${distFontFiles.length} 个，文件名与嵌入名都不匹配 ${commercialNames.join('/')}`,
+  '3a 仓库与构建产物不含商业字体文件（文件名与嵌入名都比对）',
+  commercialHits.length === 0 && commercialEmbedded.length === 0,
+  commercialHits.length || commercialEmbedded.length
+    ? [...commercialHits, ...commercialEmbedded].join(', ')
+    : `仓库内字体文件 ${fontFiles.length} 个、产物内 ${distFontFiles.length} 个；文件名与 fontkit 读出的嵌入名（family/full/postscript）都不匹配 ${commercialNames.join('/')}`,
 );
 
 const facesCss = read(join(frontend, 'src', 'fonts.css'));
@@ -257,8 +345,10 @@ record(
 );
 
 // ---------- 4. 中文由中文字族渲染 ----------
-const han = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
-const cjkPunct = /[\u3000-\u303f\uff00-\uffef\u200b\u2014\u2026\u00b7]/;
+// 字符类来自 font-manifest.mjs，与 build-fonts.mjs 的 extractCharset 用同一份定义；
+// 两处各自写正则会让「构建时收录的字符」与「检查时验证的字符」漂移（首稿差一个 U+2013）。
+const han = HAN;
+const cjkPunct = CJK_PUNCT;
 const used = new Set();
 for (const file of [...walkFiles(join(frontend, 'src'), (p) => ['.vue', '.ts', '.css'].includes(extname(p))), join(frontend, 'index.html')]) {
   for (const ch of read(file)) if (han.test(ch) || cjkPunct.test(ch)) used.add(ch);
@@ -322,12 +412,14 @@ const sizes = shipped.map((f) => ({ file: f, bytes: statSync(join(fontDir, f)).s
 const totalBytes = sizes.reduce((n, s) => n + s.bytes, 0);
 const perFaceBudget = 400 * 1024;
 const totalBudget = 1.5 * 1024 * 1024;
+// 这两个阈值是本检查自设的护栏（防止某次重建悄悄把资产放大一个数量级），不是 0009 或
+// issue #33 规定的验收阈值；记录里引用时必须这么写。
 const overBudget = sizes.filter((s) => s.bytes > perFaceBudget);
 record(
-  '5a 字体自托管体积在预算内',
+  '5a 字体自托管体积在自设护栏内',
   overBudget.length === 0 && totalBytes <= totalBudget,
   [
-    `合计 ${totalBytes} 字节（${(totalBytes / 1024).toFixed(1)} KiB），阈值 ${(totalBudget / 1024).toFixed(0)} KiB`,
+    `合计 ${totalBytes} 字节（${(totalBytes / 1024).toFixed(1)} KiB），自设护栏 ${(totalBudget / 1024).toFixed(0)} KiB`,
     ...sizes.map((s) => `${s.file} ${s.bytes} 字节`),
     overBudget.length ? `单文件超 ${(perFaceBudget / 1024).toFixed(0)} KiB：${overBudget.map((s) => s.file).join(', ')}` : `单文件均 ≤ ${(perFaceBudget / 1024).toFixed(0)} KiB`,
   ].join('\n      '),

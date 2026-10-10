@@ -30,7 +30,7 @@ jobs:
       - run: uv run --frozen python -m pytest -m "not integration" -q
 
   frontend:
-    name: frontend（类型 / 生产构建）
+    name: frontend（类型 / 生产构建 / 设计系统检查）
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -44,3 +44,5 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+      # 5b 读 frontend/dist 的体积，所以必须排在 build 之后（见 frontend/package.json 的 check）。
+      - run: npm run check:design

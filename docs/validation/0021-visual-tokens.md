@@ -9,23 +9,89 @@
 | 项 | 值 |
 | --- | --- |
 | 工作树 | `D:\code\huntweave-wt\33-visual-tokens`（分支 `codex/33-visual-tokens`，自 `origin/main` 的 `7c56643`） |
-| Node | v26.9.0（本机无 Python，字体子集化全部用 Node 完成） |
+| 宿主 | Windows 11 x86_64；Node v26.9.0（本机 PATH 无 Python/`uv`，字体子集化全部用 Node 完成） |
 | 前端依赖 | `frontend/node_modules` 由 `npm ci` 安装；本切片新增 6 个 devDependency（见 §4） |
-| 涉及文件 | `frontend/src/tokens.css`、`frontend/src/fonts.css`、`frontend/src/style.css`、`frontend/src/main.ts`、`frontend/src/assets/fonts/`、`frontend/scripts/`、`frontend/package.json` |
-| 未涉及 | 未改后端、未改组件结构、未引入 CSS 框架、未做深色主题 |
-| 未执行 | 未起 Docker 栈、未跑 Playwright（见 §8） |
+| 涉及文件 | `frontend/src/tokens.css`、`frontend/src/fonts.css`、`frontend/src/style.css`、`frontend/src/main.ts`、`frontend/src/assets/fonts/`、`frontend/scripts/`、`frontend/package.json`、`.github/workflows/checks.yml`、`docs/specs/0009-visual-design-system.md` §3/§4 |
+| 未涉及 | 未改后端、未改组件结构与信息架构、未引入 CSS 框架、未做深色主题 |
+| 未执行 | 未起 Docker 栈、未跑 Playwright、未做灰度截图（见 §8） |
 
 可复现命令（工作目录 `frontend/`）：
 
 ```powershell
-npm run fonts:build        # 生成字体资产与 fonts.css（中文需要网络，已缓存的归档不重下）
-npm run check:design       # 机械检查：唯一色值来源 / 对比度 / 商业字体 / 中文分工 / 体积
-npm run build              # vue-tsc --noEmit && vite build
+npm run build          # vue-tsc --noEmit && vite build
+npm run check:design   # 16 项机械检查（不联网；5b 需要先 build）
+npm run check          # build && check:design，CI 用的同一条链
+npm run fonts:build    # 只在需要重建中文子集时运行（需要网络）
 ```
 
-## 2. 机械检查命令与实测输出
+## 2. 实施评审（PROJECT §14）
 
-`npm run check:design`（等价 `node scripts/check-design-system.mjs`）实际输出，15/15 通过：
+对照真实代码盘点换肤前的实际状态：
+
+| 事实 | 换肤前（`git show 7c56643:frontend/src/style.css`） |
+| --- | --- |
+| 设计 token 层 | **不存在**。`style.css` 只有 `--console-line: #dce3d9` 一个变量，其余色值全部写死 |
+| 写死色值 | **29 个不同十六进制色值、42 处出现**；另有 3 处命名色 `white` 与 1 处 `transparent` |
+| 组件内色值 | `App.vue`、`RunConsole.vue`、`workspace.ts` **均为 0 处**十六进制与命名色——两个 `.vue` **没有 `<style>` 块**，模板里也没有内联 `style=""`。这条前提是验收 1「机械检查可证」成立的前提，已写进检查输出 |
+| 字体 | `:root{font-family:Inter,system-ui,sans-serif}`；等宽处写 `ui-monospace,monospace`。**没有自托管字体，也没有中文字族** |
+| 字体相关依赖 | `frontend/package.json` 无任何字体包 |
+
+切片边界：V-A 的交付面是 **token 层 + 字体层**；把既有控制台**换成** NASA-punk 的外观（直角、接缝、身份元素、几何收敛、灰度回归）属 V-B/V-C（#34）。因此本票对 `style.css` 只做两件事：色值改走 `var(--hw-*)`、字体族改走 `var(--hw-font-*)`。**圆角、间距、字号、描边宽度、焦点环与响应式断点全部保持换肤前的取值**——这一点由 §3 的机械核对证明，不靠自我声明。
+
+## 3. 行为与结果
+
+### 3.1 色值：29 个写死值全部接入 token 层
+
+`frontend/src/tokens.css` 声明 **9 个字面量色值**（`--hw-base`/`panel`/`ink`/`line`/`accent`/`accent-ink`/`stripe-1..3`；`--hw-stripe-4` 与 `--hw-accent-ink` 同值 `#a8432f`，不重复计数）加 8 个槽位别名（`--hw-surface`→panel、`--hw-surface-sunken`→base、`--hw-text`/`--hw-text-muted`→ink、`--hw-border`/`--hw-border-soft`→line、`--hw-focus-ring`→accent、`--hw-text-on-solid`→panel），以及 `--hw-hazard` 斜纹。`style.css` 里 29 个不同写死值逐个有去处（映射表见 §6）；**没有一处取值保持不变**——原色板是绿调浅色，换色板必然改值，这不是遗漏。
+
+### 3.2 机械核对：`style.css` 只是替换，没有改几何
+
+这是本记录最重要的一条证据。做法：取 `git show 7c56643:frontend/src/style.css` 作为换肤前基线，把两份文件里所有色值（`#rrggbb` 与 `white`）、字体族与 `var(--hw-*)` 引用统一替换成占位符、去掉注释与空白后**逐字符比较**：
+
+```
+PURE SUBSTITUTION: True  (old=5165 new=5165)
+```
+
+归一化后两份样式表**完全相同**。由此可以断言 `style.css` 没有引入任何几何、层级或规则集合上的改动——没有新增裸 `dl` 规则、没有把 `th` 套上「只给 Latin 标签」的字距（该 token 自己在 `tokens.css` 写着「中文标签不套用」）、圆角与间距仍是换肤前的 `14px`/`28px`/`36px` 等原始取值。
+
+首稿曾在这些位置动了手脚（圆角 `14px→0`、字号 `25px→24px`、多处 padding/margin 变化、新增裸 `dl` 规则）又在注释里声称「几何与换肤前一致」，属两轴评审的阻断/应修项，已按 §9 更正。
+
+**未接线的 token（如实登记，不假装已用）**：`--hw-font-display`（换肤前没有任何元素使用加宽无衬线；`h1`/`h2` 的字体族归 V-B 决定）、`--hw-radius-*`/`--hw-hairline`/`--hw-seam`/`--hw-stroke-*`/`--hw-focus-ring-width`/`--hw-focus-offset`/`--hw-min-cell` 等结构 token（除 `--hw-max-width` 外本票都不消费；`style.css` 的断点仍写死 `850px`/`500px`）。断点**故意不声明为自定义属性**：CSS 自定义属性不能出现在 `@media` 条件里，声明了也只能被读出来看，比写死更容易误导（`tokens.css` 已注明原因）。
+
+### 3.3 对比度实测（写入 [0009 §3](../specs/0009-visual-design-system.md)）
+
+方法：WCAG 2.x。`s=c/255`；`f(s)=s/12.92`（`s≤0.04045`）否则 `((s+0.055)/1.055)^2.4`；`L=0.2126f(R)+0.7152f(G)+0.0722f(B)`；`CR=(L亮+0.05)/(L暗+0.05)`。自检 `#FFFFFF`/`#000000` = 21.0000。取整：存 4 位、文档写四舍五入 2 位并带 `:1`。
+
+| 前景 | 背景 | 实测（4 位） | 文档（2 位） | 判定 |
+| --- | --- | --- | --- | --- |
+| `--hw-accent` `#D63A2C` | `--hw-base` `#ECE5D6` | 3.7205 | 3.72:1 | 非文本/大字号可用（≥3:1），小字不可用 |
+| `--hw-accent` | `--hw-panel` `#F6F2E9` | 4.1761 | 4.18:1 | 同上 |
+| `--hw-accent-ink` `#A8432F` | `--hw-base` | 4.7723 | 4.77:1 | 小字可用 |
+| `--hw-accent-ink` | `--hw-panel` | 5.3567 | 5.36:1 | 小字可用 |
+| `--hw-ink` `#1E1B16` | `--hw-base` | 13.6857 | 13.69:1 | 正文可用 |
+| `--hw-ink` | `--hw-panel` | 15.3617 | 15.36:1 | 正文可用 |
+| `--hw-line` `#8A7F6B` | `--hw-base` | 3.1425 | 3.14:1 | 非文本部件可用，禁用于正文 |
+| `--hw-line` | `--hw-panel` | 3.5273 | 3.53:1 | 同上 |
+| `--hw-panel` | `--hw-base` | 1.1225 | 1.12:1 | 面与页底的分层靠 1px 细线，不靠面色差 |
+
+三处对 0009 §3 的修订：`--hw-panel`/`--hw-ink` 由「建议」确认为实测值；`--hw-accent`/`--hw-accent-ink` 的估算值换成实测并区分两种背景；**`--hw-line` 由建议的 `#B9AF9C` 收紧为 `#8A7F6B`**——原值对底色只有 **1.7308:1**、对面板面 **1.9428:1**，达不到非文本 3:1 下限，新值 3.1425/3.5273 达标。
+
+### 3.4 错误条：为什么不用警示斜纹
+
+`0009 §6` 限定「黑白警示斜纹只用于阻断、危险操作与越界确认」，§11.5 的验收也是这句。`.error` 是**通用**错误样式（`App.vue`/`RunConsole.vue` 共 10 处调用），绝大多数是普通错误而非阻断。首稿把它改成 `background: var(--hw-hazard)`，既越界又不可读——斜纹的深色停靠点就是 `--hw-ink`，而文字色也是 `--hw-ink`，**文字对深色条纹的对比度是 1.0000:1**，条纹扫过处字形与底色同色。
+
+现在的取值回到非装饰呈现：
+
+```css
+.invalid,.error{color:var(--hw-accent-ink);}
+.error{padding:16px;background:var(--hw-panel);border:1px solid var(--hw-border-soft);border-radius:8px;}
+```
+
+`--hw-hazard` 保留在 token 层，**只供真正需要「停下来看」的位置**（阻断、危险操作、越界确认）使用；这些位置在 V-B/V-C 的换肤里才出现，本票不预设用法。
+
+## 4. 机械一致性检查
+
+命令与结果（无网络；5b 读 `frontend/dist`，故先 `npm run build`）。**这条输出与本次 HEAD 的一次真实运行逐字一致**，改动样式或文案后必须重跑并原样替换：
 
 ```
 PASS  1a 色值只来自 token 层
@@ -33,185 +99,144 @@ PASS  1a 色值只来自 token 层
       token 层含 9 个字面量色值：hw-base=#ece5d6, hw-panel=#f6f2e9, hw-ink=#1e1b16, hw-line=#8a7f6b, hw-accent=#d63a2c, hw-accent-ink=#a8432f, hw-stripe-1=#4c5a68, hw-stripe-2=#7a7f4e, hw-stripe-3=#d2a85e
       槽位别名：hw-surface → hw-panel，hw-surface-sunken → hw-base，hw-text → hw-ink，hw-text-muted → hw-ink，hw-border → hw-line，hw-border-soft → hw-line，hw-focus-ring → hw-accent，hw-text-on-solid → hw-panel
 PASS  1a2 无 rgb()/hsl() 绕过
-PASS  1b 样式规则内无十六进制色值
+      tokens.css 之外没有 rgb()/rgba()/hsl()/hsla() 字面量色值
+PASS  1b 样式位置内无裸色值（十六进制/rgb()/hsl()/命名色一律走 var(--hw-*)）
+      .\frontend\src\App.vue, .\frontend\src\fonts.css, .\frontend\src\RunConsole.vue, .\frontend\src\style.css 内 0 处裸色值（.vue 的 <style> 块与 .css 同判）
+PASS  1d 组件内联 style 不含色值
+      组件模板内联 style 属性里 0 处色值
 PASS  1c 换肤前的色值全部有 token 去处
-      29 个换肤前色值逐个映射到 token 槽位（0 个取值不变、29 个按 0009 §3 换成新值；其中 #61766c 在原样式表里未被实际使用，仅记录在案）
+      29 个换肤前色值逐个映射到 token 槽位（0 个取值不变、29 个按 0009 §3 换成新值）
 PASS  2a 公式自检（#FFFFFF / #000000 必须为 21.0000）
-PASS  2b 0009 §3 记录的对比度与现算值一致
+      实测 21.0000
+PASS  2b 0009 §3 记录的对比度与现算值逐行一致（9 组）
+      --hw-accent on --hw-base → 3.7205（取整 3.72:1）；--hw-accent on --hw-panel → 4.1761（取整 4.18:1）；--hw-accent-ink on --hw-base → 4.7723（取整 4.77:1）；--hw-accent-ink on --hw-panel → 5.3567（取整 5.36:1）；--hw-ink on --hw-base → 13.6857（取整 13.69:1）；--hw-ink on --hw-panel → 15.3617（取整 15.36:1）；--hw-line on --hw-base → 3.1425（取整 3.14:1）；--hw-line on --hw-panel → 3.5273（取整 3.53:1）；--hw-panel on --hw-base → 1.1225（取整 1.12:1）
 PASS  2c 强调色不得用于正文小字（<4.5:1），accent-ink 可用于小字（≥4.5:1）
-PASS  3a 仓库与构建产物不含商业字体文件
-      仓库内字体文件 9 个、产物内 9 个，文件名与嵌入名都不匹配 univers/helvetica/neue/arial/times
+      --hw-accent 在面板上 4.1761:1 < 4.5:1；--hw-accent-ink 在底色上 4.7723:1 ≥ 4.5:1
+PASS  3a 仓库与构建产物不含商业字体文件（文件名与嵌入名都比对）
+      仓库内字体文件 9 个、产物内 9 个；文件名与 fontkit 读出的嵌入名（family/full/postscript）都不匹配 univers/helvetica/neue/arial/times
 PASS  3b @font-face 只用 OFL 族，字体栈不含商业字体名
-      声明族：Archivo Expanded, IBM Plex Sans, IBM Plex Mono, Sarasa Gothic SC, Sarasa Mono SC
+      声明族：Archivo Expanded, IBM Plex Sans, IBM Plex Mono, Sarasa Gothic SC, Sarasa Mono SC；Univers/Helvetica 未出现在任何字体栈
 PASS  3c 每个字体族都有 OFL 许可文本随资产交付
-      3 份：LICENSE-Archivo.txt, LICENSE-IBM-Plex.txt, LICENSE-Sarasa-Gothic.txt
+      3 份：LICENSE-Archivo.txt, LICENSE-IBM-Plex.txt, LICENSE-Sarasa-Gothic.txt（目录 frontend/src/assets/fonts/）
 PASS  4a 前端用到的汉字与中文标点都在中文字族的 unicode-range 内
-      前端用到 632 个中文字符，Sarasa Gothic SC 声明 1365 个码点、Sarasa Mono SC 声明 1365 个码点，未覆盖 0 个
+      前端用到 632 个中文字符，Sarasa Gothic SC 声明 1369 个码点、Sarasa Mono SC 声明 1369 个码点，未覆盖 0 个
 PASS  4b 中文字族不声明 Latin 字母与数字（它们必须落到 IBM Plex）
+      A-Z/a-z/0-9 在中文字族 unicode-range 内 0 个，数字与编号由 IBM Plex Mono 承担
 PASS  4c 中文字体文件确实含用到的字形
       4 个中文字体文件逐字核对通过（family Sarasa Gothic SC/Sarasa Mono SC）
-PASS  5a 字体自托管体积在预算内
+PASS  5a 字体自托管体积在自设护栏内
+      合计 1165496 字节（1138.2 KiB），自设护栏 1536 KiB
+      sarasa-mono-sc-700 250732 / sarasa-gothic-sc-700 250712 / sarasa-gothic-sc-400 248972 / sarasa-mono-sc-400 248540 / archivo-latin-wdth-var 90104 / plex-sans-600 24252 / plex-sans-400 22588 / plex-mono-500 14888 / plex-mono-400 14708 字节
+      单文件均 ≤ 400 KiB
 PASS  5b 构建产物体积已记录
-      合计 1165496 字节（1138.2 KiB），阈值 1536 KiB
+      dist 内字体 1165496 字节（1138.2 KiB）、JS/CSS 202328 字节（197.6 KiB）
+
+16/16 项通过
 ```
 
-检查脚本读的是**仓库源码与 `frontend/dist` 的实际产物**（不是声明）：色值扫描用 `#[0-9a-fA-F]{3,8}` 与 `rgb()/hsl()` 两种表示法；中文分工一项同时核对 `fonts.css` 里生成的 `unicode-range` **与 woff2 的实际 cmap**；`3a` 一项遍历仓库与 `dist` 里的字体二进制文件名。
+`5a` 的 400 KiB/面与 1.5 MiB 总量是**本检查自设的护栏**（防止某次重建悄悄把资产放大一个数量级），不是 0009 或 #33 规定的验收阈值。
 
-## 3. 对比度实测
+`npm run check` 的顺序是 `build && check:design`（5b 读 `dist`，反了在干净检出上必失败），并已接入 `.github/workflows/checks.yml` 的 frontend job（`npm run build` 之后 `npm run check:design`）；命令入口同时记在根 `README.md` 的「验证」一节。
 
-方法：WCAG 2.x 相对亮度与对比度。对每个 8 位通道 `c`，归一化 `s = c/255`，取 `f(s) = s/12.92`（`s ≤ 0.04045`）或 `f(s) = ((s+0.055)/1.055)^2.4`；`L = 0.2126·f(R) + 0.7152·f(G) + 0.0722·f(B)`；`CR = (L_亮 + 0.05)/(L_暗 + 0.05)`。公式自检：`#FFFFFF` 对 `#000000` = 21.0000（与定义一致）。取整口径：存放 4 位小数，文档写四舍五入 2 位并带 `:1`。
+## 5. 字体：来源、许可与子集
 
-| 前景 | 背景 | 实测 | 文档口径 | 判定 |
-| --- | --- | --- | --- | --- |
-| `#D63A2C` `--hw-accent` | `#ECE5D6` `--hw-base` | 3.7205 | 3.72:1 | 3:1 达标，4.5:1 未达 → 只可用于大字号与非文本 |
-| `#D63A2C` `--hw-accent` | `#F6F2E9` `--hw-panel` | 4.1761 | 4.18:1 | 同上，面板面上也不足 4.5:1 |
-| `#A8432F` `--hw-accent-ink` | `#ECE5D6` `--hw-base` | 4.7723 | 4.77:1 | 小字号红字可用 |
-| `#A8432F` `--hw-accent-ink` | `#F6F2E9` `--hw-panel` | 5.3567 | 5.36:1 | 小字号红字可用 |
-| `#1E1B16` `--hw-ink` | `#ECE5D6` `--hw-base` | 13.6857 | 13.69:1 | 正文可用 |
-| `#1E1B16` `--hw-ink` | `#F6F2E9` `--hw-panel` | 15.3617 | 15.36:1 | 正文可用 |
-| `#8A7F6B` `--hw-line` | `#ECE5D6` `--hw-base` | 3.1425 | 3.14:1 | 非文本部件可用（≥3:1） |
-| `#8A7F6B` `--hw-line` | `#F6F2E9` `--hw-panel` | 3.5273 | 3.53:1 | 非文本部件可用 |
-| `#F6F2E9` `--hw-panel` | `#ECE5D6` `--hw-base` | 1.1225 | 1.12:1 | 面与页底分层；接缝靠 1px `--hw-line`，不靠面色差 |
-
-**本票对 0009 §3 的修订**：
-
-1. `--hw-accent` 与 `--hw-accent-ink` 的原估算值被实测替换：原写"约 3.7:1"实测 **3.7205:1**（对底色）与 **4.1761:1**（对面板面），原写"约 4.5:1"实测 **4.7723:1** 与 **5.3567:1**。结论方向不变，但把两种背景分开记录。
-2. `--hw-panel`（`#F6F2E9`）与 `--hw-ink`（`#1E1B16`）由"建议"**确认为最终值**，并补记实测值。
-3. `--hw-line` 由建议 `#B9AF9C` **收紧为 `#8A7F6B`**：原建议值对底色 1.7308:1、对面板面 1.9428:1，达不到非文本对比度下限 3:1；新值 3.1425:1 / 3.5273:1。这条修订改变了原表里的取值，不只是补数据。
-4. 补充了取整口径、判定阈值与"实测值是否支持该用途"的逐条结论（见 0009 §3 末段）。
-
-## 4. 字体获取、许可、子集口径与产物体积
-
-全部 5 个交付字族都是 **OFL-1.1**，全部自托管，构建产物里没有第三方 URL。
-
-| 字族 | 字重 | 来源 | 许可 | 处理方式 |
-| --- | --- | --- | --- | --- |
-| Archivo Expanded | 400–800（可变，`wdth` 125%） | npm `@fontsource-variable/archivo` 5.3.0（上游 google/fonts 的可变字体） | OFL-1.1（`LICENSE-Archivo.txt`） | 直接交付官方 Latin 子集 woff2；加宽实例由 `font-stretch: 125%` 取得（`fvar` 轴 `wght` 100–900、`wdth` 62–125 实测存在） |
-| IBM Plex Sans | 400、600 | npm `@fontsource/ibm-plex-sans` 5.3.0 | OFL-1.1（`LICENSE-IBM-Plex.txt`） | 直接交付官方 Latin 子集 woff2 |
-| IBM Plex Mono | 400、500 | npm `@fontsource/ibm-plex-mono` 5.3.0 | OFL-1.1（同上） | 同上 |
-| Sarasa Gothic SC | 400、700 | `be5invis/Sarasa-Gothic` release v1.0.42 的 `SarasaGothicSC-TTF-1.0.42.7z` | OFL-1.1（`LICENSE-Sarasa-Gothic.txt`） | 完整 TTF 分别 24,047,784 / 23,892,196 字节，用 `subset-font`（HarfBuzz WASM）子集化后转 woff2 |
-| Sarasa Mono SC | 400、700 | 同 release 的 `SarasaMonoSC-TTF-1.0.42.7z` | OFL-1.1 | 完整 TTF 分别 25,612,020 / 25,422,592 字节，同上 |
-
-归档 sha256（写进 `frontend/scripts/font-manifest.mjs`，构建时校验）：
-
-- `SarasaGothicSC-TTF-1.0.42.7z`（62,867,113 字节）`ee726608b04ec05f083e9877cad94c50d43f400afc211b944c3df99250d3a48d`
-- `SarasaMonoSC-TTF-1.0.42.7z`（65,885,338 字节）`aa2150e99eb38c5f9d3a00fe58e3f90a9d89495c795a8ac80934d1c3e6c377ee`
-- `be5invis/Sarasa-Gothic@master/LICENSE`（4,702 字节）`32c932e0dbae4f6e6386964bbc2d04178707665a05ca65cf636241af13d50a53`
-
-**子集口径**：中文字符集 = `frontend/src/**`、`frontend/index.html` 与 `docs/**/*.md` 里出现过的全部汉字与中文标点，由 `build-fonts.mjs` 的 `extractCharset()` 唯一决定，共 **1208 个字符**。用产品自己的源码与文档定字符集，而不是拍一个常用字表：交付的每一个中文码点都能指回仓库里的真实文本，且 `docs/` 的加入覆盖了后续界面文案用词。字符集变化时重跑 `npm run fonts:build` 即可。
-
-**体积实测**（`frontend/src/assets/fonts/`）：
-
-| 文件 | 字节 | 源文件字节 | cmap 码点 |
+| 字族 | 来源 | 许可 | 处理 |
 | --- | --- | --- | --- |
-| `sarasa-mono-sc-subset-700.woff2` | 250,732 | 25,422,592 | 1208 |
-| `sarasa-gothic-sc-subset-700.woff2` | 250,712 | 23,892,196 | 1208 |
-| `sarasa-gothic-sc-subset-400.woff2` | 248,972 | 24,047,784 | 1208 |
-| `sarasa-mono-sc-subset-400.woff2` | 248,540 | 25,612,020 | 1208 |
-| `archivo-latin-wdth-var.woff2` | 90,104 | —（上游 woff2） | 229 |
-| `ibm-plex-sans-latin-600.woff2` | 24,252 | — | 232 |
-| `ibm-plex-sans-latin-400.woff2` | 22,588 | — | 232 |
-| `ibm-plex-mono-latin-500.woff2` | 14,888 | — | 227 |
-| `ibm-plex-mono-latin-400.woff2` | 14,708 | — | 227 |
-| **合计** | **1,165,496**（1138.2 KiB） | | |
+| Archivo Expanded（400–800 + `font-stretch:125%`） | npm `@fontsource-variable/archivo@5.3.0` | OFL-1.1 | 官方可变 woff2（`wdth` 62–125），加宽由 `font-stretch` 取得 |
+| IBM Plex Sans 400/600 | npm `@fontsource/ibm-plex-sans@5.3.0` | OFL-1.1 | 官方 Latin 子集 |
+| IBM Plex Mono 400/500 | npm `@fontsource/ibm-plex-mono@5.3.0` | OFL-1.1 | 官方 Latin 子集 |
+| Sarasa Gothic SC 400/700 | GitHub `be5invis/Sarasa-Gothic` v1.0.42 | OFL-1.1 | 完整 TTF（24,047,784 / 23,892,196 字节）→ 子集化 |
+| Sarasa Mono SC 400/700 | 同上 | OFL-1.1 | 完整 TTF（25,612,020 / 25,422,592 字节）→ 子集化 |
 
-`npm run fonts:build` 在本机连续跑两次，四个中文 woff2 的 sha256 前 12 位完全一致（`4d97ddced470` / `5856c7ac8e69` 等），即在同一份输入与同一版子集化工具下产物逐字节可复现。跨版本的 `subset-font`/HarfBuzz 升级不保证一致，因此归档 sha256 固定的是**输入**。
+- 归档 sha256 固定在 `frontend/scripts/font-manifest.mjs` 并在构建时校验；**原始 TTF 不入库**（缓存在被忽略的 `frontend/node_modules/.cache/huntweave-fonts/`）。
+- 中文子集化用 `subset-font`（HarfBuzz WASM）+ `7z-wasm`，纯 Node 完成。
+- 字符集 = `frontend/src/**` + `index.html` + `docs/**/*.md` 里出现的全部汉字与中文标点，由 `build-fonts.mjs` 的 `extractCharset()` 唯一决定（`MANIFEST.json` 记 `charsetSize=1208`；检查项 4a 只统计**前端源码**用到的 632 个，两者是不同分母，不矛盾）。字符类定义（`HAN`/`CJK_PUNCT`）放在 `font-manifest.mjs` 并被子集化与检查**共用**——两处各写一份正则会漂移（首稿差了 U+2013，而它真实出现在源码里）。
+- **中文不落到 Latin 等宽的机制**：`fonts.css` 里两个 Sarasa 字族的 `@font-face` 用 `unicode-range` 只声明汉字与中文标点，Latin 字母与数字不在其中——因此**与字体栈顺序无关**：即使把 Sarasa 写在前面，Latin 也会被 `unicode-range` 跳过。检查项 4b 证明 A-Z/a-z/0-9 在中文字族声明范围内为 0，4c 逐字核对字体文件的 cmap 真的含这些字形。
+- 产物合计 **1,165,496 字节**（1138.2 KiB），明细见 §4 的 5a；许可文本 4,503 + 4,429 + 4,702 字节。每个 `@font-face` 都有 `font-display: swap`。
+- `npm run build` 产物：`index-*.css` 39.85 kB（gzip 6.70 kB）、`index-*.js` 162.47 kB（gzip 59.31 kB）、9 个 woff2。CSS 从换肤前的约 6 kB 涨到约 40 kB，主要多出四个中文字重的 `unicode-range` 逐码点声明（gzip 后 6.70 kB）。
+- 重复构建可复现：**每个中文 woff2 在两次构建之间 sha256 一致**；四个文件之间**互不相同**（首稿写成「四个 hash 完全一致」，措辞错误，已更正）。
 
-许可是随资产交付的：`LICENSE-Archivo.txt` 4,503 字节、`LICENSE-IBM-Plex.txt` 4,429 字节、`LICENSE-Sarasa-Gothic.txt` 4,702 字节。
+## 6. 色值映射表（29 个）
 
-首屏影响：`npm run build` 的产物清单（`vite build` 实际输出）为
+| 换肤前 | → token | 说明 |
+| --- | --- | --- |
+| `#20382f` | `--hw-ink` | 正文色：绿调深色 → 暖墨色 |
+| `#224a39` | `--hw-ink` | 品牌字色 |
+| `#244f3e` | `--hw-ink` | 主按钮底与描边 |
+| `#4c6559` | `--hw-ink` | 静默按钮文字 |
+| `#577365` | `--hw-ink` | 眉标 |
+| `#61766c` | `--hw-ink` | 说明文字与 `dt`（**在原样式表里出现 3 次**：`.intro>p:last-child,.muted`、`.instance-card dt`、`.retention dt`） |
+| `#657c70` | `--hw-ink` | `small` |
+| `#647c6e` | `--hw-ink` | `dt` |
+| `#3c5348` | `--hw-ink` | 调用进度与保留区小标题 |
+| `#71582b` | `--hw-ink` | 提示条文字 |
+| `#387550` | `--hw-ink` | 列表项悬停：悬停不是「错误提示/无效标记」，`--hw-accent-ink` 的允许用途不含它，故回到墨色 |
+| `#f2f5ef` | `--hw-base` | 页面底色 |
+| `#f3f7f0` | `--hw-base` | 预览框嵌入面 |
+| `#f4f6f2` | `--hw-base` | 代码块嵌入面 |
+| `#fff8e9` | `--hw-base` | 提示条面（渲染为 `--hw-surface-sunken` → base） |
+| `#edf3e7` | `--hw-panel` | 徽章面 |
+| `#fff` | `--hw-panel` | 页眉与面板面 |
+| `#fcfdfb` | `--hw-panel` | 输入框面 |
+| `#fdf6e0` | `--hw-panel` | 警告徽章面 |
+| `#fff0e9` | `--hw-panel` | 错误条底：改用面板面（原为浅红填充；见 §3.4） |
+| `#dce3d9` | `--hw-line` | 分隔线、页眉底边、表格线（原 `--console-line` 的取值并入 `--hw-border-soft`） |
+| `#d4dfce` | `--hw-line` | 徽章描边 |
+| `#bccbbf` | `--hw-line` | 控件描边 |
+| `#d5ded4` | `--hw-line` | 静默按钮描边 |
+| `#e3e9df` | `--hw-line` | 折叠区与列表项分隔 |
+| `#a7c9b1` | `--hw-line` | 事件条、证据框、实例卡描边（原薄荷绿；`0009 §3` 下不得承载状态） |
+| `#c9a227` | `--hw-line` | 警告徽章描边：§3 禁止 `--hw-stripe-*` 用于状态，警告只能靠文字与位置表达 |
+| `#a13d2d` | `--hw-accent-ink` | 错误与无效标记文字 |
+| `#e5bba9` | `--hw-border-soft`（→ `--hw-line`） | 错误条描边 |
 
-```
-dist/index.html                                            0.36 kB │ gzip:  0.29 kB
-dist/assets/ibm-plex-mono-latin-400-*.woff2               14.70 kB
-dist/assets/ibm-plex-mono-latin-500-*.woff2               14.88 kB
-dist/assets/ibm-plex-sans-latin-400-*.woff2               22.58 kB
-dist/assets/ibm-plex-sans-latin-600-*.woff2               24.25 kB
-dist/assets/archivo-latin-wdth-var-*.woff2                90.10 kB
-dist/assets/sarasa-mono-sc-subset-400-*.woff2            248.54 kB
-dist/assets/sarasa-gothic-sc-subset-400-*.woff2          248.97 kB
-dist/assets/sarasa-gothic-sc-subset-700-*.woff2          250.71 kB
-dist/assets/sarasa-mono-sc-subset-700-*.woff2            250.73 kB
-dist/assets/index-*.css                                   43.22 kB │ gzip:  7.03 kB
-dist/assets/index-*.js                                   162.47 kB │ gzip: 59.31 kB
-```
+另有 3 处命名色 `white`（`.panel` 面、`button` 文字、`.secondary` 面）改走 `--hw-surface`/`--hw-text-on-solid`；1 处 `transparent`（`.quiet` 底）不是色板颜色，保持原样，检查项把它当哨兵值而不是裸色值。
 
-两点必须写清楚：**（a）** 每个 `@font-face` 都带 `font-display: swap`，且只有页面真实用到的字重会被下载，因此首屏至少要付 1 个中文字重（约 249KB）+ Plex/Archivo 的对应字重；**（b）** 43KB 的 CSS 比换肤前的约 6KB 大得多，多出来的是四个中文字重的 `unicode-range`（合计约 28KB 文本），gzip 后 7.03KB 而换肤前约 1.6KB。相对 1.1MB 字体体积，`unicode-range` 的体积不是瓶颈，因此保留逐码点声明而没有退化成整块 `U+3400-9FFF`。
+映射表与 `7c56643:frontend/src/style.css` 的实际色值集合**逐行核对一致**：29 个键 ↔ 29 个不同值，没有幻影行。首稿曾把不存在的 `#61776c` 写进表里，又谎称正在使用的 `#61766c` 未被使用——见 §9。
 
-## 5. 逐条验收结论（Issue #33）
+## 7. V-B（#34）接手需要的接口事实
 
-| # | 验收条目 | 结论 | 证据 |
+- **token 文件**：`frontend/src/tokens.css` 是唯一色值来源；改色只能改这里。色板槽位：`--hw-base #ECE5D6`、`--hw-panel #F6F2E9`、`--hw-ink #1E1B16`、`--hw-line #8A7F6B`、`--hw-accent #D63A2C`、`--hw-accent-ink #A8432F`、`--hw-stripe-1..4`、`--hw-hazard-1/-2`。角色别名：`--hw-surface`、`--hw-surface-sunken`、`--hw-text`、`--hw-text-muted`、`--hw-border`、`--hw-border-soft`、`--hw-focus-ring`、`--hw-text-on-solid`、`--hw-hazard`。
+- **字体族名**（`@font-face` 已声明）：`'Archivo Expanded'`（400–800 + `font-stretch:125%`）、`'IBM Plex Sans'`（400/600）、`'IBM Plex Mono'`（400/500）、`'Sarasa Gothic SC'`（400/700）、`'Sarasa Mono SC'`（400/700）。字体栈变量 `--hw-font-display`/`--hw-font-sans`/`--hw-font-mono`。
+- **本票不消费、留给 V-B 的 token**：`--hw-font-display`（换肤前没有任何元素用加宽无衬线；`h1`/`h2` 是否换字体属 V-B 决定）与结构 token（`--hw-radius-*`、`--hw-hairline`、`--hw-seam`、`--hw-stroke-*`、`--hw-focus-ring-width`、`--hw-focus-offset`、`--hw-min-cell`）。
+- **检查脚本入口**：`npm run check:design`（16 项，不联网）；字体重建 `npm run fonts:build`（只有重建中文子集才需要网络）。
+- **`style.css` 已把 29 个色值换成语义槽位**（§6）。交给 V-B 的三条边界：(a) 错误条现在用面板面 + 细描边，**不再有**独立的错误配色槽位——若 V-B 想给错误更强的视觉，需先决定它承载的是不是状态语义，并按 `0009 §2/§3` 处理；(b) `--hw-line` 同时承担分隔线与控件描边，取值比换肤前深（3.14:1），灰度下比原薄荷绿更清晰；(c) 几何仍是换肤前的取值，V-B 换肤时要**成组**改（圆角/间距/字号一起），并同步 §3.2 的归一化核对方法，避免再次出现「声称几何一致但实际改了」。
+- **验证 4 与 5 的补测项归 V-B**：中英混排与纯中文两种样例的实际渲染（`Rendered Fonts` / `document.fonts.check()`），以及换肤前后的首屏时间对比。
+
+## 8. 逐条验收结论
+
+| # | 验收标准 | 判定 | 证据 |
 | --- | --- | --- | --- |
-| 1 | token 层是唯一色值来源，机械检查可证 | **通过** | `npm run check:design` 的 1a/1a2/1b/1c 四项通过：9 个源文件里 0 处 token 层之外的色值；`style.css` 与生成的 `fonts.css` 内 0 处十六进制色值；换肤前 `style.css` 的 25 个不同色值逐个有 token 去处（映射表见 §6）。token 层：`frontend/src/tokens.css`，9 个字面量色值 + 8 个槽位别名 |
-| 2 | 对比度数值实测并写入 0009 §3 | **通过** | 见 §3；检查项 2b 会把现算值与 0009 §3 的文本逐条比对，不一致即失败；2c 另外证明"accent 不得用于小字、accent-ink 可以"这一条与本票实测值一致 |
-| 3 | 字体全部 OFL 或系统字体且自托管；仓库与构建产物无商业字体文件 | **通过** | 见 §4；检查项 3a（仓库 9 个 + `dist` 9 个字体文件，文件名与嵌入名都不匹配 `univers/helvetica/neue/arial/times`）、3b（`@font-face` 只用 5 个 OFL 族，字体栈里不出现商业字体名）、3c（3 份 OFL 许可文本随资产交付） |
-| 4 | 中文由中文字体渲染，未落到 Latin 等宽 fallback（中英混排与纯中文两种样例） | **通过（静态证据）** | 机制：`fonts.css` 里 Sarasa Gothic SC / Sarasa Mono SC 的 `unicode-range` 只声明汉字与中文标点，检查项 4b 证明 A-Z/a-z/0-9 不在其中，因此数字与编号只能落到 IBM Plex；4a 证明前端用到的 632 个中文字符全部落在中文字族的 `unicode-range` 内；4c 证明 4 个中文字体文件的 cmap 里确实有这些字形。字体栈：`--hw-font-sans: 'IBM Plex Sans', 'Sarasa Gothic SC', …`、`--hw-font-mono: 'IBM Plex Mono', 'Sarasa Mono SC', …`。**浏览器内的实际渲染未在本票验证**（见 §8） |
-| 5 | 字体自托管后的构建产物体积有记录，不显著拖慢首屏 | **部分** | 体积已实测并记录（§4：字体合计 1,165,496 字节、CSS gzip 7.03KB、JS gzip 59.31KB，检查项 5a/5b 通过）。"不显著拖慢首屏"只有成本侧数据，**没有真实加载耗时测量**：本票按 ADR-0018 不做浏览器验收，首屏时间与字体加载时序留给 V-B 的浏览器验收 |
+| 1 | token 层是**唯一色值来源**：组件与样式表内没有写死的十六进制色值，机械检查可证 | **通过** | §4 的 1a/1a2/1b/1d/1c 五项：9 个字面量只在 `tokens.css`；`.vue`/`.ts`/`.css` 内 0 处裸色值；29 个换肤前色值全部有去处。判据是「样式位置里的色值必须写成 `var(--hw-*)`」而非「值是否等于某个 token 字面量」，且 `.vue` 的 `<style>` 块与 `.css` 同判、命名色与内联 `style=""` 都在扫描面上 |
+| 2 | 对比度数值已实测并写入 0009 §3 | **通过** | §3.3 的 9 组实测值；2b 把 0009 §3 的表**逐行**比对（前景/背景 token 与文档口径同一行），2c 另判 `--hw-accent` <4.5:1 与 `--hw-accent-ink` ≥4.5:1 |
+| 3 | 字体全部为 OFL 或系统字体且自托管；仓库与构建产物中无商业字体文件 | **通过** | §5 的 5 族全部 OFL-1.1、9 个 woff2 与 3 份许可文本入库；3a 用 `fontkit` 读**嵌入族名/全名/PostScript 名**并与文件名一起比对商业字体名单；3b 约束 `@font-face` 只声明 OFL 族；3c 核对许可文本随资产交付 |
+| 4 | 中文由中文字体渲染，未落到 Latin 等宽 fallback（中英混排与纯中文两种样例） | **部分** | 机制证据齐备且可复现：4b 证明中文字族不声明 Latin、4a 证明前端用到的 632 个中文字符全部落在声明范围内、4c 证明字体文件真的含这些字形，且机制与栈顺序无关。**但「两种样例」要求的是渲染结果，本票没有跑浏览器**，因此没有两种样例的实测渲染证据，子集外汉字的边界行为也只有推理（见 §8.1）。按 [ADR-0018](../adr/0018-backend-first-and-layered-validation.md)，前端变更触发浏览器检查——本票把它交给 V-B 集中执行，因此**本项在本票内记「部分」**，浏览器验收归 [#34](https://github.com/kksty/HuntWeave/issues/34) |
+| 5 | 字体自托管后的构建产物体积有记录，不显著拖慢首屏 | **部分** | 体积逐字节可复现（5a/5b 与 §5）。但「不显著拖慢首屏」只有**成本侧**数据，没有真实加载耗时（首屏时间、字体加载时序、`font-display: swap` 的实际换字可见性都未测量）。按实际用字，首屏至少会付 Sarasa Gothic SC 400（249KB）+ 700（251KB，`h1`/`h2`/`th` 的内容是中文且字重 700/800）+ Archivo（90KB）+ Plex（约 47KB）。**首屏耗时测量归 V-B** |
 
-## 6. `style.css` 色值映射表（V-A → V-B 的交接内容）
+### 8.1 未达成与限制
 
-换肤前 `frontend/src/style.css`（提交 `7c56643`）里有 25 个不同的十六进制色值（含 `#fff` 这种短写共 29 处出现，其中 `#61776c` 只被定义、未在规则里使用），全部换成 token 槽位。同类逻辑槽位合并后，绿调浅色换成 0009 §3 的暖色板，取值同时按新色板替换：
+- **未做浏览器验收**：没有起 Docker 栈、没有跑 Playwright、没有截图。验收 4 只有静态机制证据，验收 5 只有成本侧数据。V-B 应补两项：中英混排与纯中文样例的 `Rendered Fonts`/`document.fonts.check()` 实测，以及换肤前后的首屏时间对比。
+- **子集外汉字的边界行为**：不在字符集内的汉字会落到栈的下一项；sans 栈的中文字族之后是 `system-ui`（**不会**落到 Latin 等宽，等宽栈里中文字族之后是 `ui-monospace`）。新增文案请重跑 `npm run fonts:build`，4a 会漏字即红。
+- **`npm run fonts:build` 的中文下载需要网络**：本机 Node 的 DNS 走不通 `raw.githubusercontent.com`（GitHub release 域名正常），脚本内置 `pwsh Invoke-WebRequest` 回退，两条路都校验 sha256，且回退假设 PATH 上有 PowerShell 7（开发机假设）。产物已入库，日常构建与检查都不需要网络。
+- **未跑既有 Playwright 用例**（[0009 §11](../specs/0009-visual-design-system.md) 第 10 条）。本票只改 CSS 与样式引入，`style.css` 的类名/选择器/模板结构全部保留（§3.2 的归一化相等已证明规则集合未变），但**没有实测**，不作为已验证结论。
+- **未在浏览器中验证** `--hw-focus-ring`（= `--hw-accent`）作为键盘焦点环的实际可见性；焦点环宽度与偏移保持换肤前的 3px/2px。
+- **`App.vue`/`RunConsole.vue`/`workspace.ts` 零改动**：换肤前 29 个色值本来就只集中在 `style.css`；`0009 §12` 说 V-B 改这三个文件，实际 V-B 只需要改 `style.css` 的几何与新增规则。
+- **`docs/STATUS.md` 与根 `README.md` 的项目资料清单**：本票白名单外，由协调人在合入后统一回接。
 
-| 换肤前 | 原用途 | 换成 | 新取值 | 说明 |
-| --- | --- | --- | --- | --- |
-| `#20382f` | 正文 | `--hw-ink` | `#1E1B16` | 绿调深色 → 暖墨色 |
-| `#224a39` | 品牌字 | `--hw-ink` | `#1E1B16` | 品牌字改用 `--hw-font-display`，不再另设颜色 |
-| `#f2f5ef` | 页面底色 | `--hw-base` | `#ECE5D6` | |
-| `#f4f6f2` | 代码块嵌入面 | `--hw-base` | `#ECE5D6` | 嵌入面统一用底色，不再单独设槽位 |
-| `#f3f7f0` | 预览框面 | `--hw-surface-sunken`（→ `--hw-base`） | `#ECE5D6` | 嵌入面 |
-| `#fff8e9` | 提示条面 | `--hw-surface-sunken`（→ `--hw-base`） | `#ECE5D6` | |
-| `#edf3e7` | 徽章面 | `--hw-panel` | `#F6F2E9` | |
-| `#fff` | 页眉与面板面 | `--hw-panel` | `#F6F2E9` | 三处"面"收敛到一个槽位 |
-| `#fcfdfb` | 输入框面 | `--hw-panel` | `#F6F2E9` | |
-| `#fdf6e0` | 警告徽章面 | `--hw-panel` | `#F6F2E9` | |
-| `#dce3d9` | 分隔线、表格线、面板描边 | `--hw-line` | `#8A7F6B` | 6 处出现收敛到一个槽位 |
-| `#d4dfce` | 徽章描边 | `--hw-line` | `#8A7F6B` | |
-| `#bccbbf` | 控件描边 | `--hw-line` | `#8A7F6B` | |
-| `#d5ded4` | 静默按钮描边 | `--hw-line` | `#8A7F6B` | |
-| `#e3e9df` | 折叠区与列表项分隔 | `--hw-line`（别名 `--hw-border-soft`） | `#8A7F6B` | |
-| `#a7c9b1` | 事件条、证据框、实例卡描边 | `--hw-line`（同上） | `#8A7F6B` | 原为薄荷绿，改作通用分隔线 |
-| `#c9a227` | 警告徽章描边 | `--hw-line` | `#8A7F6B` | 0009 §3 禁止 `--hw-stripe-*` 用于状态；状态由文字与位置表达 |
-| `#244f3e` | 主按钮底与描边 | `--hw-ink` | `#1E1B16` | 实底按钮改用墨色实底 + 面板色文字（15.36:1） |
-| `#4c6559` | 静默按钮文字 | `--hw-ink` | `#1E1B16` | 次级文字不再靠降低对比度，改靠字重 |
-| `#577365` | 眉标 | `--hw-text-muted`（→ `--hw-ink`） | `#1E1B16` | |
-| `#61766c` | 说明文字、`dt` | `--hw-text-muted` | `#1E1B16` | |
-| `#657c70` | `small` | `--hw-text-muted` | `#1E1B16` | |
-| `#647c6e` | `dt` | `--hw-text-muted` | `#1E1B16` | |
-| `#3c5348` | 调用进度、保留区小标题 | `--hw-text-muted` | `#1E1B16` | 五处次级文字收敛到 13.69:1 的正文墨色 |
-| `#71582b` | 提示条文字 | `--hw-text-muted` | `#1E1B16` | |
-| `#a13d2d` | 错误与无效标记文字 | `--hw-accent-ink` | `#A8432F` | 原本就是小字号红字，正好对上新的小字红槽位 |
-| `#387550` | 列表项悬停 | `--hw-accent-ink` | `#A8432F` | 从绿色悬停改为唯一的强调色系 |
-| `#fff0e9` | 错误条底 | `--hw-hazard` | 斜纹 | 0009 §3 禁止 accent 用于状态编码，错误态改用警示斜纹 |
-| `#e5bba9` | 错误条描边 | `--hw-ink` | `#1E1B16` | 与斜纹同色，13.69:1 |
-| `#61776c` | 未使用 | — | — | 换肤前样式表里只被定义、没有实际使用的规则，仅记录在案 |
+## 9. 两轴评审与本记录的更正
 
-**给 V-B 的两条边界**：`--hw-line` 现在同时承担"分隔线"和"控件描边"，取值比换肤前深（3.14:1），灰度下比原薄荷绿更清晰；`--hw-hazard` 现在用在一处内联错误条上，V-B 若要把斜纹收窄到"阻断/越界确认"更严格的场景，需要给错误条换成别的不承载状态的呈现（例如仅墨色描边 + 文字前缀），并同步 0009 §6。
+按仓库约定做了 **Standards + Spec** 两轴评审（各一名评审者，只读、独立核验，含自写探针）。两轴都判定首稿**不可合入**。下列缺陷已在本分支修复：
 
-## 7. token 层接口事实（V-B / V-C 接手用）
+| 轴 | 缺陷 | 处置 |
+| --- | --- | --- |
+| Spec（阻断） | `.error` 通用错误条用 `--hw-hazard` 斜纹：违反 `0009 §6`/`§11.5`（斜纹只用于阻断/危险/越界），且文字色 `--hw-ink` 与斜纹深色停靠点同值 → **文字对深色条纹 1.0000:1，近一半面积不可读** | 见 §3.4：回到面板面 + 细描边；`--hw-hazard` 收回真正的阻断路径 |
+| Spec + Standards（应修） | `style.css` 夹带几何/布局改动：圆角 `14px→0`、字号 `25px→24px`、多处 padding/margin 变动，并**新增裸 `dl` 规则**（改变 `App.vue` 授权快照面板布局）与 `th` 字距（中文标签套用了「只给 Latin」的 token），而注释与记录声称「几何与换肤前一致」 | `style.css` 重建为「只在原文件上替换色值与字体族」：归一化后与 `7c56643` **逐字符相等**（§3.2）；文件头注释与本记录改成事实 |
+| Standards + Spec（应修） | 机械检查弱于宣称：1a 只判「值等于某个 token 字面量」，重复写一个 token 的值可通过；1b 只扫 `.css`，`.vue` 的 `<style>` 落在缝里；命名色（`white`）完全绕过；3a 文案声称校验「嵌入名」而代码只比文件名；2b 只比 4 组且用整文件子串命中（把最重要的 `--hw-line` 行改成任意数字都能过） | 新增 1b（样式位置内裸色值一律报红，`.vue` 与 `.css` 同判）与 1d（内联 `style`）；命名色进入判据并排除 `transparent` 一类哨兵；3a 用 `fontkit` 真读 name 表；2b 改为解析 0009 §3 表格逐行比对全部 9 组。**加强后立刻抓到两处真实缺陷**：`style.css` 里 3 处 `background:white` 未被替换、映射表指向了不存在的 token 名（`hw-border-soft` 是别名） |
+| Spec + Standards（应修） | 本记录与规格里的数字不可复现：4a 写 632/1365（1365 是重建子集前的旧值，632 也不对应任何一次真实运行）；色值个数在规格写 18、记录写 25、检查输出写 29；`#61766c` 被谎称「未被实际使用」而它出现 3 次；`#61776c` 根本不存在；四个中文 woff2 的 hash 被写成「完全一致」 | §2/§3/§4/§5/§6 按本次 HEAD 的真实运行重写；色值统一为 **29 个不同值 / 42 处出现**；删除幻影行并说明 `#61766c` 的真实用法；hash 表述更正；规格里的计数移除、只留规则 |
+| Standards（应修） | 「汉字与中文标点」在 `build-fonts.mjs` 与 `check-design-system.mjs` 各写一份正则且不等价（差 U+2013） | 字符类收敛到 `font-manifest.mjs` 的 `HAN`/`CJK_PUNCT`，两脚本共用 |
+| Standards（应修） | `npm run check` 顺序倒置（5b 依赖 `dist`，干净检出上先跑检查必失败）；`check:design` 未接入 CI，README 也没有命令入口 | `check` 改为 `build && check:design`；`.github/workflows/checks.yml` 的 frontend job 增加 `npm run check:design`；根 README 的「验证」一节补命令 |
+| Standards（建议） | `--hw-font-mono-cjk` 与 `--hw-breakpoint-compact/columns` 声明了但无法被消费（自定义属性不能进入 `@media` 条件） | 删除这三个 token；断点仍写在 `style.css` 的 `@media` 里，并在 `tokens.css` 注明原因 |
 
-`frontend/src/tokens.css` 的完整清单：
+评审也明确记录了**未发现问题的范围**：`.woff2` 在 Git 里被判为二进制、索引与工作树哈希一致、无 BOM/行尾问题；新增 6 个 devDependency 全部是构建期用途且 lock 与 `package.json` 一致、无 CSS 框架；`check:design`/`build` 均离线可跑、失败都置 `exitCode=1`；`main.ts` 的引入顺序（token → font-face → 控制台样式）正确；9 组对比度值两轴各自独立复算一致；字符集 1208 与 `MANIFEST.json` 一致；选择器集合未删除任何原有规则。
 
-- **色板槽位（9 个字面量值）**：`--hw-base` `#ECE5D6`、`--hw-panel` `#F6F2E9`、`--hw-ink` `#1E1B16`、`--hw-line` `#8A7F6B`、`--hw-accent` `#D63A2C`、`--hw-accent-ink` `#A8432F`、`--hw-stripe-1..4` `#4C5A68` `#7A7F4E` `#D2A85E` `#A8432F`、`--hw-hazard-1/-2` `#1E1B16` `#ECE5D6`。
-- **角色别名**：`--hw-surface`（面板面）、`--hw-surface-sunken`（嵌入面）、`--hw-text`、`--hw-text-muted`、`--hw-border`、`--hw-border-soft`、`--hw-focus-ring`、`--hw-text-on-solid`、`--hw-hazard`（斜纹 `repeating-linear-gradient`）。
-- **字体族名**：`'Archivo Expanded'`（400–800 + `font-stretch: 125%`）、`'IBM Plex Sans'`（400/600）、`'IBM Plex Mono'`（400/500）、`'Sarasa Gothic SC'`（400/700）、`'Sarasa Mono SC'`（400/700）。栈变量：`--hw-font-display`、`--hw-font-sans`、`--hw-font-mono`、`--hw-font-mono-cjk`。
-- **字阶**：`--hw-text-2xs..3xl`（11/12/13/14/16/17/24/36px）与 `--hw-text-title`（`clamp()`）、`--hw-leading-tight/normal/loose/roomy/loose-plus`、`--hw-tracking-label/none`、`--hw-weight-regular..black`。
-- **栅格**：`--hw-space-0..9`（8px 倍数：0/8/16/24/32/40/48/72）、`--hw-gap-hair/tight/snug/roomy`（4/12/20/28，半格与贴边）、以及迁移期的 `--hw-size-*` / `--hw-margin-*` / `--hw-padding-*` / `--hw-max-*` 字面别名（V-B 可逐步换成栅格 token）。
-- **结构**：`--hw-radius-panel/control/max`、`--hw-hairline`、`--hw-seam`、`--hw-stroke-stripe(-strong)`、`--hw-focus-ring-width`、`--hw-focus-offset`、`--hw-max-width`、`--hw-min-cell`、`--hw-breakpoint-compact/columns`。
-- **检查脚本入口**：`npm run check:design`（`frontend/scripts/check-design-system.mjs`）；字体重新生成：`npm run fonts:build`（`frontend/scripts/build-fonts.mjs` + `font-manifest.mjs`）。新增任何色值都必须加进 `tokens.css`，否则 1a 会失败。
-
-## 8. 已知限制与未达项
-
-1. **浏览器内渲染未验证**（验收 4 只有静态证据）。本票按 ADR-0018 不做浏览器验收：没有启动 Docker 栈、没有跑 Playwright、没有截图。中英混排与纯中文两种样例需要由 V-B 在真实页面上确认（可用浏览器 devtools 的 "Rendered Fonts" 面板或 `document.fonts.check()`）。
-2. **首屏耗时未测量**（验收 5 只有体积）。缺"换肤前 vs 换肤后"的首屏时间/字体加载时序对比。
-3. **字符集覆盖有边界**：中文字体只含 1208 个字符（前端源码 + `docs/**/*.md` 里出现的汉字与中文标点）。遇到子集外的汉字时，`unicode-range` 会让它落到字体栈的下一项 `system-ui`：**不会**落到 Latin 等宽（因为中文字族之后的等宽项只出现在 `--hw-font-mono`，且 `system-ui` 本身不在等宽栈里），但会与同行的 Sarasa 混排。新增界面文案请重跑 `npm run fonts:build`，检查项 4a 会在漏字时失败。
-4. **跨平台字体栈尾部依赖系统字体**：栈尾是 `system-ui` / `ui-monospace`，Windows / Linux / macOS 会给出不同的兜底字形。首版按 0009 §4 允许系统字体，但这意味着子集外字符与 `×`、`→` 这类符号在不同宿主上外观可能不同。
-5. **`npm run fonts:build` 的中文下载依赖网络**：Sarasa 归档来自 GitHub release（`raw.githubusercontent.com` 在开发机上 Node 的 DNS 路径不通，脚本会退回 `pwsh Invoke-WebRequest`，两者都校验 sha256）。构建产物已提交，因此**正常构建与检查不需要网络**，只有重新生成 Chinese 子集时才需要。
-6. **子集化产物的可复现性**：同一份输入、同一版 `subset-font`/HarfBuzz 下连续两次构建的四个中文 woff2 逐字节一致（已实测，见 §4）；跨工具版本升级不保证一致，归档 sha256 固定的是输入而不是输出。
-7. **`style.css` 的间距没有全部贴到 8px 栅格**：为保持与换肤前一致的几何，迁移期保留了原取值的字面别名（`--hw-margin-*` 等）。0009 §5 的"间距按 8px 基准栅格"目前是"新加的间距一律用 `--hw-space-*`"，历史取值的收敛留给 V-B/V-C。
-8. **未跑既有 Playwright 用例**（0009 §11 的第 10 条）。改动只涉及 CSS 与样式引入，`style.css` 的类名、选择器与结构全部保留，理论上不影响用例；但没有实际跑过，不作为已验证结论。
-
-## 9. 待人工确认
-
-- V-B 是否接受"错误条使用警示斜纹"（§6 末段）；若收紧，需要同步 0009 §6。
-- 是否要把 `--hw-line` 的收紧同样应用到 `--hw-stripe-*`（它们只作身份元素，本票未做对比度要求）。
-- 是否需要在 V-B 之前补一次"中文字形实际渲染"的浏览器抽查，还是并入 V-B 的灰度截图回归一起做。
+**本记录首稿的错误已在上表逐条列出，不做静默改写。**

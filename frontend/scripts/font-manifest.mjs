@@ -15,6 +15,15 @@
 
 export const cacheDir = 'node_modules/.cache/huntweave-fonts';
 
+/*
+ * 中文字符类：子集化（build-fonts.mjs）与机械检查（check-design-system.mjs）必须用
+ * 同一份定义，否则「构建时收录的字符」与「检查时验证的字符」会各自漂移，而后者正是
+ * 0009 §3 指定的证明手段。只在这里定义一次，两边 import。
+ */
+export const HAN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+export const CJK_PUNCT = /[\u3000-\u303f\uff00-\uffef\u2000-\u206f\u00b7\u2014\u2026]/;
+export const isCjk = (ch) => HAN.test(ch) || CJK_PUNCT.test(ch);
+
 /** 需要下载并缓存的原始文件（只有中文需要网络）。 */
 export const sources = [
   {

@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1",
     "fonts:build": "node scripts/build-fonts.mjs",
     "check:design": "node scripts/check-design-system.mjs",
-    "check": "npm run check:design && npm run build",
+    "check": "npm run build && npm run check:design",
     "test:e2e": "playwright test",
     "test:e2e:full": "playwright test --max-failures=0"
   },
