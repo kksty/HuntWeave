@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from _planning import plan_step
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
 
@@ -98,7 +99,7 @@ class Deployment:
         if claim is None:
             return None
         before = set(self.calls(run_id))
-        self.service.plan(run_id, claim["task_id"], claim["lease_generation"])
+        plan_step(self.service, run_id, claim["task_id"], claim["lease_generation"])
         fresh = [call_id for call_id in self.calls(run_id) if call_id not in before]
         return UUID(fresh[-1]) if fresh else None
 
@@ -184,8 +185,8 @@ def test_a_run_holding_a_call_yields_the_turn_to_the_other_runs(deployment: Depl
         claim = deployment.service.claim()
         assert claim is not None, "a ready Run must be claimable while another holds a call"
         served.append(UUID(claim["run_id"]))
-        deployment.service.plan(
-            UUID(claim["run_id"]), claim["task_id"], claim["lease_generation"]
+        plan_step(
+            deployment.service, UUID(claim["run_id"]), claim["task_id"], claim["lease_generation"]
         )
     assert served == runs
     assert all(deployment.held(run_id) == 1 for run_id in runs)
@@ -203,8 +204,8 @@ def test_a_run_that_cannot_be_reconciled_does_not_starve_the_others(deployment: 
     for _ in healthy:
         claim = deployment.service.claim()
         assert claim is not None
-        deployment.service.plan(
-            UUID(claim["run_id"]), claim["task_id"], claim["lease_generation"]
+        plan_step(
+            deployment.service, UUID(claim["run_id"]), claim["task_id"], claim["lease_generation"]
         )
     assert all(deployment.held(run_id) == 1 for run_id in healthy)
     # The stuck Run is still not claimable, and its ledger is still re-read by the sweep.
@@ -531,9 +532,9 @@ def test_a_restart_resumes_from_the_durable_records_and_reserves_no_second_call(
             break
         generations.append(int(claim["lease_generation"]))
         before = len(deployment.calls(run_id))
-        first = restarted.plan(run_id, claim["task_id"], claim["lease_generation"])
+        first = plan_step(restarted, run_id, claim["task_id"], claim["lease_generation"])
         after = len(deployment.calls(run_id))
-        replay = restarted.plan(run_id, claim["task_id"], claim["lease_generation"])
+        replay = plan_step(restarted, run_id, claim["task_id"], claim["lease_generation"])
         assert replay == first, "a replayed turn must answer with the record it already has"
         assert len(deployment.calls(run_id)) == after, "a replay is not a second action"
         assert after - before <= 1

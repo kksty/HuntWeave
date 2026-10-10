@@ -530,10 +530,16 @@ class OrchestrationService:
                         }
                     # The answer is committed while its call is not. The planner is completing it,
                     # not deciding again: no model is asked, nothing is written twice, and the Run
-                    # is not left waiting behind a decision no call can ever complete.
-                    return self._dispatch(
+                    # is not left waiting behind a decision no call can ever complete. It is
+                    # answered as a reuse because the decision is already this Run's; all this
+                    # segment adds is the call it was still owed. A slot that is still withheld
+                    # leaves nothing to hand back, so the step has nothing to plan this round.
+                    dispatched = self._dispatch(
                         session, run, task, agent, decided, generation, now, replacing=None
                     )
+                    if dispatched is None:
+                        return None
+                    return {"kind": "reuse", "decision": dispatched}
                 # An authorised re-dispatch is not a model question: the answer is already recorded
                 # and a verdict proved the original call never ran. It commits in this same short
                 # transaction, because no judgement and no adapter is involved.

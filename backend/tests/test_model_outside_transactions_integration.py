@@ -23,7 +23,12 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from huntweave.contracts.errors import ServiceError
-from huntweave.contracts.execution import ExecutionRecord, ExecutionRequest, ExecutionResult
+from huntweave.contracts.execution import (
+    ExecutionObservation,
+    ExecutionRecord,
+    ExecutionRequest,
+    ExecutionResult,
+)
 from huntweave.contracts.orchestration import RunSnapshot
 from huntweave.contracts.runs import Budget, ProjectCreate, RunCreate, ScopeCreate
 from huntweave.harness.model import PROMPT_VERSION, ModelRequest, ModelSuggestion, ModelUsage
@@ -161,12 +166,25 @@ def next_ticket(service: OrchestrationService, run_id: UUID) -> ExecutionRequest
 
 
 def settle(service: OrchestrationService, ticket: ExecutionRequest, output: str) -> None:
-    """Settle one call the way the dispatcher would after the execution side reported it."""
+    """Settle one call the way the dispatcher would after the execution side reported it.
+
+    The observation is the execution side's own statement that nothing the call started is still
+    running. A settled result alone is not that statement: without it the call keeps its physical
+    slot and its Run stays blocked, which is the rule `#21` fixed and the reason a Run that never
+    hears back must not be handed new actions.
+    """
     service.accept(
         ExecutionRecord(
             request=ticket,
             status="completed",
             result=ExecutionResult(output=output, exit_code=0, evidence=[]),
+            observation=ExecutionObservation(
+                started=True,
+                process_active=False,
+                connection_open=False,
+                lease_active=False,
+                observed_at=datetime.now(UTC),
+            ),
         )
     )
 

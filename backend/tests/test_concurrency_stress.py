@@ -36,6 +36,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from _planning import plan_step
 from sqlalchemy import Engine, text
 
 from huntweave.contracts.execution import (
@@ -348,7 +349,7 @@ class Fixture:
         claim = self.service.claim(run_id)
         if claim is None:
             return None
-        self.service.plan(run_id, claim["task_id"], claim["lease_generation"])
+        plan_step(self.service, run_id, claim["task_id"], claim["lease_generation"])
         fresh = [
             item["id"]
             for item in self.service.snapshot(run_id)["calls"]
@@ -691,8 +692,11 @@ def lock_wait(fixture: Fixture) -> list[float]:
     baseline_claim = fixture.service.claim(baseline_run)
     assert baseline_claim is not None
     baseline = timed(
-        lambda: fixture.service.plan(
-            baseline_run, baseline_claim["task_id"], baseline_claim["lease_generation"]
+        lambda: plan_step(
+            fixture.service,
+            baseline_run,
+            baseline_claim["task_id"],
+            baseline_claim["lease_generation"],
         ),
         1,
     )[0]
@@ -712,7 +716,7 @@ def lock_wait(fixture: Fixture) -> list[float]:
 
             def reserve() -> None:
                 start = time.perf_counter()
-                fixture.service.plan(contender, claim["task_id"], claim["lease_generation"])
+                plan_step(fixture.service, contender, claim["task_id"], claim["lease_generation"])
                 outcome["elapsed"] = time.perf_counter() - start
 
             worker = threading.Thread(target=reserve)
