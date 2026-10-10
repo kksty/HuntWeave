@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | P0 | 运行骨架、认证与授权快照、持久假 Run、隔离靶场验证 | 已有验收记录（`0001`–`0005`）；P0-A 至 P0-D 的实施 Issue 已关闭，记录更正 [#12](https://github.com/kksty/HuntWeave/issues/12) 已人工确认关闭（2026-10-09）；后续缺口见 `docs/validation/0005-p0-execution-and-recovery.md`，不视作全部目标行为已经达成 |
 | P1 | Kali 真实执行、选择性保留、透明控制台 | 进行中：正式规格 [0002](./specs/0002-real-execution.md) 已交付，规格 Issue [#14](https://github.com/kksty/HuntWeave/issues/14) 已关闭（2026-10-09）；tracer [#15](https://github.com/kksty/HuntWeave/issues/15) 核对入口（验证记录 `0006`）与①档前置 [#9](https://github.com/kksty/HuntWeave/issues/9) 票据目标绑定（验证记录 `0007`）已交付并关闭；[#13](https://github.com/kksty/HuntWeave/issues/13) 单 Run 目标上限（验证记录 `0008`）与①档前置 [#10](https://github.com/kksty/HuntWeave/issues/10) 能力就绪状态、[#11](https://github.com/kksty/HuntWeave/issues/11) 版本冲突静默重发（验证记录 `0010`）已交付并关闭（2026-10-10）；tracer [#16](https://github.com/kksty/HuntWeave/issues/16) 受信管理组件与真实容器生命周期（验证记录 `0011`）、[#18](https://github.com/kksty/HuntWeave/issues/18) 出口控制与取消/回收（验证记录 `0012`）与 [#17](https://github.com/kksty/HuntWeave/issues/17) 真实动作最小闭环（验证记录 `0013`）已交付并关闭（2026-10-10）；#19–#21 仍开放；真实执行**未开放**：四项门槛未满足，产品拒绝创建真实 Run |
-| P2 | 完整 Agent MVP：真实模型、联网研究、Run 内规划、24×7 持续推进 | 实现未开始；[0003](./specs/0003-agent-research.md)、[0004](./specs/0004-finding-admission.md) 与 [0005](./specs/0005-capability-claim-criteria.md) 是**未经评审的草案**（评分与准入尚无阶段表归属），取舍见 ADR-0009/0011/0013/0015/0016；实施 Issue 尚未建立 |
+| P2 | 完整 Agent MVP：真实模型、联网研究、Run 内规划、24×7 持续推进 | 实现未开始；[0003](./specs/0003-agent-research.md) 保留整体实施草案；[0004 准入](./specs/0004-finding-admission.md)、[0005 判据](./specs/0005-capability-claim-criteria.md)、[0006 状态与交付](./specs/0006-state-model-and-delivery.md)、[0007 UI](./specs/0007-research-workbench-ui.md) 的设计已确认、未实施/验收；取舍见 ADR-0009/0011/0013/0015/0016/0017，实施 Issue 尚未建立 |
 
 ## 当前能力
 
@@ -47,6 +47,8 @@ tracer 顺序（实现切片）：
 2026-10-09 架构修订已写入 P1 规格：核对不等于成功/回收、真实 Run 不切换为假执行、回退先收尾、运行中持续校验能力、手动保留不共享目标可写层；基础公平/取消检查随 #17/#18 先验。这些修订已于 2026-10-09 同步到 GitHub Issue 正文与原生依赖（见规格第 5 节末段）。其中**核对与执行端停止确认分离、受限结束**已由 #15 交付（`0006`）、**实例身份与创建中断残留核对**已由 #16 交付（`0011`）；**真实 Run 不切换为假执行、回退先收尾、运行中持续校验能力、手动保留不共享目标可写层与基础公平/取消检查仍未实现**，随 #16–#21 验收；实施顺序以规格第 5 节表格与原生阻塞边为准，不据旧 Issue 正文的依赖清单跳步。
 
 ## P2 的开工约束
+
+本轮已完成文档整理：Phase 0 来源盘点、映射与兼容读要求见 [0006 §10](./specs/0006-state-model-and-delivery.md#10-phase-0映射与兼容策略)，工作台交互见 [0007](./specs/0007-research-workbench-ui.md)。这只锁定设计，不表示迁移、六轴模型、研究图、复审队列或冻结交付已实现；P1 的当前进度与顺序不因文档整理改变。
 
 按 [P2 规格](./specs/0003-agent-research.md) 的 A–F 切片推进：事务外模型与独立任务身份 → 持久事件规划/依赖 → 真模型与洁净准备 → 证据绑定/独立复审/版本化报告 → 持续运行与恢复验收；研究图基础可视化（F）为独立切片，可与上述切片并行，不等待完整闭环。不新增常驻 Planner、图数据库或跨 Run 可变黑板；P1 不因这些设计推迟。P2 实施 Issues 尚未建立，本轮仅完成架构文档。主张与能力类判据按 [0005 规格](./specs/0005-capability-claim-criteria.md)，验收组见 [P2 规格](./specs/0003-agent-research.md) 第 9 节。
 
