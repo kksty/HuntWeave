@@ -102,11 +102,17 @@
 
 ## 12. 实施切片
 
-| 切片 | 内容 |
-| --- | --- |
-| V-A | token 层与字体自托管（色板、字阶、栅格） |
-| V-B | 既有控制台换肤（`style.css`、`App.vue`、`RunConsole.vue`），含灰度高辨识回归 |
-| V-C | 面板结构、接缝、铆钉与身份元素 |
-| V-D | 与新模式界面合流：模式标注、覆盖矩阵、缺口视图按本系统实现 |
+| 切片 | 内容 | 归属 Issue |
+| --- | --- | --- |
+| V-A | token 层与字体自托管（色板、字阶、栅格） | [#33](https://github.com/kksty/HuntWeave/issues/33) |
+| V-B | 既有控制台换肤（`style.css`、`App.vue`、`RunConsole.vue`），含灰度高辨识回归 | [#34](https://github.com/kksty/HuntWeave/issues/34) |
+| V-C | 面板结构、接缝、铆钉与身份元素（四色身份带、任务徽章、使用痕迹） | **已被 [#34](https://github.com/kksty/HuntWeave/issues/34) 的验收范围覆盖，不另开切片** |
+| V-D | 模式标注与覆盖状态视图按本系统实现 | 薄接入归 [#35](https://github.com/kksty/HuntWeave/issues/35)；覆盖矩阵与缺口视图的渲染与下钻归 [#29](https://github.com/kksty/HuntWeave/issues/29) |
 
 V-A 与 V-B 是纯前端换肤，不依赖双模式后端；V-D 依赖 [#25](https://github.com/kksty/HuntWeave/issues/25) 起的模式与投影契约。
+
+**切片归属的澄清**（[ADR-0026](../adr/0026-contract-alignment-readiness-cidr-and-queue.md)）：
+
+- **V-C 不再是独立切片。** §5–§9 要求的面板直角与可见接缝、静态 SVG 铆钉、四色身份带、任务徽章、确定性使用痕迹与 `--hw-accent` 单点约束，已经被 [#34](https://github.com/kksty/HuntWeave/issues/34) 的范围 1–3、5 与验收 1–8 逐条覆盖。V-C 若另立切片会与 #34 重复验收同一批界面元素；**本表的 V-C 行只保留溯源作用**。
+- **V-D 拆成两层，不重复定义同一投影协议。** [#35](https://github.com/kksty/HuntWeave/issues/35) 是**契约与夹具性质的薄接入**：模式标注（`engagement_mode` 与 `mode` 不合并显示）、创建 Run 的描述性文案、覆盖状态四值（已测／部分覆盖／未触达／能力缺口 N）与缺口最小下钻、固定响应夹具，只读且不做排序筛选。#[29](https://github.com/kksty/HuntWeave/issues/29) 是**完整矩阵**：几千资产规模的渲染、聚合下钻与查询容量（其验收 1 的容量与可读性项）。两者共用 §3 的 token 与 [ADR-0023](../adr/0023-two-mode-visualization-projections.md) 的同一套只读投影机制，不建两套 UI 或两套协议。
+- **不恢复研究深度档位**（[ADR-0025](../adr/0025-remove-the-research-depth-tier.md)）：研究取向只由测试模式表达、投入额度只由预算表达。V-D 与任何后续视觉切片**不得**出现档位控件，也不得用「强度／彻底程度」等同义名称补回（[#35 验收 3](https://github.com/kksty/HuntWeave/issues/35)）。

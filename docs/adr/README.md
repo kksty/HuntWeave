@@ -29,6 +29,7 @@
 | [0023 双模式下的研究过程可视化投影](./0023-two-mode-visualization-projections.md) | 已采纳，待实施 | 既有七视图与只读投影不变；新增覆盖矩阵、攻陷状态、缺口视图三个投影，共用一套水位与快照协议 | 扩展 [0015](./0015-graph-semantics-and-projection-boundary.md)；不引入图数据库，不把画布作为执行依据 |
 | [0024 NASA-punk 视觉语言](./0024-nasa-punk-visual-language.md) | 已采纳，待实施 | 浅色设备面板、单一鲜艳强调色、四色身份条、确定性使用痕迹；颜色只承载强调、装饰不得伪造语义、痕迹必须确定；字体只用可再分发的开源字体 | 刻意偏离暗色终端/SOC 默认；不改变任何状态语义，不新增部署服务 |
 | [0025 移除独立的研究深度档位](./0025-remove-the-research-depth-tier.md) | 已采纳，待实施 | 移除作为产品配置的深度档位；研究取向归测试模式、投入额度归预算、路径限制另行定义；突破不承诺无限运行，首个成功留证不等于 Run 完成 | 部分替代 [0016](./0016-scheduling-and-resource-policy.md) 的深度档位条款；不新增数据库迁移或空字段 |
+| [0026 开工契约对齐](./0026-contract-alignment-readiness-cidr-and-queue.md) | 已采纳，待实施；CIDR 边界**未决** | 字段可表达不等于 Run 可执行（四层阻断分别验收）；确认级是分流候选状态，与「证据要求已满足」和 `confirmed` 三分；队列目的不止一个且互不阻塞；差分对照的适用归判据表；V-C 归 #34、V-D 薄接入归 #35 完整矩阵归 #29 | 澄清并收紧 [#25](https://github.com/kksty/HuntWeave/issues/25)/[#28](https://github.com/kksty/HuntWeave/issues/28)/[#30](https://github.com/kksty/HuntWeave/issues/30)/[#34](https://github.com/kksty/HuntWeave/issues/34)/[#35](https://github.com/kksty/HuntWeave/issues/35) 的验收口径；**CIDR 提案未决前不放宽 IP-only 与 100 上限**；不改写任何已采纳决定的能力边界 |
 
 0.7 是当前选型的实施契约整理：六个代码 Module、状态归属、事件顺序、执行收尾与 P0 验收写入总纲，不新增一套部署架构。后续若变更核心选型，新增 ADR 并同步此索引和总纲；普通实现细节与验证结果放对应功能规格。
 
@@ -53,5 +54,7 @@
 0024 固定前端视觉语言为 NASA-punk 浅色设备面板，完整约束见 [视觉设计系统](../specs/0009-visual-design-system.md)。它与既有约束同向而非并列：**颜色只承载强调不承载状态**是 0007「颜色移除后状态仍可辨识」的可检查形式；**装饰不得伪造语义**承接执行可观测性的「不伪造」；**使用痕迹必须确定**是 Playwright 视觉回归可重复的前提。既有控制台（#19 交付）需要换肤，第一步是建立 token 层。本决定不改变状态语义与执行边界。
 
 **术语变更：**「玻璃鱼缸」自 2026-10-10 起改称**执行可观测性（execution observability）**，承载它的界面称**透明控制台**；定义与 `_Avoid_` 见 [GLOSSARY](../../GLOSSARY.md)。这是术语统一，不是决定变更：既有要求的实质（执行端事实事件驱动、模型叙述不替代执行事实、缺失与脱敏如实标注、不给单一健康灯）逐条不变。历史 ADR 与验证记录中的旧称保留不改，按本索引的既有约定不对历史文本全局改名。
+
+0026 是契约澄清（[#37](https://github.com/kksty/HuntWeave/issues/37)）：在此之前 [#25](https://github.com/kksty/HuntWeave/issues/25)/[#28](https://github.com/kksty/HuntWeave/issues/28)/[#30](https://github.com/kksty/HuntWeave/issues/30) 的验收文字与 [PROJECT](../../PROJECT.md)/[0008](../specs/0008-coverage-mode.md)/[0005](../specs/0005-capability-claim-criteria.md) 互相矛盾，无法据以开发。它固定四件事：**字段可表达不等于 Run 可执行**（L1 语法、L2 ADR-0010 四项门槛、L3 授权快照绑定、L4 空 breach 注册表四层分别验收，后三层阻断不变）；**确认级是分流候选状态**，与「证据要求已满足」和 `confirmed` 三者分别可查询，自动采证不等待人工、队列目的不止一个且互不阻塞；**差分对照的适用与否归 [0005 §6](../specs/0005-capability-claim-criteria.md)**，不为形式追加目标动作、模型不能单方豁免；**V-C 已被 [#34](https://github.com/kksty/HuntWeave/issues/34) 覆盖**，V-D 的薄接入归 [#35](https://github.com/kksty/HuntWeave/issues/35)、完整矩阵归 [#29](https://github.com/kksty/HuntWeave/issues/29)，不恢复研究深度档位。**CIDR 边界是本 ADR 唯一未决项**：现状保留 IP-only 与 100 上限，提案与待确认项见 [0008 §6.1](../specs/0008-coverage-mode.md)，未获明确范围决定前不按 [#30](https://github.com/kksty/HuntWeave/issues/30) 正文放宽。
 
 0025 移除作为独立产品配置的**研究深度档位**（[#36](https://github.com/kksty/HuntWeave/issues/36)）：它在基线中只有"表达研究深度／研究偏好"的描述，没有取值、独立行为、程序判定与验收契约，代码中也不存在对应字段或控件；保留它会让创建流程多出一个与测试模式争同一语义位置的重叠控件。研究取向归测试模式、投入额度归预算、路径限制（如"最多几跳"）另行独立定义，证据判据与确认等级不随所谓深度变化。部分替代 0016 的对应条款，历史文本保留；其他含义的"深度"（研究图查询深度、前提门嵌套深度、P3 深度与稳定性）不受影响。
