@@ -1,8 +1,8 @@
-# P2 切片分批执行计划
+﻿# P2 切片分批执行计划
 
 本文件登记 P2 实施切片的**可执行前沿与分批顺序**，供多分支并行开发使用。它不陈述阶段与本文件之外的状态：阶段、能力与下一实施项仍只在 [STATUS](../STATUS.md) 维护，验收要求见 [0003 §8–9](../specs/0003-agent-research.md) 与 [PROJECT §14](../../PROJECT.md)。
 
-- 票据台账、正文来源与依赖边由**已发布的 Issue** 持有：P2 Phase 0 与 A–F 切片为 [#37](https://github.com/kksty/HuntWeave/issues/37)–[#76](https://github.com/kksty/HuntWeave/issues/76)，覆盖面 C-A…C-F 与视觉 V-A/V-B/V-D 为 [#25](https://github.com/kksty/HuntWeave/issues/25)–[#35](https://github.com/kksty/HuntWeave/issues/35)。
+- 票据台账、正文来源与依赖边由**已发布的 Issue** 持有：P2 Phase 0 与 A–F 切片为 [#37](https://github.com/kksty/HuntWeave/issues/37)–[#76](https://github.com/kksty/HuntWeave/issues/76)，覆盖面 C-A…C-F 与视觉 V-A/V-B/V-D（V-C 已被 [#34](https://github.com/kksty/HuntWeave/issues/34) 覆盖，见第 5.1 节）为 [#25](https://github.com/kksty/HuntWeave/issues/25)–[#35](https://github.com/kksty/HuntWeave/issues/35)。
 - 阻塞关系使用 GitHub 原生 issue dependencies；本文件只登记**顺序与批次**，不复述每条边的理由。
 - 盘点基线：2026-10-11，`main` `4f0d063`。依赖图为无环图（已核验：无悬挂引用、无自环、无重复键、无环）。
 
@@ -71,7 +71,7 @@
 - `PROJECT.md`、`docs/specs/`：同一时间只有一个分支改写；#37 单独成批即为此。
 - `docs/validation/`：每个切片新增自己的记录文件，不改他人记录。
 
-## 5. 发布状态与已登记的更正
+## 5. 发布状态与已登记的更正（含 #37 契约口径更正）
 
 2026-10-11 的发布已创建 #37–#76 全部 40 张票（`ready-for-agent`，正文含依据、验收标准、验证与依赖）。**原生依赖链接在发布中断时尚未写入。**
 
@@ -95,6 +95,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/link-issue-dependencie
 | [#76](https://github.com/kksty/HuntWeave/issues/76) | #29 | 硬门：#29 是覆盖矩阵的完整实现，属总集成的交付面 | 保留 |
 | [#73](https://github.com/kksty/HuntWeave/issues/73) | #27 #28 | **部分门**：负载矩阵的带外与覆盖分母两格等这两票合入，其余格可先跑 | 先做未受阻格 |
 | [#61](https://github.com/kksty/HuntWeave/issues/61) | #45 | **部分门**：投影需要 #45 的保留期与过期游标语义；只读投影实现可先做 | 先做未受阻项 |
+
+### 5.1 契约口径更正（#37 开工契约对齐，2026-10-11）
+
+[#37](https://github.com/kksty/HuntWeave/issues/37) 是本批 B1 的契约对齐票：它逐条消除 [#25](https://github.com/kksty/HuntWeave/issues/25)/[#28](https://github.com/kksty/HuntWeave/issues/28)/[#30](https://github.com/kksty/HuntWeave/issues/30) 的验收文字与 [PROJECT](../../PROJECT.md)、[0008](../specs/0008-coverage-mode.md)、[0005](../specs/0005-capability-claim-criteria.md) 之间的矛盾，决定见 [ADR-0026](../adr/0026-contract-alignment-readiness-cidr-and-queue.md)，实际核对与限制见[验证记录 0020](../validation/0020-contract-alignment.md)。**已在本仓库文档侧完成、跨分支即刻生效的口径更正**：
+
+| # | 原口径（矛盾方） | 更正后的口径 | 文档落点 |
+| --- | --- | --- | --- |
+| 1 | [#25 验收 2](https://github.com/kksty/HuntWeave/issues/25)「四种组合都能创建 Run 且语义正确」被读成四种组合都能执行 | 四种组合是**语法层可表达**；ADR-0010 四项门槛、旧授权快照绑定与空 `breach` 注册表三层阻断全部保持有效。「语义正确」验收的是可表达性与拒绝原因可区分 | [0008 §2.1](../specs/0008-coverage-mode.md)、[ADR-0026 §2](../adr/0026-contract-alignment-readiness-cidr-and-queue.md) |
+| 2 | [#30 范围 2](https://github.com/kksty/HuntWeave/issues/30)/[验收 2、3](https://github.com/kksty/HuntWeave/issues/30) 与 [0008 §8 C-F](../specs/0008-coverage-mode.md)「**接受 CIDR**，只做展开、由操作员确认」 | 与 [PROJECT §3.2](../../PROJECT.md) 冲突。**保留 IP-only 与 `TARGET_LIMIT = 100`**；CIDR 只产出边界变更提案与 5 项待确认项，未获范围决定前不得据旧验收文字开发 | [0008 §6](../specs/0008-coverage-mode.md)、[PROJECT §3.2/§4.2/§12/§14.1](../../PROJECT.md) |
+| 3 | [#28 验收 3](https://github.com/kksty/HuntWeave/issues/28)「**只有**确认级条目进入人工队列；可疑与未决不占用人工队列」 | 「确认级才进人工队列」限定为**确认复核**这一个队列目的。「证据要求已满足」「确认级就绪」「`confirmed`」三分且分别可查询；缺证/分类澄清/失效重审/打回复测各有目的与退出路径、互不阻塞；自动采证不等待人工，等待人工不占目标执行槽 | [0008 §3.5.1–§3.5.2](../specs/0008-coverage-mode.md)、[0006 §3.2](../specs/0006-state-model-and-delivery.md)、[PROJECT §9.1](../../PROJECT.md) |
+| 4 | [0008 §5.1](../specs/0008-coverage-mode.md)「判定必须带差分对照」被读成每项主张都要追加一次对照动作 | 对照的**适用与否归 [0005 §6](../specs/0005-capability-claim-criteria.md)**：可由同一次采集中的既有观察满足，不得为满足形式追加目标动作，不适用声明须复审确认并留依据、模型不得单方豁免；程序校验类别/引用/版本 | [0008 §5.1、§7 验收 15](../specs/0008-coverage-mode.md)、[0005 §6](../specs/0005-capability-claim-criteria.md) |
+| 5 | [0009 §12](../specs/0009-visual-design-system.md) 的 V-C 没有对应实施 Issue；V-D 的矩阵/下钻归属不清 | **V-C 已被 [#34](https://github.com/kksty/HuntWeave/issues/34) 的面板/接缝/身份元素范围覆盖，不另开切片**；V-D 的**薄接入归 [#35](https://github.com/kksty/HuntWeave/issues/35)**、**完整矩阵归 [#29](https://github.com/kksty/HuntWeave/issues/29)**；不恢复研究深度档位 | [0009 §12](../specs/0009-visual-design-system.md)、[ADR-0026 §6](../adr/0026-contract-alignment-readiness-cidr-and-queue.md) |
+
+**未登记原生依赖边**：本轮不改任何 Issue 正文、标签或原生 `blocked_by` 链接（更正由协调人在 GitHub 侧执行，见验证记录 `0020` 的逐条建议）。因此本节的更正**不改变第 6 节的关键路径**，也不改变第 3 节的共享面规则——`PROJECT.md` 与 `docs/specs/` 仍按第 4 节由单一分支改写，本票即 B1 的唯一改写者，B2 需待其合入后开工。
 
 另外三处登记问题，不影响可执行前沿：
 
