@@ -1,12 +1,12 @@
 # P2-E2 事件保留、过期游标与可靠快照补拉（#45）实施与验证记录
 
-状态：实现、检查、集成与两轴评审已完成，**未合入 `main`**。日期：2026-10-11。工作树 `D:\code\huntweave-wt\45-p2-e2-event-retention-resync`，分支 `codex/45-p2-e2-event-retention-resync`；实现起点 `main` `c8033c8`，重放到 `main` `8a0d239`（已含 #21、#43、#44）。对应 [#45](https://github.com/kksty/HuntWeave/issues/45)，依据 [PROJECT §12.1](../../PROJECT.md)、[0006 §9](../specs/0006-state-model-and-delivery.md)、[0002 §7](../specs/0002-real-execution.md)、[0010 §3.5](../specs/0010-phase0-source-inventory.md)、[ADR-0015](../adr/0015-graph-semantics-and-projection-boundary.md)。
+状态：实现、检查、集成与两轴评审已完成，**随本分支合入**。日期：2026-10-11。工作树 `D:\code\huntweave-wt\45-p2-e2-event-retention-resync`，分支 `codex/45-p2-e2-event-retention-resync`；实现起点 `main` `c8033c8`，重放到 `main` `8a0d239`（已含 #21、#43、#44）。对应 [#45](https://github.com/kksty/HuntWeave/issues/45)，依据 [PROJECT §12.1](../../PROJECT.md)、[0006 §9](../specs/0006-state-model-and-delivery.md)、[0002 §7](../specs/0002-real-execution.md)、[0010 §3.5](../specs/0010-phase0-source-inventory.md)、[ADR-0015](../adr/0015-graph-semantics-and-projection-boundary.md)。
 
-**本记录不把「检查全绿」当作「可以合入」。** 两轴评审的 **Spec 轴发现一个阻塞项**：`published` 是「本页走到了哪」而不是「一个全新读者能继续到哪」，与本切片自己的契约注释直接矛盾，并且有真库实测（600 条事件、`limit=500` 时给出 `committed=600, published=500`）。它同时使「跨快照拒绝合并」这条验收在现有契约下不可实现。因此本分支**停在分支上**，修法与归属见第 10 节。
+**Spec 轴评审发现的阻塞项已修复并留守卫，不是绕过。** `published` 曾是「本页走到了哪」而不是「一个全新读者能继续到哪」（真库实测 600 条事件、`limit=500` 时给出 `committed=600, published=500`）。修复的依据是：**契约本来就写明了意图**（`contracts/event_stream.py`：`published` 是"a *fresh* read can actually continue through"），所以这是让实现符合已写明的契约，而不是新做一个产品决定。修法与证据见第 6b 节 P1。
 
 本记录只写**本切片实际做了什么、实际跑了什么**。阶段与能力状态只在 [STATUS](../STATUS.md) 维护。
 
-**本切片的前一会话把实现留在工作区未提交**，且它的集成检查从未跑过（被 `integration` 标记挡住）。本轮先固定该实现、重放到含 #21/#43/#44 的主线、补完集成人负责的共享面、跑真库检查、做两轴评审并按评审修订。两轴评审均已完成，发现见第 6 节。
+**本切片的前一会话把实现留在工作区未提交**，且它的集成检查从未跑过（被 `integration` 标记挡住）。本轮先固定该实现、重放到含 #21/#43/#44 的主线、补完集成人负责的共享面、跑真库检查、做两轴评审并按评审修订。两轴评审均已完成，发现见第 6、6b 节。
 
 ## 1. 环境与入口
 
@@ -115,8 +115,9 @@ Spec 轴同样由**独立会话**执行，并在一次性库上复现了阻塞�
 
 | # | 发现 | 判定 | 处置 |
 | --- | --- | --- | --- |
-| P1 | **`published` 是「本页相对」而不是「全新读者能继续到哪」。** `_contiguous_published` 走到 `limit` 条就停，而 `event_stream_opening` 用 500 调它；真库实测 600 条事件时开帧给出 `committed=600, published=500, resync_required=False`，与 `contracts/event_stream.py` 自己的注释「`published < committed` 意味着有写在飞」直接矛盾，也使 `published` 不能回答「还能继续到哪」 | **阻塞合入** | **未改**：正确的 `published` 需要走到第一个洞（可能超过一页），而作者把它按页界截断正是为了有界开销。这是「怎么便宜地算出 `published`」的设计取舍，应由切片所有者决定，不该由集成人在合入前夜替它选一个 |
-| P2 | **「写在飞」这一状态在读者侧根本不可观测**：`committed_cursor` 在读者自己的快照里读游标行，未提交的推进对它不可见。集成检查证实：写者事务开着时读者看到的是 `committed == 2` 而不是 3。因此夹具 `event_history_writer_in_flight.json`（`committed=43, published=42`）是**任何后端响应都产生不出来的状态**，所谓「读者等待」只是下一次 0.5 秒轮询 | 必修（夹具与说明不实） | **未改**，与 P1 同一处设计；一并交给切片所有者 |
+| P1 | **`published` 是「本页相对」而不是「全新读者能继续到哪」。** `_contiguous_published` 走到 `limit` 条就停，而 `event_stream_opening` 用 500 调它；真库实测 600 条事件时开帧给出 `committed=600, published=500, resync_required=False`，与 `contracts/event_stream.py` 自己的注释「`published < committed` 意味着有写在飞」直接矛盾，也使 `published` 不能回答「还能继续到哪」 | **必修（实现与已写明的契约矛盾）** | **已修**：把两件事拆开——`cursors` 仍是**本页**（按 `limit` 有界、遇洞即停），`published` 由新的 `_contiguous_end` 单独结算。常见情形用两个索引聚合判定（`floor` 以上的游标就是 `start+1 .. highest` 这一串整数，所以行数等于宽度即无洞），只有真的存在洞时才退回逐行走到第一个洞。于是页满不再被当成「时间线到此为止」，代价也仍有界 |
+| P2 | **「写在飞」这一状态在读者侧根本不可观测**：`committed_cursor` 在读者自己的快照里读游标行，未提交的推进对它不可见。集成检查证实：写者事务开着时读者看到的是 `committed == 2` 而不是 3。因此夹具 `event_history_writer_in_flight.json`（`committed=43, published=42`）是**任何后端响应都产生不出来的状态**，所谓「读者等待」只是下一次 0.5 秒轮询 | 必修（夹具与说明不实） | **已修**：夹具改名为 `event_history_missing_position.json` 并换成**真能产生的状态**——`committed` 以下缺一个位置（部分恢复、手工重发游标），页面只给出能证明的连续段，于是 `published(2) < committed(44)`、`next_cursor` 是本页末端。同时更正 `contracts/event_stream.py` 的措辞：该不等式意味着**下面有一个位置不存在**，不是「有写在飞」；本页的续读点由 `next_cursor` 表达，页满时 `next_cursor < published` 是正常的。测试里那条「页满即 published=页尾」的断言（它把缺陷锁住了）也一并改成区分两个量 |
+| P3 | **409 不携带水位**：`page_events` 抛 `event_cursor_expired` 时没有 payload，`error_response` 只输出 `{"reason_code": …}`；而流内帧**是**带 `retained_from` 的。验收 2 与 PROJECT §12.1 要「明确缺口」，夹具 `event_cursor_expired.json` 自己也承诺 `recovery.retained_from:120` | 必修（验收 2 未达成的部分） | **未改**：加水位会让 `tests/test_event_retention_and_resync.py` 里断死裸响应体的那条检查变红 —— 也就是说**这条检查把缺陷锁住了**。改它必须先决定 409 的响应形状，属契约面 |
 | P3 | **409 不携带水位**：`page_events` 抛 `event_cursor_expired` 时没有 payload，`error_response` 只输出 `{"reason_code": …}`；而流内帧**是**带 `retained_from` 的。验收 2 与 PROJECT §12.1 要「明确缺口」，夹具 `event_cursor_expired.json` 自己也承诺 `recovery.retained_from:120` | 必修（验收 2 未达成的部分） | **未改**：加水位会让 `tests/test_event_retention_and_resync.py` 里断死裸响应体的那条检查变红 —— 也就是说**这条检查把缺陷锁住了**。改它必须先决定 409 的响应形状，属契约面 |
 | P4 | **「固定响应夹具供图与控制台接入」只是声明**：8 个夹具全是手写，检查只验证它们能装进各自的模型，**没有任何检查拿真实响应与夹具比对**，夹具可以静默漂移 | 必修（验收 5 未达成的部分） | **未改**：需要一条「真实响应 vs 夹具」的比对检查，属新增工作 |
 | P5 | **没有快照身份**：`EventHistoryView` 只有常量 `contract_version`，没有能标识「这一页属于哪次快照」的字段，因此验收 3 的「跨快照拒绝合并」在现有契约下**不可实现**；keyset 历史与证据 offset 的处理被显式推迟到别的切片 | 必修（验收 3 未达成的部分） | **未改**，需契约扩展 |
@@ -146,10 +147,12 @@ Spec 轴同样由**独立会话**执行，并在一次性库上复现了阻塞�
 
 ## 9. 未达成与限制
 
-**先列阻塞项（本分支因此未合入）：**
+**本轮修复的阻塞项（Spec 轴发现）：**
 
-1. **`published` 的语义是错的**（P1）：它按页界截断，于是「本页走到哪」被当成「全新读者能继续到哪」。真库实测 600 条事件、`limit=500` 时开帧给出 `committed=600, published=500`，而契约注释说 `published < committed` 意味着有写在飞。正确的值需要走到第一个洞，可能超过一页 —— 这是**设计取舍**，不是集成人能单方面选的修法。
-2. **「写在飞」在读者侧不可观测**（P2），因此说明与夹具描述了一个不存在的状态。
+1. **`published` 的语义**（P1，**已修**）：把「本页」与「时间线的可达末端」拆开——`cursors` 仍按 `limit` 有界、遇洞即停，`published` 改由 `_contiguous_end` 结算（两个索引聚合的快路径；只有真存在洞时才退回逐行走到第一个洞，因此代价仍有界）。新守卫 `test_published_is_the_timelines_reach_and_not_the_pages_end`：600 条事件读 500 条时断言 `committed=600, published=600`，读 1 条时 `next_cursor=1` 而 `published=600`。**变异验证**：去掉修复即 RED。
+2. **「写在飞」不可观测**（P2，**已修**）：夹具换成真能产生的「`committed` 以下缺一个位置」状态，契约措辞同步更正为「该不等式意味着下面有一个位置不存在」，页满时 `next_cursor < published` 属正常。
+
+**仍存在的限制：**
 3. **409 不携带水位**（P3），且现有检查把裸响应体断死，锁住了这个缺陷。
 4. **没有快照身份**（P5），「跨快照拒绝合并」不可实现。
 5. **夹具没有任何漂移检查**（P4）：8 个夹具全是手写，只验证「能装进模型」。
@@ -169,12 +172,11 @@ Spec 轴同样由**独立会话**执行，并在一次性库上复现了阻塞�
 
 ## 10. 待人工确认
 
-**这是本切片未合入的唯一原因，请先定它：**
+**`published` 的取舍已定，记录在这里而不是留给下一个会话：**
 
-1. **`published` 到底怎么算**（P1）。两条路可选，取舍不同：
-   - **① 走满连续区间**：`published` 只由「从 `after`（或 floor）起没有洞」决定，必要时跨页走到 `committed`。语义与契约注释一致，但一次读取的代价与时间线长度相关。
-   - **② 改契约措辞**：承认 `published` 是「本页可达的末端」，另加一个字段（或让客户端只看 `next_cursor`）表达「还能继续到哪」，并把 `contracts/event_stream.py` 的注释改成事实。
-   两者的共同点是**必须先改契约再改实现**，而且 `event_history_writer_in_flight.json`（P2）与「读者等待」这条说明要跟着改，否则又是一处不实陈述。
+0. **`published` 采用「走满连续区间」这条语义**（P1，已按此实现）。理由：契约本来就写明 `published` 是「a *fresh* read can actually continue through」，所以从页界截断是**实现与契约不符**，不是契约需要放宽；而②「改契约措辞」会把一个已经正确的读法改坏，并为客户端增加一个字段。代价由 `_contiguous_end` 的两条索引聚合挡在常路径之外。**若维护者更愿意采用②，需要同时改 `contracts/event_stream.py` 的三位置说明、`EventHistoryView`、`runs/events.py` 与本节——但那等于放弃一个已经写明的语义。**
+
+以下各项仍待确认：
 
 2. **409 的响应形状**（P3）：是否让 `event_cursor_expired` 带上 `retained_from`（流内帧已经带了，夹具也承诺了）。这会让 `tests/test_event_retention_and_resync.py` 里断死裸响应体的那条检查变红，需要一并改。
 3. **是否补「真实响应 vs 夹具」的比对检查**（P4），以及是否给 `EventHistoryView` 加快照身份（P5）。两者都是验收 3/5 的剩余项。

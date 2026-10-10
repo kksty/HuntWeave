@@ -114,7 +114,7 @@ FIXTURE_FILES = {
     "event_cursor_ahead.json",
     "event_cursor_expired.json",
     "event_history_page.json",
-    "event_history_writer_in_flight.json",
+    "event_history_missing_position.json",
     "event_retention_view.json",
     "event_stream_retention.json",
     "heartbeat.json",
@@ -303,7 +303,7 @@ def test_the_fixture_set_is_complete_and_each_sample_loads_into_the_contract_it_
 
 
 def test_the_fixtures_cover_the_states_a_client_must_tell_apart() -> None:
-    """Current, writer-in-flight, expired cursor, ahead cursor, revoked session, pruned timeline."""
+    """Current, missing position, expired cursor, ahead cursor, revoked session, pruned timeline."""
     assert {sample["state"]["must_fail"] for sample in fixtures()} >= {
         None,
         "cursor_expired",
@@ -311,10 +311,17 @@ def test_the_fixtures_cover_the_states_a_client_must_tell_apart() -> None:
         "session_revoked",
     }
     page = next(s for s in fixtures() if s["name"] == "event_history_page")
-    in_flight = next(s for s in fixtures() if s["name"] == "event_history_writer_in_flight")
+    missing = next(s for s in fixtures() if s["name"] == "event_history_missing_position")
     assert page["payload"]["published"] == page["payload"]["committed"]
-    assert in_flight["payload"]["published"] < in_flight["payload"]["committed"]
-    assert in_flight["payload"]["events"] == []
+    # `published < committed` states that a position below `committed` does not exist, and the page
+    # that proves it cannot be empty: asking to continue from the end of the contiguous run before
+    # a hole is refused with `event_cursor_ahead`, not answered with an empty 200. An uncommitted
+    # write cannot produce this inequality at all, because `committed` is read in the reader's
+    # snapshot.
+    assert missing["payload"]["published"] < missing["payload"]["committed"]
+    assert missing["payload"]["events"] != []
+    assert missing["payload"]["next_cursor"] == missing["payload"]["published"]
+    assert missing["payload"]["resync_required"] is False
 
 
 def test_every_reason_a_fixture_names_has_a_sentence_in_the_console() -> None:
@@ -383,27 +390,33 @@ def test_a_page_never_contains_a_position_the_reader_cannot_continue_from(
 ) -> None:
     """PROJECT.md section 12.1: a cursor must not pass an event that is not yet published.
 
-    Two readings of the same row are checked here: a page limited to one event stops at cursor 1 and
-    reports `published == 1`, and the next page continues from the reported `next_cursor` rather
-    than jumping. A client that follows `next_cursor` therefore sees every event exactly once and in
-    order, which is the property the sentence is about; the concurrent-writer half needs a real row
-    lock and lives in `test_event_retention_integration.py`.
+    Two readings of the same row are checked here, and they are deliberately kept apart because
+    conflating them is what made `published` page-relative: `next_cursor` is where *this* reader
+    continues (it was handed one event), while `published` is how far a *fresh* reader can continue
+    through. A page limited to one event therefore stops at cursor 1 with `next_cursor == 1`, yet
+    reports `published == 3` because the whole timeline is contiguous. A client that follows
+    `next_cursor` sees every event exactly once and in order, which is the property the sentence is
+    about; the concurrent-writer half needs a real row lock and lives in
+    `test_event_retention_integration.py`.
     """
     run_id = a_run(engine)
     write_events(engine, run_id, 3)
     with Session(engine) as session:
         first = page_events(session, run_id, 0, 1)
         assert [event["cursor"] for event in first.events] == [1]
-        # `published` is how far *this* page reaches, not how deep the unread timeline is: the
-        # client is told what it may trust, which is one event, not three it has not been given.
-        assert first.published == 1 and first.committed == 3
         assert first.next_cursor == 1
+        assert first.published == 3 and first.committed == 3
         second = page_events(session, run_id, first.next_cursor, 1)
         assert [event["cursor"] for event in second.events] == [2]
         assert second.next_cursor == 2
         third = page_events(session, run_id, second.next_cursor, 100)
         assert [event["cursor"] for event in third.events] == [3]
         assert third.published == 3 and third.next_cursor == 3
+        # Paging on `next_cursor` is what delivers the timeline, and `published` is the reach a
+        # fresh reader gets in one answer — the two must agree on where the timeline ends.
+        delivered = [event["cursor"] for event in first.events + second.events + third.events]
+        assert delivered == [1, 2, 3]
+        assert third.published == delivered[-1]
 
 
 def test_a_hole_in_the_timeline_stops_the_reader_instead_of_being_walked_over(

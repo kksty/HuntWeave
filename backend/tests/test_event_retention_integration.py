@@ -434,3 +434,28 @@ def test_a_prune_is_idempotent_and_never_rewinds_the_watermark(engine: Engine) -
     assert third.pruned is False
     with Session(engine) as session:
         assert retained_from_cursor(session, run_id) == second.retained_from
+
+
+def test_published_is_the_timelines_reach_and_not_the_pages_end(engine: Engine) -> None:
+    """`published` answers "how far can a fresh reader continue", not "where did this page stop".
+
+    A page that fills up means there is more to read. Reporting its last cursor as `published` made
+    the three positions lie about a timeline that is entirely contiguous: measured on a real Run of
+    600 events read 500 at a time, the opening frame said `committed=600, published=500`, which by
+    this platform's own contract means "a position below `committed` is missing". Nothing was
+    missing. The reach must not depend on the page size either.
+    """
+    run_id = a_run(engine)
+    write_events(engine, run_id, 600)
+    with Session(engine) as session:
+        page = page_events(session, run_id, 0, 500)
+        assert len(page.events) == 500
+        assert page.next_cursor == 500
+        assert page.committed == 600
+        assert page.published == 600
+        assert page.resync_required is False
+    with Session(engine) as session:
+        small = page_events(session, run_id, 0, 1)
+        assert [event["cursor"] for event in small.events] == [1]
+        assert small.next_cursor == 1
+        assert small.published == 600

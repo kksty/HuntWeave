@@ -10,12 +10,19 @@ Those two sentences are one protocol, and this module is its wire form. Three po
 distinguishable by a client that has only the response in front of it:
 
 `committed`
-    The highest cursor a writer has claimed. It can be ahead of what is readable, because the writer
-    may still hold the Run's cursor row lock; a client must never treat it as "everything here is
-    fetchable".
+    The highest cursor a writer has claimed. It is read in the reader's own snapshot, so an
+    increment that has not committed yet is *not* visible here: this position never runs ahead of
+    the rows a reader can see. A client must still not treat it as "everything here is fetchable" —
+    see `published`.
 `published`
-    The highest cursor a *fresh* read can actually continue through. `published == committed` means
-    the client's cursor is current; `published < committed` means a write is in flight.
+    The highest cursor a *fresh* read can actually continue through, over the whole timeline rather
+    than over the page it happened to ask for. `published == committed` means the timeline below
+    `committed` is unbroken and the client's cursor is current; `published < committed` means a
+    position below `committed` does **not** exist — a hole from a partial restore or a hand-reissued
+    cursor — and that is a different statement from "a write is in flight" (an uncommitted write is
+    invisible to this read, so it cannot produce this inequality). The per-page continuation point
+    is `next_cursor`, which is bounded by the page: a full page legitimately has
+    `next_cursor < published`.
 `retained_from`
     The highest cursor whose events retention removed. `after < retained_from` is a *gap*: the
     events are gone, and the only correct continuation is to take the state snapshot again and

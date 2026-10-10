@@ -1,0 +1,48 @@
+{
+  "name": "event_history_missing_position",
+  "kind": "response",
+  "materializes": {
+    "model": "event_history",
+    "status": "200"
+  },
+  "reason_code": null,
+  "state": {
+    "must_fail": null
+  },
+  "describes": "A position below `committed` does not exist: the timeline holds cursors 1..42 and 44, and 43 was never written (a partial restore of the event table, or a cursor reissued by hand). The page is the contiguous run it can prove — cursors 1 and 2 here — so `published` (2) stays below `committed` (44) and `next_cursor` is the page's own end. The client must not resync (nothing was pruned) and must not walk over the hole: asking to continue from 2 is answered with `event_cursor_ahead`, which is the `cursor_ahead` fixture's job. An uncommitted write cannot produce this: `committed` is read in the reader's own snapshot, so a claim that has not committed is invisible rather than ahead.",
+  "payload": {
+    "run_id": "99999999-9999-4999-8999-999999999999",
+    "contract_version": 1,
+    "events": [
+      {
+        "cursor": 1,
+        "type": "decision",
+        "payload": {
+          "index": 0
+        },
+        "created_at": "2026-10-11T09:00:00+00:00"
+      },
+      {
+        "cursor": 2,
+        "type": "decision",
+        "payload": {
+          "index": 1
+        },
+        "created_at": "2026-10-11T09:00:01+00:00"
+      }
+    ],
+    "after": 0,
+    "committed": 44,
+    "published": 2,
+    "retained_from": 0,
+    "next_cursor": 2,
+    "gap": false,
+    "resync_required": false,
+    "reload_reason": null
+  },
+  "source": {
+    "file": "backend/src/huntweave/runs/events.py",
+    "lines": "160-210",
+    "note": "`committed` is `EventCursor.cursor`, read in the reader's snapshot; `published` is how far a fresh read continues, settled by `_contiguous_end` (two index aggregates, with a row-by-row fallback at the first hole), while `next_cursor` is the page's own end."
+  }
+}

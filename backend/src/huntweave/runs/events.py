@@ -55,7 +55,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from huntweave.contracts.errors import ServiceError
@@ -157,16 +157,49 @@ def retained_from_cursor(session: Session, run_id: UUID) -> int:
     return cursor.retained_from_cursor if cursor else 0
 
 
+def _contiguous_end(session: Session, run_id: UUID, start: int) -> int:
+    """How far a fresh reader can continue from ``start``, ignoring any page bound.
+
+    The contract's ``published`` is a statement about the *timeline*, not about the page one caller
+    happened to ask for, so it cannot be the page's last cursor. Two index aggregates settle the
+    common case: the cursors above ``start`` are the integers ``start + 1 .. highest``, so the run
+    reaches ``highest`` exactly when the number of rows equals that width. Only a genuine hole — a
+    partial restore of the event table, a hand-reissued cursor — falls back to walking row by row,
+    and that fallback stops at the first hole rather than at the end of the timeline.
+    """
+    highest = session.scalar(select(func.max(AuditEvent.cursor)).where(AuditEvent.run_id == run_id))
+    if highest is None or int(highest) <= start:
+        return start
+    width = session.scalar(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(AuditEvent.run_id == run_id, AuditEvent.cursor > start)
+    )
+    if int(width or 0) == int(highest) - start:
+        return int(highest)
+    published = start
+    for cursor in session.scalars(
+        select(AuditEvent.cursor)
+        .where(AuditEvent.run_id == run_id, AuditEvent.cursor > start)
+        .order_by(AuditEvent.cursor)
+    ):
+        if cursor != published + 1:
+            break
+        published = cursor
+    return published
+
+
 def _contiguous_published(
     session: Session, run_id: UUID, after: int, limit: int, floor: int
 ) -> tuple[int, list[int], bool]:
-    """The contiguous run of cursors from ``max(after, floor)``, how far it reaches, and whether the
-    cursor the caller asked from is itself a position the timeline has.
+    """The page of contiguous cursors from ``max(after, floor)``, how far the timeline reaches, and
+    whether the cursor the caller asked from is itself a position the timeline has.
 
-    The timeline is only readable up to the first missing cursor, so the walk stops there. Walking
-    one row at a time is affordable — the walk is bounded by the page the caller asked for — and it
-    is the only way to answer the question the contract actually asks: "can a client continue from
-    here without missing anything?", rather than the weaker "is anything ahead?".
+    Two different questions live here and must not be answered by one bound. ``cursors`` is the
+    *page*: what this caller may render, at most ``limit`` events, stopping at the first hole. The
+    returned published position is how far a *fresh reader* can continue, and a full page means
+    "there is more to read", not "the timeline ends here" — so a page that stopped because it was
+    full has its reach settled by `_contiguous_end` instead.
 
     The walk starts at ``max(after, floor)`` because a pruned region genuinely does not contain the
     predecessors of its first survivor; inside the retained region, a missing cursor is a hole.
@@ -189,6 +222,10 @@ def _contiguous_published(
             break
         published = cursor
         cursors.append(cursor)
+    if len(cursors) == limit:
+        # The page stopped because it was full. Whether the *timeline* continues is a different
+        # question, and answering it with the page's end is what made `published` page-relative.
+        published = _contiguous_end(session, run_id, start)
     # The cursor the client asked from is a position the timeline has. At or below the retained
     # floor that is true by construction — those cursors were pruned, which `page_events` already
     # answered with the gap code — and inside the retained region it is true exactly when the
