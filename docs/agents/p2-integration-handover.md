@@ -137,5 +137,22 @@ D1 与 D3 是同一类：**实现期的夹具按 `c8033c8` 的语义写，重放
   在 **worktree 的 `backend/` 目录内**运行（pytest 按 rootdir 解析 `pythonpath=src`）。
 - **同一个一次性库不能被两个检查进程同时使用**：`conftest.py` 的 autouse 夹具会清空 Run 相关表，并发跑会出现**假失败**（本轮出现过一次 8 项假失败）。要并行就各起一个项目/端口。
 - 安全快照 tag（`wip-44-preintegration`、`wip-45-preintegration`）已删除：两支的工作都已提交在分支上。
-- 分支与 worktree 的清理规则：合入后立即 `git worktree remove` ＋ `git branch -d`（`#43`、`#44` 已按此办理，`#45` 待合入后办理）。
+- 分支与 worktree 的清理规则：合入后立即 `git worktree remove` ＋ `git branch -d`（`#43`、`#44`、`#45` 都已办理）。
+- 两个一次性库（`hw-review43-pg`、`hw-e2-retention`）与 `#44` 的 `huntweave-i44-facts` 都已清理：三支合入后不再需要，现在只剩常驻项目 `huntweave`。
+
+## 13. 浏览器验收（本轮首次执行）与一个未结的发现
+
+三支的验证记录都写明「未跑浏览器验收」，本轮**补跑了**：用 README 的一次性栈流程（`huntweave-p0-checks`，`127.0.0.1:18000`，`docker compose … build app` ＋ `up -d --wait`），`npx playwright install chromium`，然后 `npm run test:e2e:full`。
+
+**结果：14 passed / 1 failed / 1 skipped。** 栈与卷已 `down -v` 清理干净，常驻项目未受影响。
+
+唯一失败是 [\#79](https://github.com/kksty/HuntWeave/issues/79)，要点：
+
+- `authorized-run.spec.ts:158`（暂停 → 重载 → 恢复 → 证据 → 人工结束）在**合入后确定性失败**，在**合入前通过**（A/B：新代码跑一次性栈、旧代码跑常驻栈，spec 文件未被本批改动）。
+- 失败是 `暂停 Run` 按钮在 5s 内点不到。查一次性栈的库：该 Run 到达 **`waiting`/`awaiting_human`**、12 个调用全部 `succeeded`、216 条事件、自动阶段约 **6.96s**——**终态正确**，所以直接原因是自动阶段快于测试的 `actionTimeout(5s)`，而不是暂停功能坏掉。
+- 取消用例（`:214`）通过，因为 `canCancel` 覆盖到 `waiting`；而 **`暂停 Run` 只有这一条用例覆盖**，窗口收窄后这条操作路径实际上没有可复现的验收了。
+- 已排除：`FakeParameters(duration_ms=…)` 合入前后完全一致。
+- **未定位**：为什么自动阶段变快了（候选：模型调用移出行锁事务后调度轮次不再被串行化；`#21` 的 `claim()` 不再让在飞 Run 白占轮次）。
+
+**下一会话若要继续这件事，先判断 #79 是「产品缺陷」还是「测试的时序假设过期」**——终态正确、按钮条件未变，我倾向后者，但那要由维护者定，且无论如何都该补一条不依赖时序的暂停检查。**另注意：这些记录里的「未跑容器内检查与靶场探针」仍然成立**（本轮只补了浏览器验收）。
 
