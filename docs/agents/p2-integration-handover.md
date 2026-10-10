@@ -12,37 +12,34 @@
 | [#33](https://github.com/kksty/HuntWeave/issues/33) V-A token 层与字体自托管 | `3ca3684` | `frontend/src/tokens.css`（唯一色值来源）、五个 OFL 字族自托管、`npm run check:design`（16 项，**已接入 CI**） | [0021](../validation/0021-visual-tokens.md) |
 | [#38](https://github.com/kksty/HuntWeave/issues/38) P2 Phase 0 | `c8033c8` | [0010 来源盘点与契约交接](../specs/0010-phase0-source-inventory.md)、`contracts/phase0.py`、8 个必失败样例 | [0023](../validation/0023-phase0-source-inventory.md) |
 | [#21](https://github.com/kksty/HuntWeave/issues/21) 多活跃 Run 并发压力验收 | `42cf892` | `contracts/resources.py` 版本化资源政策、同 IP 串行、额度耗尽背压、`claim()` 不再白占轮次 | [0022](../validation/0022-concurrency-quota.md) |
-| [#43](https://github.com/kksty/HuntWeave/issues/43) P2-A1 事务外模型请求 | `2ca7ca8`（**`main` 现 head**） | 三段协议 `begin_planning → 事务外模型判断 → commit_planning`、独立任务/会话/决策身份、`0009_planning_attempt_identity` | [0024](../validation/0024-model-outside-transactions.md) |
+| [#43](https://github.com/kksty/HuntWeave/issues/43) P2-A1 事务外模型请求 | `2ca7ca8` | 三段协议 `begin_planning → 事务外模型判断 → commit_planning`、独立任务/会话/决策身份、`0009_planning_attempt_identity`；合入后又补了 `#21` 压力夹具的 `task_id` 与 `0003` 的 `plan()` 引用（`d9e5561`） | [0024](../validation/0024-model-outside-transactions.md) |
+| [#44](https://github.com/kksty/HuntWeave/issues/44) P2-B1 服务事实与血缘 | `8a0d239`（**`main` 现 head**） | Host/Service/WebEndpoint 程序计算身份、追加式观察、ADR-0015 的四记录、跨 Run 冻结血缘、线索不扩授权、`0010_service_facts`（11 张表） | [0025](../validation/0025-service-facts-and-lineage.md) |
 
-`main` 现 head：`2ca7ca8`，比 `origin/main` **ahead 8**，**尚未 push**。GitHub 侧的 Issue 状态**一律未动**（未评论、未关闭、未改标签）：推送与关闭由维护者决定。
+`main` 现 head：`8a0d239`，比 `origin/main` **ahead 15**，**尚未 push**。GitHub 侧的 Issue 状态**一律未动**（未评论、未关闭、未改标签）：推送与关闭由维护者决定。
 
-`main` 上的纯检查（`cd backend`，`python -m pytest -m "not integration" -q`）：**331 passed, 16 skipped, 54 deselected**；ruff、mypy 干净。
+`main` 上的纯检查（`cd backend`，`python -m pytest -m "not integration" -q`）：**332 passed, 15 skipped, 54 deselected**（该检出含 `frontend/dist`，因此比 worktree 环境少一项跳过）；ruff、mypy 干净。
 
-## 2. 进行中（各有独立 worktree + 分支，**均未 push**）
+> **`#45` 没有合入，这是有意的。** 它的实现、集成、真库检查与两轴评审都已完成并提交在分支上，但 Spec 轴评审发现一个**阻塞项**：`published` 是「本页走到了哪」而不是「一个全新读者能继续到哪」（真库实测 600 条事件、`limit=500` 时给出 `committed=600, published=500`），与本切片自己的契约注释矛盾，并使「跨快照拒绝合并」在现有契约下不可实现。详见 [0026](../validation/0026-event-retention-and-resync.md) 第 6b、9、10 节。**下一个会话的第一件事是定 `published` 的语义，而不是继续加检查。**
+
+## 2. 进行中（独立 worktree + 分支，**未 push**）
 
 分支命名 `codex/<编号>-<slug>`，worktree 在 `D:\code\huntweave-wt\<编号>-<slug>`。
 
-**两支的工作都还在工作区里、尚未提交。** 本轮已为它们各打了一个**安全快照 tag**（先 `git add -A`，再 `git stash create` 取对象、打 tag，最后 `git reset`；工作区与分支都未被改动，快照含未跟踪新文件）：
+`#44` 已合入并退役（worktree 与分支都已删除）。**只剩 `#45`**，它的工作**已全部提交在分支上**（不再是「留在工作区」的状态），19 个提交、工作区干净：
 
-| 票 | 分支 / worktree | 安全快照 | 状态 |
+| 票 | 分支 / worktree | head | 状态 |
 | --- | --- | --- | --- |
-| [#44](https://github.com/kksty/HuntWeave/issues/44) P2-B1 服务事实与血缘 | `codex/44-p2-b1-facts-and-lineage` / `D:\code\huntweave-wt\44-p2-b1-facts-and-lineage` | tag `wip-44-preintegration` = `969e50b` | 实现完整、未提交、未 rebase、**未接线** |
-| [#45](https://github.com/kksty/HuntWeave/issues/45) P2-E2 事件保留与补拉 | `codex/45-p2-e2-event-retention-resync` / `D:\code\huntweave-wt\45-p2-e2-event-retention-resync` | tag `wip-45-preintegration` = `4b642ec` | 同上 |
+| [#45](https://github.com/kksty/HuntWeave/issues/45) P2-E2 事件保留与补拉 | `codex/45-p2-e2-event-retention-resync` / `D:\code\huntweave-wt\45-p2-e2-event-retention-resync` | `267b725` | 实现＋集成＋真库检查＋两轴评审都已完成；**因 Spec 轴的阻塞项未合入** |
 
-取回单个文件：`git -C <worktree> checkout <tag> -- <path>`；看整支差异：`git -C <worktree> diff <tag>`。
+安全快照 tag 已删除（工作已提交，tag 不再需要）。分支的 4 个提交依次是：前一会话的实现原样固定 → 集成补完（迁移线性化、删两条同路径内联路由、修 `created_at` 覆写与三处夹具缺陷）→ 按 Standards 轴修三处不实陈述 → 验证记录 0026。
 
-两支都从 `c8033c8` 切出（**早于 #21 与 #43**），因此都必须先 `git rebase main` 再补完。
+**下一步不是继续加检查，而是先定 `published` 的语义**（见第 1 节末的提示与 [0026](../validation/0026-event-retention-and-resync.md) 第 10 节的两条路）。
 
 ## 3. 合入顺序与迁移链
 
-`#43` 已合入，余下两支各自新增一条迁移，都仍指向 `0008_retention_decisions`，合入时**必须线性化**：
+`#43`、`#44` 已合入。**只剩 `#45` 的迁移**，它已经线性化好（`down_revision = "0010_service_facts"`，`BUSINESS_REVISIONS` 已是四项线性元组，并在一次性库上真实升级过 `0010 → 0011`），因此合入时**不需要**再改迁移编号，只需在合入后确认单一 head。
 
-| 顺序 | 票 | 迁移 | 合入时要做的 |
-| --- | --- | --- | --- |
-| 1 | `#44` | `0010_service_facts` | `down_revision` 改为 `0009_planning_attempt_identity`；`storage/database.py` 的 `BUSINESS_REVISIONS` 补成线性 `("0008_retention_decisions", "0009_planning_attempt_identity", "0010_service_facts")`；迁移文件 docstring 里 `Revises: 0008_retention_decisions` 一行同步 |
-| 2 | `#45` | `0011_event_retention` | `down_revision` 改为 `0010_service_facts`；`BUSINESS_REVISIONS` 补到 `0011` |
-
-每步保持**单一 head**，`tests/test_phase0_contracts.py::test_the_migration_chain_is_linear_and_has_exactly_one_head` 会抓分叉。注意同一文件的表清单守卫读 `0010-phase0-source-inventory.md` 里**声明为基线的 head**，改那句话会同时改守卫允许的表范围——两者要一起改。
+`tests/test_phase0_contracts.py::test_the_migration_chain_is_linear_and_has_exactly_one_head` 会抓分叉。注意同一文件的表清单守卫读 `0010-phase0-source-inventory.md` 里**声明为基线的 head**（仍保持 `0008`，这是有意留的），改那句话会同时改守卫允许的表范围——两者要一起改。
 
 ## 4. `#43` 的合成：已做完，但本轮查出三处漏项
 
@@ -118,8 +115,31 @@ D1 与 D3 是同一类：**实现期的夹具按 `c8033c8` 的语义写，重放
 
 - **CIDR 是否纳入范围**（`0008 §6` 的 5 项待确认，[ADR-0026](../adr/0026-contract-alignment-readiness-cidr-and-queue.md) 记为唯一未决项）：未决定前保留 IP-only 与 `TARGET_LIMIT = 100`，C-F（[#30](https://github.com/kksty/HuntWeave/issues/30)）不含 CIDR 展开。**只阻塞 C-F**。
 - **P1 阶段与里程碑**：P1 切片已全部交付，但**真实执行仍未开放**——[ADR-0010](../adr/0010-real-execution-boundary-and-gate.md) 四项门槛尚缺 `profile_revalidation` 与 `deployment_revert`，产品继续拒绝创建真实 Run。门槛补齐归 [#39](https://github.com/kksty/HuntWeave/issues/39)。**阶段退出与里程碑关闭是维护者决定**，本文件不代为宣布。
-- **推送与关闭 Issue**：`main` 已 ahead 8 且未 push；GitHub 侧一律未动。这是维护者的动作。
+- **推送与关闭 Issue**：`main` 已 ahead 15 且未 push；GitHub 侧一律未动（未评论、未关闭、未改标签）。这是维护者的动作。
 
 ## 11. 后续可执行前沿（不变）
 
-`#44`/`#45` 合入后：`#46`/`#47`（维护收尾，等 `#40`–`#42`）、`#49`–`#52`（第二层），以及关键路径上的 `#39`→`#59`→…。可选票 `#48`（Linux 宿主复验）在未被领取前不进入任何一批的可执行前沿；`#32` 是 **P1 期的实测票**（三个热点：`agentd` 顺序推进、`ledger._persist()` 全量序列化、事件游标行锁），与 `#21` **串行使用验收环境**、口径不同。
+`#45` 合入后：`#46`/`#47`（维护收尾，等 `#40`–`#42`）、`#49`–`#52`（第二层），以及关键路径上的 `#39`→`#59`→…。可选票 `#48`（Linux 宿主复验）在未被领取前不进入任何一批的可执行前沿；`#32` 是 **P1 期的实测票**（三个热点：`agentd` 顺序推进、`ledger._persist()` 全量序列化、事件游标行锁），与 `#21` **串行使用验收环境**、口径不同。
+
+## 12. 本轮结束时的环境与遗留（下一会话直接可用）
+
+- **一次性数据库**（不是常驻项目，`huntweave` 全程只读）：
+  - `hw-review43-pg`：postgres，`127.0.0.1:18931`，schema 已升到 **`0011_event_retention`**。`#45` 的续作直接用它即可。
+  - `hw-e2-retention`：postgres，`127.0.0.1:18455`（`#45` 自己的那份，未被本轮使用）。
+  - `#44` 的 `huntweave-i44-facts` 已随其 worktree 退役**清理完毕**（容器、卷、网络）。
+- **连接方式**（本轮实测可用，worktree 内没有 `.venv`，用主仓库的）：
+
+  ```powershell
+  $env:HUNTWEAVE_DATABASE_URL = "postgresql+psycopg://postgres@127.0.0.1:18931/huntweave"
+  $env:HUNTWEAVE_APP_DB_PASSWORD_FILE = "D:\code\HuntWeave\runtime\secrets\app_db_password"
+  $env:HUNTWEAVE_CHECKPOINT_DB_PASSWORD_FILE = "D:\code\HuntWeave\runtime\secrets\checkpoint_db_password"
+  $env:HUNTWEAVE_MIGRATOR_DB_PASSWORD_FILE = "D:\code\HuntWeave\runtime\secrets\migrator_db_password"
+  $env:HUNTWEAVE_RUNNER_TOKEN_FILE = "D:\code\HuntWeave\runtime\secrets\runner_token"
+  $env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE = "1"
+  ```
+
+  在 **worktree 的 `backend/` 目录内**运行（pytest 按 rootdir 解析 `pythonpath=src`）。
+- **同一个一次性库不能被两个检查进程同时使用**：`conftest.py` 的 autouse 夹具会清空 Run 相关表，并发跑会出现**假失败**（本轮出现过一次 8 项假失败）。要并行就各起一个项目/端口。
+- 安全快照 tag（`wip-44-preintegration`、`wip-45-preintegration`）已删除：两支的工作都已提交在分支上。
+- 分支与 worktree 的清理规则：合入后立即 `git worktree remove` ＋ `git branch -d`（`#43`、`#44` 已按此办理，`#45` 待合入后办理）。
+
