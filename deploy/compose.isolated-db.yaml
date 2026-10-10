@@ -1,27 +1,26 @@
-# Publishes the Compose PostgreSQL on a loopback port so host-side backend checks and the
-# concurrency fixture can run against a database of their own.
+# Publishes the Compose PostgreSQL on a loopback port, for backend checks and the concurrency
+# fixture that need a database of their own.
 #
-# This file is deliberately opt-in. The daily project keeps its database on the internal
-# `database` network and never publishes it; combining this file with an explicit disposable
-# project name gives a check its own volume, network and rows instead of sharing the ones an
-# operator or another session is using:
+# **This file is a deliberate act, not a convenience.** Adding `-f deploy/compose.isolated-db.yaml`
+# to a command run against the daily `huntweave` project would publish that project's live database
+# on the host, so the port has no default: `HUNTWEAVE_ISOLATED_DB_PORT` must be set explicitly and
+# Compose refuses to start without it. Set it, name a disposable project, and start only `postgres`:
 #
-#   $env:HUNTWEAVE_ISOLATED_DB_PORT = "18400"
+#   $env:HUNTWEAVE_ISOLATED_DB_PORT = "18400"    # confirm it is free first
 #   docker compose --project-name huntweave-i21-concurrency `
 #     -f deploy/compose.yaml -f deploy/compose.isolated-db.yaml up -d --wait postgres
 #
-# The project prefix on `postgres_data` is what keeps such a run out of the daily project. Only
-# `postgres` is started: the backend checks here drive the services directly, and the control
-# image is not rebuilt for them. Tear the run down with the same project name:
+# The project prefix on `postgres_data` is what keeps such a run's rows out of the daily project.
+# The control image is not rebuilt for this: the checks here drive the services directly. Tear the
+# run down with the same project name (`down -v`), and never with the daily one.
 #
-#   docker compose --project-name huntweave-i21-concurrency `
-#     -f deploy/compose.yaml -f deploy/compose.isolated-db.yaml down -v
 # `database` is `internal: true` in the base file, and a published port cannot be wired on an
-# internal-only network. The extra `isolated` network is what makes the loopback binding real;
-# it carries no services of its own and exists only so the host can reach this one container.
+# internal-only network (the binding lands in `HostConfig.PortBindings` while `NetworkSettings.Ports`
+# stays empty). The extra `isolated` network is what makes the loopback binding real; it carries no
+# services of its own and exists only so the host can reach this one container.
 services:
   postgres:
-    ports: ["127.0.0.1:${HUNTWEAVE_ISOLATED_DB_PORT:-18400}:5432"]
+    ports: ["127.0.0.1:${HUNTWEAVE_ISOLATED_DB_PORT:?set HUNTWEAVE_ISOLATED_DB_PORT to a free loopback port, and name a disposable project}:5432"]
     networks: [database, isolated]
 
 networks:
