@@ -32,7 +32,7 @@
 | 相关用例成组稳定 | `tests/test_real_execution.py` + `tests/test_operator_view.py` 连续 3 轮：**32 项全通过 ×3**（用时 11.03s / 1.04s / 11.03s，覆盖慢路径与快速路径两种时序） |
 | 无回归 | `python -m pytest -m "not integration" -q` → **254 项通过、7 项跳过、41 项按标记排除**（修复前同一命令为 254 通过 / 7 跳过，修复未增删用例） |
 | 纯检查 | `ruff check src tests` 通过；`mypy --config-file pyproject.toml src` 在 **50 个源文件**上无问题 |
-| CI | 推送后 `checks` 在 `main` 上通过；本地重复无法替代 CI 结论，以该次运行为准 |
+| CI | 推送 `63f573a` 后 `checks` 在 `main` 上通过（[run 38077680583](https://github.com/kksty/HuntWeave/actions/runs/38077680583)：backend 与 frontend 两项均 success）。本地重复无法替代 CI 结论，以该次运行为准 |
 
 ## 未达成与限制
 
