@@ -10,6 +10,7 @@ from sqlalchemy import Engine, text
 from huntweave.contracts.execution import (
     CallProgress,
     CallRuntime,
+    ExecutionObservation,
     ExecutionRecord,
     ExecutionRequest,
     ExecutionResult,
@@ -109,6 +110,17 @@ def settle(service: OrchestrationService, ticket: ExecutionRequest) -> None:
             request=ticket,
             status="completed",
             result=ExecutionResult(output="FAKE fixed fixture output\n", exit_code=0, evidence=[]),
+            # What a real ledger says about a call that ended: the process and the connection are
+            # accounted for and no control lease is live. Physical capacity is only returned on that
+            # statement (spec 0006 section 7), so a fixture that settled a call without one would be
+            # describing a call that still holds its target.
+            observation=ExecutionObservation(
+                started=True,
+                process_active=False,
+                connection_open=False,
+                lease_active=False,
+                observed_at=datetime.now(UTC),
+            ),
         )
     )
 
