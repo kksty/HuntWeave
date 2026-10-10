@@ -22,6 +22,14 @@ class Contract(BaseModel):
 # way that is not interchangeable with the previous version.
 EXECUTION_POLICY_VERSION = 1
 
+# The version of the physical-execution resource policy a Run's slots are measured against: the
+# global execution quota, the per-address limit and the control dispatch slots. It is recorded
+# inside the authorization snapshot for the same reason `EXECUTION_POLICY_VERSION` is, and bumping
+# it is what `PROJECT.md` section 12 asks for when one of those defaults changes. Bump it when the
+# slot counts or their meaning change; the contract and the rule that reads them live in
+# `huntweave.contracts.resources`.
+RESOURCE_POLICY_VERSION = 1
+
 
 class LoginRequest(Contract):
     access_key: SecretStr = Field(min_length=1, max_length=512)
@@ -104,6 +112,12 @@ class ScopeSnapshot(Contract):
     # Recorded at authorization, never re-read from the current build: an active Run must not
     # silently change policy while it still holds tickets minted under the old one.
     policy_version: int = Field(default=EXECUTION_POLICY_VERSION, ge=1, strict=True)
+    # Recorded at authorization beside the execution policy version, and never re-read from the
+    # current build: a Run keeps the quota it was opened under, so changing a deployment's slot
+    # counts mid-flight is a versioned act rather than a silent re-pricing of a live Run. The
+    # version identifies the numbers; the numbers themselves are the deployment's, read once per
+    # process from `HUNTWEAVE_GLOBAL_EXECUTION_SLOTS` / `HUNTWEAVE_PER_IP_EXECUTION_SLOTS`.
+    resource_policy_version: int = Field(default=RESOURCE_POLICY_VERSION, ge=1, strict=True)
 
 
 class ScopeView(Contract):
