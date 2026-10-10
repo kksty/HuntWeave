@@ -251,8 +251,9 @@ class Fixture:
             "INSERT INTO huntweave.agent_sessions (id, run_id, task_id, role, status, context)"
             f" SELECT ({seed_session})::uuid, ({keyed_run})::uuid, ({seed_task})::uuid,"
             f" 'collector', 'completed', CAST('{{}}' AS jsonb) FROM {runs_from} r",
-            "INSERT INTO huntweave.decisions (id, run_id, session_id, step, content)"
-            f" SELECT ({seed_decision})::uuid, ({keyed_run})::uuid, ({seed_session})::uuid, c,"
+            "INSERT INTO huntweave.decisions (id, run_id, session_id, task_id, step, content)"
+            f" SELECT ({seed_decision})::uuid, ({keyed_run})::uuid, ({seed_session})::uuid,"
+            f" ({seed_task})::uuid, c,"
             " CAST('{\"action\": \"fake.collect\"}' AS jsonb)"
             f" FROM {calls_from}",
             "INSERT INTO huntweave.tool_calls (id, run_id, session_id, decision_id, status,"

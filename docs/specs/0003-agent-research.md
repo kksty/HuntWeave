@@ -81,7 +81,7 @@ P2 首个切片固定版本化限额：待研究任务数、每轮新增数、�
 
 必须先移除 P0 的两个实现假设，再接远程模型：
 
-1. 模型不能在持有 Run 行锁的 `runs.plan()` 事务中调用。harness 在事务外产生建议，runs 只负责准备/提交及校验；取消、续租不能等待模型。
+1. 模型不能在持有 Run 行锁的事务中调用。harness 在事务外产生建议（`harness.graph.ResearchHarness.plan_step`），runs 只负责准备（`runs.orchestration.begin_planning`）与提交（`commit_planning`）及校验；取消、续租不能等待模型。（原文写的是 `runs.plan()`；该函数已由 [#43](https://github.com/kksty/HuntWeave/issues/43) 拆成上述三段，见[验证记录 0024](../validation/0024-model-outside-transactions.md)。）
 2. 任务、会话和决策 ID 不能只由 `run_id + role + step` 决定；要绑定独立 task/session、状态版本及稳定尝试标识。两个 Worker 与多轮补证可并存且重放仍幂等。
 
 模型暂不可用、拒绝、限流、Schema 错误、版本冲突与执行 unknown 各用明确原因与有界恢复；不通过切模型绕过服务限制。模型失败不能清空已提交任务、历史尝试或证据。

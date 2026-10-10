@@ -138,6 +138,9 @@ Success: no issues found in 51 source files
 $ cd <worktree>/backend
 $ python -m pytest -m "not integration" -q -p no:cacheprovider
 331 passed, 16 skipped, 54 deselected in 31.88s
+# 该 worktree 里 frontend/dist 不存在，因此 test_reason_codes.py 的「本检出没有控制台
+# 构建产物」一项被跳过；在 frontend/dist 存在的检出里同一命令是 332 passed, 15 skipped。
+# 两个值都正确，差别只在这一个跳过的检查。
 # 基线（同一 worktree、同一命令、`8bfe9e8` 的内容）：310 passed, 8 skipped, 54 deselected
 # 本切片新增 21 项纯检查 + 1 项确定性适配器用量检查；+8 skipped 为 7 项新数据库检查与
 # #21 的 1 项跳过项；deselected 由 41 升到 54 是 #21 新增的集成项，不是本切片新增
@@ -232,9 +235,15 @@ $ python -m pytest tests/test_concurrency_stress.py -q   # 最小化规模，验
 
 **D2 — `begin_planning` 的续跑分支返回的形状没有 `kind`。** 该分支直接 `return self._dispatch(...)`（形状 `{"id", **content}`），而唯一的消费者 `harness/graph.py` 读的是 `handoff["kind"]` → 在「答案已提交、call 因额度被扣下、额度已归还」这条**续跑路径**上抛 `KeyError`。这恰好是交接文档要求「没有丢，丢了会把 Run 卡死」的语义。已改为包成 `{"kind": "reuse", "decision": ...}`，并在额度仍未归还（`_dispatch` 返回 `None`）时返回 `None`。
 
-**D3 — 本切片自己的数据库夹具没有满足 #21 的停止确认规则。** `tests/test_model_outside_transactions_integration.py` 的 `settle()` 只提交结算结果、不带 `ExecutionObservation`；按 #21 收紧后的规则，「已结算」不等于「已确认停止」，调用不释放物理额度、其 Run 不再可领取，于是 `test_two_workers_of_one_role_cannot_collide_on_a_task_session_or_decision` 报 `only one task ever produced a decision`。已补上执行端「没有任何东西仍在运行」的那句陈述。
+**D3 — 本切片自己的数据库夹具没有满足 #21 的停止确认规则。** `tests/test_model_outside_transactions_integration.py` 的 `settle()` 只提交结算结果、不带 `ExecutionObservation`；按 #21 收紧后的规则，「已结算」不等于「已确认停止」，**该调用继续占用它那条地址的物理额度**，于是第二个同角色 Worker 的那次计划被当作**背压**拒绝，`test_two_workers_of_one_role_cannot_collide_on_a_task_session_or_decision` 报 `only one task ever produced a decision`。已补上执行端「没有任何东西仍在运行」的那句陈述。
 
-D1 与 D3 都属同一类：**实现期的夹具是按 `c8033c8` 的语义写的，重放到含 #21 的主线后语义变了**。D1 使守卫静默消失，D3 使守卫变红——后者反而是好的，因为它至少会响。
+> **D3 的成因描述经过一次更正（合入后的对抗式复核发现）。** 复核复现了同一失败，但用探针证明 **Run 全程仍可领取**（`CLAIMS 16 NONE_CLAIMS 0`、调用 `succeeded`、Run 仍 `running` 且 `reason_code is None`）。失败的直接原因是**地址槽未释放导致的背压**，不是「Run 不再可领取」——后者是本记录先前的错误描述，已删除。`started=True` 也不构成编造执行端事实：`contracts/resources.stop_confirmed` 只读 `process_active`/`connection_open`/`lease_active` 三个字段，且 #21 自己的 `stopped()`、`CONFIRMED_STOP` 与 `test_orchestration_integration.py` 的 `settle` 用的是同一形状，属既有夹具约定。
+
+**D4 — `#21` 的压力夹具被 `#43` 的迁移打断（合入后由对抗式复核发现，已在 `main` 修复）。** `tests/test_concurrency_stress.py` 的 `seed_to()` 用裸 SQL 造历史账本，其 `INSERT INTO huntweave.decisions (id, run_id, session_id, step, content)` **没有给 `task_id`**；而 `#43` 的 `0009_planning_attempt_identity` 把该列置为 `NOT NULL`，于是 `test_measured_capacity_and_latency_under_concurrent_runs` 报 `NotNullViolation: null value in column "task_id"`。这使「#21 的额度语义已恢复验证」这一结论**在压力文件上仍不成立**。
+
+本记录先前只以**最小化规模**（`HUNTWEAVE_STRESS_LEDGER_SIZES=0`）跑过该文件，而该档位根本不进入 `seed_to()`，所以缺口没有被那道自检发现——**检查跑了，但没有覆盖它声称覆盖的路径**。已给插入补上 `task_id`，并以非零账本规模复跑确认（见下）。
+
+D1、D3、D4 都属同一类：**实现期的夹具/断言是按 `c8033c8` 的语义写的，重放到语义已变的主线后，守卫要么静默消失（D1）、要么变红（D3）、要么只在没跑到的那条路径上失效（D4）。**
 
 ### 变异验证（更正后重做）
 
