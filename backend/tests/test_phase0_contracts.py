@@ -24,6 +24,7 @@ mapping/design slice can prove. The runtime half of Phase 0 is recorded, with it
 
 import json
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Literal, get_args
@@ -70,6 +71,10 @@ def read_text(path: Path) -> str:
 # that promise stays a promise.
 BUSINESS_REVISIONS_PATTERN = re.compile(r"^BUSINESS_REVISIONS = \((.*?)\)", re.M | re.S)
 ORM_TABLE_PATTERN = re.compile(r'^    __tablename__ = "([a-z_]+)"', re.M)
+ORM_CLASS_PATTERN = r"^class {name}\("
+# The head the inventory document says it inventoried, read from the document's own sentence so the
+# allowance for later revisions cannot be widened by editing this file alone.
+BASELINE_HEAD_PATTERN = re.compile(r"当前单一 head = `([^`]+)`")
 REVISION_PATTERN = re.compile(r'^revision = "([^"]+)"', re.M)
 DOWN_REVISION_PATTERN = re.compile(r'^down_revision = (?:None|"([^"]+)")', re.M)
 # `op.create_table("name", ...)` for the multi-line form and `op.create_table(\n "name",` for the
@@ -156,6 +161,16 @@ def sample_paths() -> list[Path]:
 
 def orm_table_names() -> set[str]:
     return set(ORM_TABLE_PATTERN.findall(MODELS_FILE.read_text(encoding="utf-8")))
+
+
+def orm_class_is_absent(name: str) -> bool:
+    """Whether the storage models declare no class with this exact name.
+
+    The match is anchored to a class definition at column zero, so `ServiceError` cannot pass for a
+    `Service` class and a mention in a docstring cannot pass for a declaration.
+    """
+    pattern = re.compile(ORM_CLASS_PATTERN.format(name=re.escape(name)), re.M)
+    return pattern.search(MODELS_FILE.read_text(encoding="utf-8")) is None
 
 
 def migration_tables() -> dict[str, set[str]]:
@@ -265,14 +280,43 @@ def test_the_migration_chain_is_linear_and_has_exactly_one_head() -> None:
 
 
 def test_the_inventory_document_lists_the_tables_the_code_really_has() -> None:
-    """The document's table list is the inventory; it may not drift from the schema."""
+    """The document's table list is the inventory; it may not drift from the schema.
+
+    Two directions, and they are not symmetric. A table the document names must exist — that is
+    drift, always. A table that exists but is not in the document is only drift when the table came
+    from a revision the document's own baseline already covered: `0010` records what the schema held
+    when #38 inventoried it, and it is not a ban on later slices creating tables. What it may not do
+    is keep claiming to be the whole list, which is why the allowed set is computed
+    from the revision order (`BUSINESS_REVISIONS`, not a filename pattern) and reported
+    in the failure message so the
+    integration owner knows exactly what to add.
+    """
     documented = set(doc_table_inventory()) - DROPPED_TABLES
     expected = orm_table_names() | RAW_SQL_ONLY_TABLES | NON_BUSINESS_TABLES
-    assert documented == expected, (
-        "the inventory document and the schema disagree: "
-        f"missing from the document {sorted(expected - documented)}, "
-        f"documented but not in the schema {sorted(documented - expected)}"
+    assert documented <= expected, (
+        "the inventory document names tables the schema does not have: "
+        f"{sorted(documented - expected)}"
     )
+    # Tables a revision *after* the inventory's baseline created are allowed to be absent from the
+    # document; everything else must be documented. The allowance comes from one helper so that a
+    # mutation which widens it can be aimed at a single place, and so this check cannot quietly
+    # compute the allowance itself.
+    allowance = _inventory_allowance()
+    assert expected - documented <= allowance, (
+        "the inventory document is missing tables the schema already has, and they are not from a "
+        "later revision: "
+        f"{sorted((expected - documented) - allowance)}. "
+        "These tables were created on or before the inventory's baseline and must be added to "
+        "`0010` section 3.3."
+    )
+    stale = sorted(expected - documented)
+    if stale:
+        # The document is allowed to lag, but not silently: the integration owner adds these rows
+        # when the revision is merged, and this message is the list.
+        print(
+            "tables created after the 0010 baseline, to be added to 0010 section 3.3 at merge "
+            f"time: {stale}"
+        )
     # A dropped table stays in the history: 0007 removed the login throttle on purpose, and the
     # inventory records that rather than pretending the table never existed.
     assert DROPPED_TABLES <= set(doc_table_inventory())
@@ -283,13 +327,180 @@ def test_the_inventory_document_lists_the_tables_the_code_really_has() -> None:
         assert table in text, f"the inventory document never mentions checkpoint table {table}"
 
 
+def test_a_table_the_inventory_names_and_the_schema_lacks_is_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other direction of the same check, demonstrated rather than argued.
+
+    A check whose first assertion can never fire is half a check, and the only way to know it
+    fires is to make the state it refuses. The real document is not touched — that file belongs to
+    the integration owner — so the document reader is replaced for this one call.
+    """
+
+    real_rows = dict(doc_table_inventory())
+
+    def with_an_invented_table() -> dict[str, str]:
+        rows = dict(real_rows)
+        rows["a_table_the_schema_never_had"] = "| `a_table_the_schema_never_had` | `Nothing` |"
+        return rows
+
+    monkeypatch.setattr(sys.modules[__name__], "doc_table_inventory", with_an_invented_table)
+    with pytest.raises(AssertionError) as refusal:
+        test_the_inventory_document_lists_the_tables_the_code_really_has()
+    assert "a_table_the_schema_never_had" in str(refusal.value)
+
+
+def test_a_baseline_table_missing_from_the_inventory_is_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The allowance may excuse later revisions only, and this is that boundary being exercised.
+
+    Reading the document as if it inventoried nothing is the extreme case of "a baseline table is
+    missing": every table the schema had at the baseline has to be reported, and only the revisions
+    after the baseline may be absent from the list.
+    """
+
+    def nothing_inventoried() -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(sys.modules[__name__], "doc_table_inventory", nothing_inventoried)
+    with pytest.raises(AssertionError) as refusal:
+        test_the_inventory_document_lists_the_tables_the_code_really_has()
+    assert "must be added to" in str(refusal.value)
+
+
+def _inventory_allowance() -> set[str]:
+    """The tables the inventory document is allowed not to list, and a closed statement of why.
+
+    Its own function because the allowance is the part of this check a mistake can widen: the guard
+    `test_a_baseline_table_missing_from_the_inventory_is_drift` refuses a baseline table, and
+    `test_the_allowance_is_a_strict_subset_of_what_the_schema_has` checks that the allowance can
+    never cover a table the baseline already had.
+    """
+    return _tables_from_revisions_after_the_baseline()
+
+
+def _tables_from_revisions_after_the_baseline() -> set[str]:
+    """Tables created by revisions the build serves *after* the inventory document's baseline.
+
+    The baseline is read from the document itself — it states the head it inventoried — and the
+    ordering comes from `BUSINESS_REVISIONS`, which is the same tuple the build uses to decide which
+    schema it may serve. Neither a filename convention nor a hand-written list is used:
+    renumbering a migration must not silently widen this allowance.
+    """
+    text = INVENTORY_DOC.read_text(encoding="utf-8")
+    match = BASELINE_HEAD_PATTERN.search(text)
+    assert match is not None, (
+        "the inventory document no longer states the migration head it inventoried, so the checks "
+        "cannot tell a later revision from drift"
+    )
+    baseline = match.group(1)
+    revisions = business_revisions()
+    assert baseline in revisions, (
+        f"the inventory's baseline {baseline!r} is no longer a revision this build serves"
+    )
+    later = revisions[revisions.index(baseline) + 1 :]
+    created: set[str] = set()
+    for revision in later:
+        path = VERSIONS_DIR / f"{revision}.py"
+        assert path.is_file(), f"revision {revision!r} is in BUSINESS_REVISIONS without a file"
+        created.update(created_table_names(path.read_text(encoding="utf-8")))
+    return created
+
+
+def test_a_later_revision_is_the_only_thing_that_may_be_missing_from_the_inventory() -> None:
+    """A guard on the allowance itself: the baseline's own tables can never be excused.
+
+    Without this, a mistake in the baseline lookup — an empty `later` list, a baseline read as the
+    newest revision — would turn the drift check above into a check that accepts anything. So the
+    allowance is asserted to be non-empty while a post-baseline revision exists, and every table it
+    excuses is asserted to be one the *baseline* revision did not create.
+    """
+    baseline_match = BASELINE_HEAD_PATTERN.search(INVENTORY_DOC.read_text(encoding="utf-8"))
+    assert baseline_match is not None
+    revisions = business_revisions()
+    baseline = baseline_match.group(1)
+    later = revisions[revisions.index(baseline) + 1 :]
+    allowed = _tables_from_revisions_after_the_baseline()
+    if later:
+        assert allowed, (
+            f"revisions {later} are served after the inventory baseline but this check excuses no "
+            "tables, so it would fail on their tables instead of allowing them"
+        )
+    baseline_tables: set[str] = set()
+    for revision in revisions[: revisions.index(baseline) + 1]:
+        path = VERSIONS_DIR / f"{revision}.py"
+        assert path.is_file(), f"revision {revision!r} is in BUSINESS_REVISIONS without a file"
+        baseline_tables.update(created_table_names(path.read_text(encoding="utf-8")))
+    assert allowed <= (set(migration_tables()) - baseline_tables - DROPPED_TABLES), (
+        "the allowance names tables the baseline already had: "
+        f"{sorted(allowed & (baseline_tables | DROPPED_TABLES))}"
+    )
+
+
 def test_the_inventory_document_records_no_object_the_code_does_not_have() -> None:
-    """`0006` section 10's claim that Claim/Finding/Review do not exist must stay true."""
+    """`0006` section 10's claim about which objects exist has to stay true in *both* directions.
+
+    The document half is necessary but not sufficient: a document can keep saying "Host does not
+    exist" for as long as nobody edits it, and a check that only looks for the name in prose stays
+    green while the code contradicts it. So the constants are checked against the code as well —
+    `LEGACY_OBJECTS_PRESENT` must have an ORM class and `LEGACY_OBJECTS_ABSENT` must have none —
+    which is what makes moving an entry between the two tuples part of making the claim true.
+    """
     text = INVENTORY_DOC.read_text(encoding="utf-8")
     for absent in LEGACY_OBJECTS_ABSENT:
         assert absent in text, f"the inventory document never records {absent} as absent"
     for present in LEGACY_OBJECTS_PRESENT:
         assert present in text, f"the inventory document never records {present} as present"
+    for name in LEGACY_OBJECTS_ABSENT:
+        assert orm_class_is_absent(name), (
+            f"{name} is listed as an object that does not exist, but backend/src declares it"
+        )
+    for name in LEGACY_OBJECTS_PRESENT:
+        assert not orm_class_is_absent(name), (
+            f"{name} is listed as present, but backend/src declares no such class"
+        )
+    # And the two lists have to *cover* the objects the inventory names. A name dropped from both
+    # would otherwise satisfy every assertion above by simply not being checked: that is how
+    # `Host`/`Service`/`WebEndpoint` could have been left out of `PRESENT` after their classes
+    # landed, with this check still green.
+    named = inventory_named_objects()
+    assert named, "the inventory document names no objects for this check to hold"
+    missing = sorted(named - set(LEGACY_OBJECTS_PRESENT) - set(LEGACY_OBJECTS_ABSENT))
+    assert missing == [], (
+        "the inventory document names objects that neither list claims: "
+        f"{missing}. Every object a reader is told about is either present or absent, and which "
+        "one "
+        "is a statement the code can be checked against."
+    )
+
+
+def inventory_named_objects() -> set[str]:
+    """The object names the inventory document's §4.1 object rows name.
+
+    The document is the input here on purpose: it is what a reader is told, so the two lists have to
+    account for everything it says about an object's existence. §4.1's table has one row per object
+    class of the design, and the row states in its first cell whether the object exists; the rows
+    between the header and the closing of the table are read in order.
+
+    The section's fourth row is a different kind of statement — a list of objects that are
+    "同一新对象" because they are new, not because a conversion rule involves them — so it is not
+    read here. That is a limit of this check, stated rather than hidden: it holds the three rows
+    that make an existence claim, not every object the section mentions.
+    """
+    text = INVENTORY_DOC.read_text(encoding="utf-8")
+    start = text.index("### 4.1 ")
+    end = text.index("### 4.2 ", start)
+    found: set[str] = set()
+    for line in text[start:end].splitlines():
+        if not line.startswith("| **"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or "同属新对象" in cells[0]:
+            continue
+        for name in re.findall(r"`([A-Za-z][A-Za-z0-9]*)`", cells[1]):
+            found.add(name)
+    return found
 
 
 def test_the_inventory_document_lists_every_frozen_manifest_input() -> None:

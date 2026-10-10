@@ -624,6 +624,12 @@ LEGACY_VALUE_MAPPINGS: tuple[LegacyValueMapping, ...] = (
 
 #: Objects that exist in the real schema today, so a conversion job has something to read. Every
 #: other object in `0006` section 0.1's table is a design-document object with no records.
+#:
+#: ``Host``/``Service``/``WebEndpoint`` were listed as absent by #38 and are present since #44's
+#: ``0010_service_facts`` migration created them: the slice that makes an absence false is the slice
+#: that moves the entry. They are service-fact identities, not claim-shaped objects, so they take no
+#: part in `LEGACY_VALUE_MAPPINGS`; what they change is only which names a reader may be told do not
+#: exist.
 LEGACY_OBJECTS_PRESENT: tuple[str, ...] = (
     "Run",
     "ResearchTask",
@@ -633,10 +639,15 @@ LEGACY_OBJECTS_PRESENT: tuple[str, ...] = (
     "ToolResult",
     "Evidence",
     "ReconciliationDecision",
+    "Host",
+    "Service",
+    "WebEndpoint",
 )
 
 #: Objects a conversion job would read if records existed. None of them exists in code or in the
-#: schema: verified by an exact match count of 0 for each class name in `backend/src`.
+#: schema: verified by an exact match count of 0 for each class name in `backend/src`. That claim is
+#: checked mechanically (`test_the_inventory_document_records_no_object_the_code_does_not_have`),
+#: because a name left here after its carrier lands is a false statement about the code.
 LEGACY_OBJECTS_ABSENT: tuple[str, ...] = (
     "Claim",
     "ClaimEvaluation",
@@ -649,9 +660,6 @@ LEGACY_OBJECTS_ABSENT: tuple[str, ...] = (
     "SeverityAssessment",
     "AdmissionDecision",
     "FrozenManifest",
-    "Host",
-    "Service",
-    "WebEndpoint",
 )
 
 

@@ -77,6 +77,13 @@ class RunService:
             expires_at=request.expires_at.astimezone(UTC),
             authorization=request.authorization.strip(),
             budget=request.budget,
+            # The authorization's own mode and profile travel into the snapshot. They were dropped
+            # before this slice, which made `mode="real"` on a scope unreadable: `RunCreate`
+            # compares the Run's profile against the snapshot's, so a snapshot that always said
+            # `fake-p0-v1` refused every real Run with `execution_profile_mismatch`. The two fields
+            # were the only ones `ScopeCreate` accepted and the snapshot did not keep.
+            mode=request.mode,
+            execution_profile=request.execution_profile,
         )
         with Session(self.engine()) as session, session.begin():
             now = database_now(session)

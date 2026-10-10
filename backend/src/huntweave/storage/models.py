@@ -74,6 +74,311 @@ class Run(Base):
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class Host(Base):
+    """One address a project has observed, keyed by a program-computed identity.
+
+    The key is stored rather than recomputed from today's program: an identity a record was filed
+    under must not change because the resolver gained a normalization rule, or a reader would find
+    different rows under the same name. Which resolver produced it is recorded in
+    ``identity_version`` beside it (issue #44, criterion 1).
+    """
+
+    __tablename__ = "hosts"
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    address: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    identity_version: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observation_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Service(Base):
+    """``IP + transport + port``: the socket, not the application on it."""
+
+    __tablename__ = "services"
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    host_key: Mapped[str] = mapped_column(ForeignKey("huntweave.hosts.key"), index=True)
+    address: Mapped[str] = mapped_column(String(64))
+    transport: Mapped[str] = mapped_column(String(8), default="tcp")
+    port: Mapped[int] = mapped_column(Integer)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    identity_version: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observation_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class WebEndpoint(Base):
+    """One application on one socket: scheme, Host/SNI and path are part of its identity.
+
+    Two virtual hosts behind one address and port are two rows here, and that is the whole point —
+    merging them would claim one application was reached because the other one was.
+    """
+
+    __tablename__ = "web_endpoints"
+    key: Mapped[str] = mapped_column(String(400), primary_key=True)
+    service_key: Mapped[str] = mapped_column(ForeignKey("huntweave.services.key"), index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    scheme: Mapped[str] = mapped_column(String(8))
+    host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sni: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    path: Mapped[str] = mapped_column(Text)
+    identity_version: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observation_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Observation(Base):
+    """One appended observation of a service, an entry or a clue — never an update of
+    an earlier one.
+
+    The row has no update path in the service layer, and the database says the same thing: a trigger
+    refuses any statement that changes what was observed, so "the original cannot be overwritten" is
+    enforced rather than promised. What a record *currently* amounts to (superseded, retracted,
+    contradicted) is derived from the records that point at it, not written into it.
+    """
+
+    __tablename__ = "observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_run_id", "source_call_id", "facts_hash", name="uq_observation_call"
+        ),
+        {"schema": "huntweave"},
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    host_key: Mapped[str] = mapped_column(ForeignKey("huntweave.hosts.key"), index=True)
+    service_key: Mapped[str] = mapped_column(ForeignKey("huntweave.services.key"), index=True)
+    entry_key: Mapped[str | None] = mapped_column(
+        ForeignKey("huntweave.web_endpoints.key"), nullable=True, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), default="observation")
+    content: Mapped[str] = mapped_column(Text)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    connection: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    access: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    parser_version: Mapped[str] = mapped_column(String(80))
+    resolver_version: Mapped[int] = mapped_column(Integer, default=1)
+    identity_version: Mapped[int] = mapped_column(Integer, default=1)
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    previous_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("huntweave.observations.id"), nullable=True, index=True
+    )
+    source_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    # Kept by value, without a foreign key: a call row is housekeeping for a finished Run, while the
+    # observation keeps naming where it came from (same reasoning as the reconciliation verdict).
+    source_call_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    # The ticket's own binding at the moment of observation: what we were pointed at, kept
+    # apart from
+    # where we really connected (connection.address).
+    source_ticket_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    source_scope_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ServiceBindingRecord(Base):
+    """ADR-0015 record 1: which service one call was *actually* bound to.
+
+    Separate from coverage, anchor and cost on purpose. A call can bind a service it never covered,
+    anchor an entry it bound nothing to, and be charged once while being bound to several services.
+    """
+
+    __tablename__ = "service_bindings"
+    __table_args__ = (
+        UniqueConstraint("call_id", "service_key", name="uq_binding_call_service"),
+        {"schema": "huntweave"},
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    call_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.tool_calls.id"), index=True)
+    service_key: Mapped[str] = mapped_column(ForeignKey("huntweave.services.key"), index=True)
+    entry_key: Mapped[str | None] = mapped_column(
+        ForeignKey("huntweave.web_endpoints.key"), nullable=True
+    )
+    observation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.observations.id"))
+    # `planned` is an intention, `observed` is a fact. Only the second one may be read as "we
+    # reached this service".
+    basis: Mapped[str] = mapped_column(String(20))
+    rule_version: Mapped[int] = mapped_column(Integer, default=1)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ServiceCoverageRecord(Base):
+    """ADR-0015 record 2: what a Run covered on one service.
+
+    ``directly_verified`` is the field that keeps "用 A 的条件验证 B 只覆盖 B" honest: passing
+    through a service while testing another one records coverage with this flag false, and a reader
+    can tell the two apart without reading a narrative.
+    """
+
+    __tablename__ = "service_coverage"
+    __table_args__ = (
+        UniqueConstraint("run_id", "service_key", "entry_key", name="uq_coverage_run_service"),
+        {"schema": "huntweave"},
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    service_key: Mapped[str] = mapped_column(ForeignKey("huntweave.services.key"), index=True)
+    entry_key: Mapped[str | None] = mapped_column(
+        ForeignKey("huntweave.web_endpoints.key"), nullable=True
+    )
+    call_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("huntweave.tool_calls.id"), nullable=True
+    )
+    directly_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    rule_version: Mapped[int] = mapped_column(Integer, default=1)
+    input_versions: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ServiceNavigationRecord(Base):
+    """ADR-0015 record 3: which entry is a Run's primary anchor, and how that changed.
+
+    Each row is one version of the choice. There is no cost and no coverage column: changing an
+    anchor must not be able to rewrite either, and a table that cannot express the change is the
+    cheapest way to keep that true.
+    """
+
+    __tablename__ = "service_navigation"
+    __table_args__ = (
+        UniqueConstraint("run_id", "version", name="uq_navigation_run_version"),
+        {"schema": "huntweave"},
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    entry_key: Mapped[str] = mapped_column(ForeignKey("huntweave.web_endpoints.key"), index=True)
+    service_key: Mapped[str] = mapped_column(ForeignKey("huntweave.services.key"))
+    reason: Mapped[str] = mapped_column(Text)
+    # Kept by value: an expired session is housekeeping data, while this record is durable history
+    # naming who adjusted the anchor.
+    operator_session_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    rule_version: Mapped[int] = mapped_column(Integer, default=1)
+    version: Mapped[int] = mapped_column(Integer)
+    run_version_at_choice: Mapped[int] = mapped_column(Integer)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ServiceSettlementRecord(Base):
+    """ADR-0015 record 4: what one call was charged.
+
+    ``call_id`` is the primary key because a call's reservation is unique and is settled once
+    (`budget_reservations.settlement_reference` is the same call id). Service-level cost is
+    a derived
+    statistic with its own rule version, kept in ``service_cost_share``, and it never enforces a
+    budget — so a call bound to three services is charged once and reported three ways.
+    """
+
+    __tablename__ = "service_settlements"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    call_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("huntweave.tool_calls.id"), unique=True, index=True
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    # The same identifier `budget_reservations` uses, so the control plane's own budget and this
+    # attribution answer "what did this call cost" with one number rather than two.
+    settlement_reference: Mapped[str] = mapped_column(String(128))
+    cost_units: Mapped[int] = mapped_column(Integer, default=0)
+    output_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    rule_version: Mapped[int] = mapped_column(Integer, default=1)
+    settled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ServiceCostShareRecord(Base):
+    """A derived per-service share of a settlement. Reporting only, never budget enforcement.
+
+    The unique key is ``(call_id, service_key)``: a call bound to several services is reported once
+    per service, and the shares of one call are written once so a repeated settlement cannot double
+    them.
+    """
+
+    __tablename__ = "service_cost_shares"
+    __table_args__ = (
+        UniqueConstraint("call_id", "service_key", name="uq_cost_share_call_service"),
+        {"schema": "huntweave"},
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    call_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.tool_calls.id"), index=True)
+    service_key: Mapped[str] = mapped_column(ForeignKey("huntweave.services.key"), index=True)
+    # `primary` marks the service that was directly verified; `shared` marks the ones the same call
+    # passed through. The flag is what makes "不按主锚点重复结算" visible in the data.
+    attribution: Mapped[str] = mapped_column(String(20))
+    share_units: Mapped[int] = mapped_column(Integer, default=0)
+    rule_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class ResearchLineageReference(Base):
+    """One explicit, frozen, read-only reference to an earlier Run's record.
+
+    The row holds a *snapshot* of what the source said, not a pointer that resolves at read time.
+    That is what makes the reference fixed: the source Run may keep running, gain evidence or be
+    corrected, and this record still shows what the operator actually read. Project ownership,
+    retention and the current authorization are checked when the reference is made, and none of them
+    is inherited: the interface reports ``inherits_credentials`` and ``inherits_authorization`` as
+    literal false, so a consumer cannot read the response and think otherwise.
+    """
+
+    __tablename__ = "research_lineage_references"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    target_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    source_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    source_kind: Mapped[str] = mapped_column(String(20))
+    source_object_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    source_version: Mapped[int] = mapped_column(Integer)
+    purpose: Mapped[str] = mapped_column(Text)
+    snapshot: Mapped[str] = mapped_column(Text)
+    snapshot_sha256: Mapped[str] = mapped_column(String(64))
+    identity_version: Mapped[int] = mapped_column(Integer, default=1)
+    #: When the referenced material stops being retained. A reference to material whose
+    #: retention has
+    #: already lapsed is refused at creation rather than stored as a pointer to nothing.
+    retained_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_by_session_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AddressClue(Base):
+    """An address a Run met that is not part of its authorization.
+
+    The table is the boundary: a clue has no scope row, no ticket and no reservation, and the only
+    writer is the clue recorder. Nothing that dispatches a call reads it.
+    """
+
+    __tablename__ = "address_clues"
+    __table_args__ = (
+        UniqueConstraint("run_id", "clue_key", name="uq_clue_run_key"),
+        {"schema": "huntweave"},
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.projects.id"), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("huntweave.runs.id"), index=True)
+    call_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("huntweave.tool_calls.id"), nullable=True
+    )
+    address: Mapped[str] = mapped_column(String(255))
+    transport: Mapped[str] = mapped_column(String(8), default="tcp")
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    clue_key: Mapped[str] = mapped_column(String(300))
+    discovered_via: Mapped[str] = mapped_column(String(20))
+    # Always true in this build. Stored rather than assumed so a reader of the row sees the boundary
+    # in the data, and so a future slice that wants to propose a scope change has to change this
+    # column deliberately instead of inheriting it by accident.
+    outside_authorization: Mapped[bool] = mapped_column(Boolean, default=True)
+    outside_reason: Mapped[str] = mapped_column(String(64))
+    note: Mapped[str] = mapped_column(Text, default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ResearchTask(Base):
     """One independent piece of work a role owes this Run.
 
