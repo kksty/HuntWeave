@@ -1,23 +1,32 @@
-"""The physical-execution quota rule, checked where it can be checked without a database.
+"""The physical-execution quota rule, checked at the value level, and where it cannot be.
 
 Two things are being defended here. The first is the *release rule*: a physical slot comes back only
 on a statement from the execution side that the process and the connection are accounted for and no
 control lease is live. A settled result, a timeout and an expired lease are none of those, and the
 acceptance table of spec 0006 section 11 lists reading any of them as a stop as something that must
 be prevented. The second is that the Python rule and the SQL predicate the occupancy query counts
-with say the same thing — they are two spellings of one decision, and a check that only read the
-Python one would not notice them drifting apart.
+with say the same thing: two spellings of one decision, and the check that matters evaluates both on
+the same constructed records rather than comparing their text.
+
+The value-level comparison needs a database to evaluate `LIVE_SLOT_SQL`, so it runs where a
+disposable PostgreSQL is available (the `integration` runs). A structural assertion beside it covers
+the one inversion that is visible without one — a flipped SQL operator. Field *names* are not
+compared because there is only one copy of them: `STOP_FIELDS` builds both spellings.
 """
 
 import inspect
+import json
+import os
 import re
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from huntweave.contracts.resources import (
     ACCEPTANCE_THRESHOLDS_VERSION,
     LIVE_SLOT_SQL,
+    STOP_FIELDS,
     ConcurrencyAcceptanceThresholds,
     ExecutionQuota,
     ResourcePolicy,
@@ -26,6 +35,7 @@ from huntweave.contracts.resources import (
     stop_confirmed,
 )
 from huntweave.contracts.runs import RESOURCE_POLICY_VERSION, Budget, ScopeSnapshot
+from huntweave.storage.database import connect_engine
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 
@@ -92,15 +102,82 @@ def test_settling_a_result_does_not_release_capacity(outcome: str, ended: bool) 
     assert holds_physical_slot(observation()) is False
 
 
-def test_the_sql_predicate_names_exactly_the_fields_the_python_rule_reads() -> None:
-    """Two spellings of one rule, compared mechanically rather than by reading a diff."""
-    python_fields = set(re.findall(r'\.get\("([a-z_]+)"\)', inspect.getsource(stop_confirmed)))
-    sql_fields = set(re.findall(r"observation->>'([a-z_]+)'", LIVE_SLOT_SQL))
-    assert python_fields == sql_fields == {"process_active", "connection_open", "lease_active"}
-    # `<>` would treat a missing field as NULL and quietly drop the row; `IS DISTINCT FROM` is what
-    # keeps "the ledger did not say" in the set of calls that still hold their slot.
-    assert LIVE_SLOT_SQL.count("IS DISTINCT FROM 'false'") == 3
+def test_the_python_rule_reads_the_one_shared_field_list() -> None:
+    """The field list has one definition, so there is no second copy for a name check to compare.
+
+    `stop_confirmed` and `LIVE_SLOT_SQL` are both built from `STOP_FIELDS`. What can still drift is
+    the *operator* on each field, which is what the value-level comparison below is for; this keeps
+    the field list itself from being re-inlined into one of the two spellings.
+    """
+    source = inspect.getsource(stop_confirmed)
+    assert "STOP_FIELDS" in source
+    assert not re.search(r'\.get\("[a-z_]+"\)', source)
+    assert sorted(re.findall(r"observation->>'([a-z_]+)'", LIVE_SLOT_SQL)) == sorted(STOP_FIELDS)
+    # `<>` would treat a missing field as NULL and quietly drop the row; `IS NOT DISTINCT FROM`
+    # would invert the whole rule. Both are caught by value below where a database is available;
+    # this is the spelling that is caught even where it is not.
     assert "<>" not in LIVE_SLOT_SQL
+    assert "IS NOT DISTINCT FROM" not in LIVE_SLOT_SQL
+
+
+# Observations chosen for what each one does to the *rule*, not for what a ledger usually says: a
+# record nobody wrote, an empty record, a record missing exactly the field that is easiest to
+# forget, and records that are half, wholly and not at all stopped.
+DRIFT_CASES: list[tuple[str, dict[str, object] | None]] = [
+    ("no statement at all", None),
+    ("empty statement", {}),
+    ("lease field missing", {key: value for key, value in CONFIRMED_STOP.items()
+                            if key != "lease_active"}),
+    ("process cannot confirm", observation(process_active=None)),
+    ("connection cannot confirm", observation(connection_open=None)),
+    ("lease still live", observation(lease_active=True)),
+    ("every field live", observation(
+        process_active=True, connection_open=True, lease_active=True
+    )),
+    ("confirmed stop", observation()),
+]
+
+
+def test_the_sql_predicate_and_the_python_rule_agree_case_by_case() -> None:
+    """The two spellings evaluated on the same records, rather than compared as text.
+
+    A field-name comparison cannot see `is False` becoming `is not True`, nor `IS DISTINCT FROM`
+    becoming `IS NOT DISTINCT FROM`: both keep every name and every literal in place and invert the
+    answer. This evaluates the rule the database really runs (`LIVE_SLOT_SQL`, over a `VALUES` list,
+    so no table is created) beside the rule Python really runs, and requires the same verdict on
+    every record. Mutation-verified: flipping either operator alone turns this red — see the
+    validation record's 更正 section.
+    """
+    if os.environ.get("HUNTWEAVE_DISPOSABLE_TEST_DATABASE") != "1":
+        pytest.skip("Requires a disposable PostgreSQL database to evaluate the predicate in SQL")
+    parameters: dict[str, object] = {}
+    rows = []
+    for index, (label, record) in enumerate(DRIFT_CASES):
+        rows.append(f"(:label{index}, CAST(:json{index} AS jsonb))")
+        parameters[f"label{index}"] = label
+        parameters[f"json{index}"] = None if record is None else json.dumps(record)
+    statement = text(
+        f"SELECT v.label, {LIVE_SLOT_SQL} FROM (VALUES {', '.join(rows)}) AS v(label, observation)"
+    )
+    engine = connect_engine()
+    try:
+        with engine.begin() as connection:
+            held_in_sql = {
+                str(row[0]): bool(row[1]) for row in connection.execute(statement, parameters)
+            }
+    finally:
+        engine.dispose()
+    held_in_python = {label: holds_physical_slot(record) for label, record in DRIFT_CASES}
+    assert held_in_sql == held_in_python
+
+    # And the rule has a consumer on both sides, so neither spelling can become dead text that a
+    # later edit is free to change: `stop_confirmed` is read by the call's outstanding conditions,
+    # `holds_physical_slot` by the same place, and `LIVE_SLOT_SQL` by the occupancy query.
+    orchestration = (REPOSITORY / "backend" / "src" / "huntweave" / "runs" / "orchestration.py")
+    text_of = orchestration.read_text(encoding="utf-8")
+    assert "LIVE_SLOT_SQL" in text_of
+    assert "holds_physical_slot(" in text_of
+    assert "stop_confirmed(" in text_of
 
 
 def quota(global_used: int, per_ip: dict[str, int], *, global_limit: int = 4) -> ExecutionQuota:
