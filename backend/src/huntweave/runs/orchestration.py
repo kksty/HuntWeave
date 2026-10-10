@@ -30,6 +30,7 @@ from huntweave.contracts.runs import ScopeSnapshot
 from huntweave.harness.model import DeterministicModel
 from huntweave.runs.events import append_event
 from huntweave.runs.service import RunService
+from huntweave.runs.suspension import Suspension, suspend
 from huntweave.storage.database import database_now
 from huntweave.storage.models import (
     AgentSession,
@@ -330,20 +331,22 @@ class OrchestrationService:
             if active is not None:
                 return None
             scope = ScopeSnapshot.model_validate(run.scope_snapshot)
+            agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
+            assert agent is not None
             try:
                 RunService._check_window(scope, now)
             except ServiceError as error:
-                run.status = "waiting"
-                run.version += 1
-                self._interrupt(
+                suspend(
                     session,
                     run,
-                    error.reason_code,
-                    "A new authorized Run is required after expiry.",
+                    task,
+                    agent,
+                    Suspension(
+                        reason_code=error.reason_code,
+                        recovery_condition="A new authorized Run is required after expiry.",
+                    ),
                 )
                 return None
-            agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
-            assert agent is not None
             if replacing is None:
                 decision = self.model.decide(task.role, task.step, agent.context)
                 session.add(
@@ -446,15 +449,16 @@ class OrchestrationService:
                     and now >= run.started_at + timedelta(seconds=scope.budget.max_wall_seconds)
                 )
             ):
-                run.status = "waiting"
-                run.version += 1
-                task.status = "blocked"
-                agent.status = "blocked"
-                self._interrupt(
+                suspend(
                     session,
                     run,
-                    "budget_exhausted",
-                    "Create a new Run with a sufficient budget; this reservation is not reset.",
+                    task,
+                    agent,
+                    Suspension(
+                        reason_code="budget_exhausted",
+                        recovery_condition="Create a new Run with a sufficient budget; "
+                        "this reservation is not reset.",
+                    ),
                 )
                 return {"id": str(decision_id), **decision}
             replaces: UUID | None = None
@@ -471,15 +475,16 @@ class OrchestrationService:
                 except ServiceError as error:
                     # No ticket, no reservation and no outbox entry: a plan aimed outside the
                     # authorization is refused before it can hold budget or reach the Runner.
-                    run.status = "waiting"
-                    run.version += 1
-                    task.status = "blocked"
-                    agent.status = "blocked"
-                    self._interrupt(
+                    suspend(
                         session,
                         run,
-                        error.reason_code,
-                        "Plan an authorized target, or widen the authorization snapshot.",
+                        task,
+                        agent,
+                        Suspension(
+                            reason_code=error.reason_code,
+                            recovery_condition="Plan an authorized target, or widen the "
+                            "authorization snapshot.",
+                        ),
                     )
                     self._event(
                         session,
@@ -774,39 +779,52 @@ class OrchestrationService:
                 },
             )
             if record.status == "failed" and run.status not in {"pausing", "cancelling"}:
-                run.status = "waiting"
-                run.version += 1
-                task.status = "blocked"
-                agent.status = "blocked"
-                self._interrupt(
+                suspend(
                     session,
                     run,
-                    record.reason_code or "dependency_failed",
-                    "Inspect fixed failure; resume continues without repeating its effect.",
+                    task,
+                    agent,
+                    Suspension(
+                        reason_code=record.reason_code or "dependency_failed",
+                        recovery_condition="Inspect fixed failure; resume continues without "
+                        "repeating its effect.",
+                    ),
                 )
             if record.status == "cancelled" and run.status not in {"pausing", "cancelling"}:
-                run.status = "waiting"
-                run.version += 1
-                task.status = "blocked"
-                agent.status = "blocked"
-                self._interrupt(
+                suspend(
                     session,
                     run,
-                    record.reason_code or "control_lease_expired",
-                    "Previous execution stopped; resume continues without replaying its effect.",
+                    task,
+                    agent,
+                    Suspension(
+                        reason_code=record.reason_code or "control_lease_expired",
+                        recovery_condition="Previous execution stopped; resume continues "
+                        "without replaying its effect.",
+                    ),
                 )
             if any(not x["available"] for x in result["evidence"]):
                 if run.status not in {"pausing", "cancelling"}:
-                    run.status = "waiting"
-                    run.version += 1
-                    task.status = "blocked"
-                    agent.status = "blocked"
-                self._interrupt(
-                    session,
-                    run,
-                    "evidence_incomplete",
-                    "Restore the execution archive; incomplete evidence cannot support a finding.",
-                )
+                    suspend(
+                        session,
+                        run,
+                        task,
+                        agent,
+                        Suspension(
+                            reason_code="evidence_incomplete",
+                            recovery_condition="Restore the execution archive; incomplete "
+                            "evidence cannot support a finding.",
+                        ),
+                    )
+                else:
+                    # A Run already ending does not change state here, but it still has to
+                    # state the reason its evidence cannot support a finding.
+                    self._interrupt(
+                        session,
+                        run,
+                        "evidence_incomplete",
+                        "Restore the execution archive; incomplete evidence cannot "
+                        "support a finding.",
+                    )
             self._converge(session, run)
 
     def _keep_runtime(self, call: ToolCall, record: ExecutionRecord) -> None:
