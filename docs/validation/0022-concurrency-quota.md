@@ -196,6 +196,9 @@ $env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE = "1"
 - **`runs/`**：`orchestration.py`（`claim()` 候选过滤、`plan()` 额度门控与可续跑决策、新增 `_execution_quota`/`execution_quota`/`_lock_execution_slots`/`_actual_targets`、`_stop_confirmed` 改为委派）、`events.py`（取锁与判重的顺序）、`dispatch.py`（一处 observation 补字段）。`orchestration.py` 是最容易与其他并行分支冲突的文件。
 - **`deploy/`**：新增 `compose.isolated-db.yaml`（可选覆盖文件，只在显式独立项目名 + 显式 `-f` 时生效，不影响日常项目）。
 - **`backend/tests/conftest.py`（新文件，影响面最大）**：它给**每一个** `HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 下的检查加了「先清空 Run 相关表」的 autouse 夹具。其他并行分支若新增依赖跨检查保留业务数据的集成检查，会与本夹具冲突，需要改用各自的显式夹具。
+- **合入时的顺序核对（本分支未 rebase）**：本分支基于 `7c56643` 切出，之后 `origin/main` 已被 #37（纯文档契约对齐）推进到 `1e5b0eb`。两点需要协调人处理：
+  1. `docs/validation/README.md`：本分支在 0019 行之后追加 0022 行，#37 在**同一位置**追加了 0020 行，两行都需要保留——这是本票唯一可预期的文本冲突。记录编号不冲突：0020 已由 #37 占用，0021 由另一会话占用，本记录用 0022。
+  2. `docs/specs/0006-state-model-and-delivery.md` 在 #37 中新增了一段（位于 §3 内），**章节编号未变**，本记录与代码注释对 `0006 §7`、`§11` 的引用仍然有效；`PROJECT.md` §12 的数值表未变。迁移链在 `origin/main` 上仍是 `0008_retention_decisions`，无编号顺序问题。
 
 ## 待人工确认
 
