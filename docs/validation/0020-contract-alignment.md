@@ -96,6 +96,7 @@ workspace.ts:119: protected_address: '环回、链路本地、未指定或组播
 | `docs/specs/0008-coverage-mode.md:80`（§3.5.2） | 五种队列目的表（入口、允许动作、退出路径、不得变成） |
 | `docs/specs/0008-coverage-mode.md:94` | §3.6 停止规则：停止的是该验证分支，不是整个 Run |
 | `docs/specs/0008-coverage-mode.md:158`（§6） | CIDR 边界变更提案 + 修订点 + 5 项待确认项；**现状不变** |
+| `docs/specs/0008-coverage-mode.md:185` | 若提案被接受须修订的位置（PROJECT §3.2/§4.2/§12、0008 §7 与 §8 的 C-F、#30 正文） |
 | `docs/specs/0008-coverage-mode.md:198`（§7） | 验收 8 与 15 按三分与对照通则重写 |
 | `docs/specs/0008-coverage-mode.md:216`（§8） | C-F 行明确 CIDR 展开以待确认项解锁为前置；第一交付面是上限口径与行级反馈 |
 | `docs/specs/0005-capability-claim-criteria.md:160`（§6） | 与覆盖面复测语义的关系：适用与否归判据、不追加目标动作、不得单方豁免 |
