@@ -1,4 +1,7 @@
 **
+!PROJECT.md
+!docs/
+!docs/**
 !backend/
 !backend/src/
 !backend/src/**

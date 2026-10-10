@@ -148,6 +148,20 @@ def a_client(engine: Engine) -> TestClient:
     return TestClient(app, base_url=ORIGIN)
 
 
+def test_a_current_cursor_waits_and_then_receives_the_next_commit(engine: Engine) -> None:
+    run_id = a_run(engine)
+    write_events(engine, run_id, 3)
+    client = a_client(engine)
+    current = client.get(f"/api/v1/runs/{run_id}/event-history", params={"after": 3})
+    assert current.status_code == 200
+    assert current.json()["events"] == []
+    assert current.json()["next_cursor"] == 3
+    write_events(engine, run_id, 1)
+    resumed = client.get(f"/api/v1/runs/{run_id}/event-history", params={"after": 3})
+    assert resumed.status_code == 200
+    assert [event["cursor"] for event in resumed.json()["events"]] == [4]
+
+
 def test_two_writers_cannot_invert_the_commit_order_of_one_run(engine: Engine) -> None:
     """The row lock is what makes the publish order the commit order.
 

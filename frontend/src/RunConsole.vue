@@ -54,8 +54,10 @@ function duration(ms: number): string {
   if (total < 60) return `${total} 秒`;
   return `${Math.floor(total / 60)} 分 ${total % 60} 秒`;
 }
-const status = computed(() => detail.value?.run.status || props.run.status);
-const phase = computed(() => detail.value?.run.phase || props.run.phase);
+const currentRun = computed(() => detail.value && detail.value.run.version >= props.run.version
+  ? detail.value.run : props.run);
+const status = computed(() => currentRun.value.status);
+const phase = computed(() => currentRun.value.phase);
 const canPause = computed(() => ['queued', 'running'].includes(status.value));
 const canCancel = computed(() => ['draft', 'queued', 'running', 'waiting', 'recovering', 'pausing', 'paused'].includes(status.value));
 const showResume = computed(() => status.value === 'paused' || (status.value === 'waiting' && phase.value !== 'awaiting_human'));
@@ -111,6 +113,7 @@ async function refresh(epoch = generation) {
   try {
     const result = await workspace.api<Detail>(`/api/v1/runs/${props.run.id}/snapshot`);
     if (epoch !== generation) return;
+    if (result.run.version < currentRun.value.version) return;
     detail.value = result; emit('updated', result.run);
   } catch (e) { if (epoch === generation) error.value = e instanceof Error ? e.message : '状态读取失败。'; }
 }
@@ -205,15 +208,15 @@ const conflict = ref<{ action: string; seenVersion: number; current: Run } | nul
 const actionLabels: Record<string, string> = { pause: '暂停', cancel: '取消', close: '结束演示', resume: '恢复' };
 const actionLabel = (action: string) => actionLabels[action] || action;
 async function control(action: string) {
+  const seenVersion = currentRun.value.version;
   busy.value = true; error.value = '';
   try {
-    const run = await workspace.api<Run>(`/api/v1/runs/${props.run.id}/${action}`, { version: detail.value?.run.version || props.run.version });
+    const run = await workspace.api<Run>(`/api/v1/runs/${props.run.id}/${action}`, { version: seenVersion });
     conflict.value = null; emit('updated', run); preview.value = null; await refresh();
   } catch (failure) {
     if (failure instanceof ApiFailure && failure.reasonCode === 'version_conflict') {
-      const seenVersion = detail.value?.run.version || props.run.version;
       await refresh();
-      conflict.value = { action, seenVersion, current: detail.value?.run || props.run };
+      conflict.value = { action, seenVersion, current: currentRun.value };
     } else {
       error.value = failure instanceof Error ? failure.message : '操作失败。';
       await refresh();

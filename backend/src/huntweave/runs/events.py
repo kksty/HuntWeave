@@ -191,9 +191,8 @@ def _contiguous_end(session: Session, run_id: UUID, start: int) -> int:
 
 def _contiguous_published(
     session: Session, run_id: UUID, after: int, limit: int, floor: int
-) -> tuple[int, list[int], bool]:
-    """The page of contiguous cursors from ``max(after, floor)``, how far the timeline reaches, and
-    whether the cursor the caller asked from is itself a position the timeline has.
+) -> tuple[int, list[int]]:
+    """The page of contiguous cursors from ``max(after, floor)`` and the timeline's reach.
 
     Two different questions live here and must not be answered by one bound. ``cursors`` is the
     *page*: what this caller may render, at most ``limit`` events, stopping at the first hole. The
@@ -226,13 +225,7 @@ def _contiguous_published(
         # The page stopped because it was full. Whether the *timeline* continues is a different
         # question, and answering it with the page's end is what made `published` page-relative.
         published = _contiguous_end(session, run_id, start)
-    # The cursor the client asked from is a position the timeline has. At or below the retained
-    # floor that is true by construction — those cursors were pruned, which `page_events` already
-    # answered with the gap code — and inside the retained region it is true exactly when the
-    # contiguous run from `after` reaches `after + 1`. One statement, so the two readings cannot
-    # drift apart.
-    exists = after <= floor or (cursors and cursors[0] == start + 1)
-    return published, cursors, bool(exists)
+    return published, cursors
 
 
 @dataclass(frozen=True)
@@ -285,13 +278,15 @@ def page_events(
         raise ServiceError("event_cursor_expired", 409)
     if after > committed:
         raise ServiceError("event_cursor_ahead", 409)
-    published, cursors, exists = _contiguous_published(session, run_id, after, limit, floor)
-    if after > floor and not exists:
-        # Nothing exists at the cursor the client asked from, yet the cursor is below `committed`:
-        # a writer claimed it and its event never landed (a reissued cursor, a partial restore of
-        # the event table). Answering with the events *beyond* the hole would hand the client a
-        # timeline with a silent break in it, so the answer is the same as for a cursor ahead of
-        # the timeline: this position is not one this timeline can continue from.
+    if after > floor and session.scalar(
+        select(AuditEvent.cursor).where(AuditEvent.run_id == run_id, AuditEvent.cursor == after)
+    ) is None:
+        # A successor cannot prove the requested event exists after a partial restore.
+        raise ServiceError("event_cursor_ahead", 409)
+    published, cursors = _contiguous_published(session, run_id, after, limit, floor)
+    if floor < after < committed and not cursors:
+        # A hole immediately after this cursor is a discontinuity. An existing current head
+        # without a successor is instead a normal wait for the next committed event.
         raise ServiceError("event_cursor_ahead", 409)
     rows = session.scalars(
         select(AuditEvent)

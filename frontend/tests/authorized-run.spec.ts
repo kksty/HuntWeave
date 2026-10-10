@@ -181,6 +181,51 @@ test('pause, reload, resume preview, original evidence and human close preserve 
   await page.screenshot({ path: '../runtime/validation/p0-console.png', fullPage: true });
 });
 
+test('a delayed draft snapshot cannot hide pause after the Run was queued', async ({ page }) => {
+  let releaseSnapshot!: () => void;
+  const released = new Promise<void>(resolve => { releaseSnapshot = resolve; });
+  let releaseUpdates!: () => void;
+  const updatesReleased = new Promise<void>(resolve => { releaseUpdates = resolve; });
+  let capturedSnapshot!: () => void;
+  const captured = new Promise<void>(resolve => { capturedSnapshot = resolve; });
+  let held = false;
+  await page.route('**/api/v1/runs/*/snapshot', async route => {
+    if (held) {
+      await updatesReleased;
+      return route.continue();
+    }
+    held = true;
+    const response = await route.fetch();
+    expect((await response.json()).run.status).toBe('draft');
+    capturedSnapshot();
+    await released;
+    await route.fulfill({ response });
+  });
+  page.on('response', response => {
+    if (new URL(response.url()).pathname.endsWith('/pause')
+      && response.request().method() === 'POST') releaseUpdates();
+  });
+  try {
+    await createDemo(page, 'positive', false);
+    await captured;
+    const started = page.waitForResponse(response =>
+      new URL(response.url()).pathname.endsWith('/start') && response.request().method() === 'POST');
+    await page.getByRole('button', { name: '将假 Run 加入队列' }).click();
+    expect((await started).status()).toBe(200);
+    const snapshotDelivered = page.waitForResponse(response =>
+      new URL(response.url()).pathname.endsWith('/snapshot'));
+    releaseSnapshot();
+    await snapshotDelivered;
+    await expect(page.getByRole('button', { name: '将假 Run 加入队列' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '暂停 Run', exact: true })).toBeEnabled();
+    await runControl(page, 'pause', '暂停 Run', '暂停');
+    await expect(page.getByRole('button', { name: '查看恢复预览' })).toBeVisible();
+  } finally {
+    releaseSnapshot();
+    releaseUpdates();
+  }
+});
+
 test('the console records an operator verdict on an unknown call and shows what is missing', async ({ page }) => {
   // deploy/verify_p0.py leaves one Run with an unconfirmed call and prints its id; the
   // browser check rules on it the way an operator would.

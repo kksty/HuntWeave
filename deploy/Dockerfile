@@ -38,6 +38,11 @@ COPY backend/tests ./tests
 # The whole deployment directory, not only its Python entry points: the checks read the Compose
 # files and this Dockerfile as the artifacts that decide the deployment boundary.
 COPY deploy /opt/huntweave/deploy
+# Contract checks read the repository baseline and frontend reason-code definitions.
+# These inputs belong only to the checks target, not to the control runtime.
+COPY PROJECT.md /opt/huntweave/PROJECT.md
+COPY docs /opt/huntweave/docs
+COPY frontend/src /opt/huntweave/frontend/src
 USER 10001:10001
 ENV PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-m", "not integration", "tests"]

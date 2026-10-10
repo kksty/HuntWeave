@@ -32,12 +32,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import JSON, Engine, MetaData, create_engine, event, update
+from sqlalchemy import JSON, Engine, MetaData, create_engine, event, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from huntweave.access import service as access_module
 from huntweave.access.service import AccessService
+from huntweave.api import events as events_api
 from huntweave.api.app import create_app
 from huntweave.api.events import (
     STREAM_AUTH_INTERVAL_SECONDS,
@@ -552,6 +553,36 @@ def test_the_history_endpoint_carries_all_three_positions(engine: Engine) -> Non
     assert view.resync_required is False and view.gap is False
 
 
+@pytest.mark.parametrize("count", [0, 3])
+def test_the_history_endpoint_can_wait_at_the_current_cursor(engine: Engine, count: int) -> None:
+    run_id = a_run(engine)
+    write_events(engine, run_id, count)
+    client = TestClient(shell_app(engine))
+    response = client.get(f"/api/v1/runs/{run_id}/event-history", params={"after": count})
+    assert response.status_code == 200
+    view = EventHistoryView.model_validate(response.json())
+    assert view.events == []
+    assert (view.next_cursor, view.committed, view.published) == (count, count, count)
+    assert not view.gap and not view.resync_required
+
+
+def test_a_missing_cursor_is_refused_even_when_its_successor_exists(engine: Engine) -> None:
+    run_id = a_run(engine)
+    write_events(engine, run_id, 3)
+    with Session(engine) as session, session.begin():
+        missing = session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.run_id == run_id, AuditEvent.cursor == 2
+            )
+        )
+        assert missing is not None
+        session.delete(missing)
+    client = TestClient(shell_app(engine))
+    response = client.get(f"/api/v1/runs/{run_id}/event-history", params={"after": 2})
+    assert response.status_code == 409
+    assert response.json() == {"reason_code": "event_cursor_ahead"}
+
+
 def test_the_history_endpoint_refuses_an_expired_cursor_with_its_own_code(engine: Engine) -> None:
     run_id = a_run(engine)
     write_events(engine, run_id, 5)
@@ -596,11 +627,31 @@ def test_a_bad_last_event_id_is_refused_before_a_stream_opens(engine: Engine) ->
     assert response.json() == {"reason_code": "invalid_event_cursor"}
 
 
-def test_the_stream_opens_with_its_coordinate_then_the_events_in_order(engine: Engine) -> None:
+def end_stream_after_idle_poll(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let a real stream poll its current head, then revoke its isolated test session."""
+    probe = events_api.stream_probe
+    calls = 0
+
+    def revoke_after_two_polls(*args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            with Session(engine) as session, session.begin():
+                session.execute(update(WebSession).values(revoked=True))
+        return probe(*args, **kwargs)
+
+    monkeypatch.setattr(events_api, "STREAM_AUTH_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(events_api, "stream_probe", revoke_after_two_polls)
+
+
+def test_the_stream_opens_with_its_coordinate_then_the_events_in_order(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The P1 frame shape and ordering are kept; the coordinate frame is what this slice adds."""
     run_id = a_run(engine)
     write_events(engine, run_id, 2)
     client = signed_in(engine)
+    end_stream_after_idle_poll(engine, monkeypatch)
     with client.stream("GET", f"/api/v1/runs/{run_id}/events", params={"after": 0}) as response:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
@@ -616,6 +667,8 @@ def test_the_stream_opens_with_its_coordinate_then_the_events_in_order(engine: E
     opening = json.loads(body.split("data: ", 1)[1].split("\n\n", 1)[0])
     assert opening["committed"] == 2 and opening["published"] == 2
     assert opening["retained_from"] == 0 and opening["resync_required"] is False
+    assert "event: resync_required" not in body
+    assert "event: session_expired" in body
 
 
 def test_the_stream_ends_with_a_reason_when_it_has_no_session(engine: Engine) -> None:
@@ -650,7 +703,9 @@ def test_the_stream_ends_with_a_reason_when_its_session_was_revoked(engine: Engi
     assert after[0] == "authentication_required"
 
 
-def test_the_last_event_id_header_wins_over_the_query_parameter(engine: Engine) -> None:
+def test_the_last_event_id_header_wins_over_the_query_parameter(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A browser's `EventSource` re-sends the header on reconnect; the query parameter is stale.
 
     The client asks from the query parameter's cursor (3, the end of the timeline) but its header
@@ -660,6 +715,7 @@ def test_the_last_event_id_header_wins_over_the_query_parameter(engine: Engine) 
     run_id = a_run(engine)
     write_events(engine, run_id, 3)
     client = signed_in(engine)
+    end_stream_after_idle_poll(engine, monkeypatch)
     with client.stream(
         "GET",
         f"/api/v1/runs/{run_id}/events",
