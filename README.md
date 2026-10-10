@@ -29,13 +29,13 @@ flowchart LR
     Gateway -.->|"授权 IPv4 / TCP"| Target["授权目标"]
 ```
 
-实线表示已搭建的服务及存储关系；虚线表示待接入产品的执行链路。默认 Runner 未挂载 Docker socket，也不启用沙箱管理；只有显式用 `deploy/compose.sandbox.yaml` 启用后，Runner 才获得收窄的固定操作集（见「沙箱管理」一节）。每会话网关方案已通过本地靶场验证，其无目标网络的固定生命周期已接入 Runner 的受信管理组件（验证记录 `0011`）；出口放行与真实动作派发仍待 #18/#17。
+实线表示已搭建的服务及存储关系；虚线表示默认部署下尚未启用的执行链路。默认 Runner 未挂载 Docker socket，也不启用沙箱管理；只有显式用 `deploy/compose.sandbox.yaml` 启用后，Runner 才获得收窄的固定操作集（见「沙箱管理」一节）。受信管理组件（[`0011`](./docs/validation/0011-p1-sandbox-lifecycle.md)）、出口控制与取消回收（[`0012`](./docs/validation/0012-p1-egress-and-cancel.md)）、三个真实动作的最小闭环（[`0013`](./docs/validation/0013-p1-real-actions.md)）与透明控制台（[`0015`](./docs/validation/0015-p1-transparent-console.md)）均已交付并各自在靶场经探针验证，但**默认部署不启用管理能力，真实执行仍未开放**：`real_execution_ready` 由 [ADR-0010](./docs/adr/0010-real-execution-boundary-and-gate.md) 的四项门槛决定，其中 profile 复验与回退入口仍为假。测试模式（覆盖面／突破）是 Run 级策略输入，不改变本图的服务与存储拓扑。
 
-目标工作流：`Collector → Worker × N → Reviewer → 人工复审`。技术栈为 Python、FastAPI、SQLAlchemy / Alembic、PostgreSQL、LangGraph OSS、Vue 3 / TypeScript 和 Docker Compose。
+目标工作流：`Collector → Worker × N → Reviewer → 人工复审`，两种测试模式共用同一条流程——**覆盖面（coverage）**以单位成本的覆盖为目的、确认级证据到手即停止该验证分支；**突破（breach）**以取得并证明访问权为目的、有状态地继续推进。技术栈为 Python、FastAPI、SQLAlchemy / Alembic、PostgreSQL、LangGraph OSS、Vue 3 / TypeScript 和 Docker Compose。
 
-后续架构采用证据驱动的任务规划：服务事实与研究依赖分别记录，Run 内规划按有效事件提出零到多项建议，`runs` 统一提交任务，Worker 保留任务内方法选择；证据显式绑定，复审与报告按输入版本保存。24×7 指一次发布后，同一 Run 在有效授权和预算内持续推进，完成后停止，重启先对账再接续。设计取舍见 [ADR 索引](./docs/adr/README.md)，实施组织见 [P2 规格](./docs/specs/0003-agent-research.md)。已确认但待实施的行为分别见 [能力判据](./docs/specs/0005-capability-claim-criteria.md)、[状态/确认/冻结/迁移](./docs/specs/0006-state-model-and-delivery.md) 与 [研究工作台 UI](./docs/specs/0007-research-workbench-ui.md)，不把设计规格当作现有功能。
+后续架构采用证据驱动的任务规划：服务事实与研究依赖分别记录，Run 内规划按有效事件提出零到多项建议，`runs` 统一提交任务，Worker 保留任务内方法选择；证据显式绑定，复审与报告按输入版本保存。24×7 指一次发布后，同一 Run 在有效授权和预算内持续推进，完成后停止，重启先对账再接续。设计取舍见 [ADR 索引](./docs/adr/README.md)，实施组织见 [P2 规格](./docs/specs/0003-agent-research.md)。已确认但待实施的行为分别见 [能力判据](./docs/specs/0005-capability-claim-criteria.md)、[状态/确认/冻结/迁移](./docs/specs/0006-state-model-and-delivery.md) 与 [研究工作台 UI](./docs/specs/0007-research-workbench-ui.md)，不把设计规格当作现有功能。两种测试模式、持久会话边界、范围语义与带外接收端见 [ADR-0019–0023](./docs/adr/README.md) 与 [覆盖面规格](./docs/specs/0008-coverage-mode.md)；前端视觉语言见 [ADR-0024](./docs/adr/0024-nasa-punk-visual-language.md) 与 [视觉设计系统](./docs/specs/0009-visual-design-system.md)。
 
-正常交付顺序为 **自主渗透并留证 → AI 复审及有限补证 → 自动执行结束、释放执行资源 → 人工复审**。人工未处理结论时，证据继续按策略保留，自动执行已经停止；AI 复审无法完成等例外会明确记录原因和未决项。
+正常交付顺序为 **自主渗透并留证 → AI 复审及有限补证 → 自动执行结束、释放执行资源 → 人工复审**；覆盖面在确认级证据到手时结束该验证分支，突破继续推进，两者走同一条交付顺序。人工未处理结论时，证据继续按策略保留，自动执行已经停止；AI 复审无法完成等例外会明确记录原因和未决项。
 
 目标验证规则包含默认 RCE 最小只读留证后退出、禁止破坏或删改目标已有数据、必要新增测试数据及遗留披露，见 [PROJECT 第 9.1 节](./PROJECT.md)。规划中的正式漏洞库采用 [CVSS v4.0 与独立准入门槛](./docs/specs/0004-finding-admission.md)，低危/无害信息和未证实版本命中保留研究记录；当前实现状态以 STATUS 为准。
 
@@ -139,7 +139,7 @@ docker compose -f deploy/compose.yaml -f deploy/compose.sandbox.yaml up -d --bui
 
 启用管理**不等于**开放真实执行：`real_execution_ready` 仍由 ADR-0010 的四项门槛决定，`/api/v1/system/capabilities` 会把它作为独立的 `sandbox_management`（`disabled`/`ready`/`unavailable` 加原因码）报出。恢复默认部署用基础文件重启即可（`docker compose -f deploy/compose.yaml up -d --no-build runner`）。
 
-所选 profile 同时决定出口：网关加入的目标网络、安装与回读放行规则的固定命令与执行用户、网关的就绪检查、以及就绪与撤销时限。管理器在网关报告就绪后才放行，并在每次放行后回读内核规则核对；平台自身网络、所用桥的宿主侧地址与固定保留网段一律拒绝，部署额外的宿主网段需写进该 profile 的 `network.protected`。回退由执行端的 `begin_revert` 顺序执行（拒绝新实例 → 撤销 → 停止 → 回收 → 对账归档），只有在没有未核清项时才报告可以撤除管理能力；面向操作员的入口随窗口控制台（#19）提供。
+所选 profile 同时决定出口：网关加入的目标网络、安装与回读放行规则的固定命令与执行用户、网关的就绪检查、以及就绪与撤销时限。管理器在网关报告就绪后才放行，并在每次放行后回读内核规则核对；平台自身网络、所用桥的宿主侧地址与固定保留网段一律拒绝，部署额外的宿主网段需写进该 profile 的 `network.protected`。回退由执行端的 `begin_revert` 顺序执行（拒绝新实例 → 撤销 → 停止 → 回收 → 对账归档），只有在没有未核清项时才报告可以撤除管理能力；面向操作员的入口已由透明控制台（#19，[验证记录 `0015`](./docs/validation/0015-p1-transparent-console.md)）提供。
 
 ### 选择性保留
 
@@ -283,23 +283,26 @@ python deploy/verify_retention.py
 
 - [当前状态](./docs/STATUS.md)：阶段、已交付能力与下一实施项的**唯一状态源**
 - [项目总纲](./PROJECT.md) · [P0 规格](./docs/specs/0001-foundation.md) · [P1 规格](./docs/specs/0002-real-execution.md) · [P2 规格](./docs/specs/0003-agent-research.md) · [漏洞库准入规格](./docs/specs/0004-finding-admission.md) · [能力类主张判据规格](./docs/specs/0005-capability-claim-criteria.md)
-- [状态、确认等级与冻结交付](./docs/specs/0006-state-model-and-delivery.md) · [研究工作台 UI](./docs/specs/0007-research-workbench-ui.md) · [本轮设计取舍](./docs/research/2026-10-10-state-model-and-ui-review.md) · [ADR-0017](./docs/adr/0017-claim-confirmation-and-frozen-delivery.md)
+- [状态、确认等级与冻结交付](./docs/specs/0006-state-model-and-delivery.md) · [研究工作台 UI](./docs/specs/0007-research-workbench-ui.md) · [覆盖面模式](./docs/specs/0008-coverage-mode.md) · [视觉设计系统](./docs/specs/0009-visual-design-system.md) · [本轮设计取舍](./docs/research/2026-10-10-state-model-and-ui-review.md) · [ADR-0017](./docs/adr/0017-claim-confirmation-and-frozen-delivery.md)
 
 决策记录
 
 - [ADR 索引](./docs/adr/README.md) · [真实执行边界与门槛](./docs/adr/0010-real-execution-boundary-and-gate.md) · [计划与证据版本](./docs/adr/0011-planning-authority-and-evidence-revisions.md) · [最小实证与目标数据](./docs/adr/0012-minimal-proof-and-target-data.md) · [严重性与准入](./docs/adr/0013-severity-and-finding-admission.md) · [执行生命周期与环境身份](./docs/adr/0014-execution-lifecycle-and-environment-identity.md) · [研究图语义与投影边界](./docs/adr/0015-graph-semantics-and-projection-boundary.md) · [调度、槽位与资源政策](./docs/adr/0016-scheduling-and-resource-policy.md)
 - [后端先行与分层验证](./docs/adr/0018-backend-first-and-layered-validation.md)
+- [双模式策略与准入层](./docs/adr/0019-engagement-modes-and-policy-gate.md) · [持久会话与最小实证边界](./docs/adr/0020-foothold-session-and-minimal-proof.md) · [范围语义与凭据复用](./docs/adr/0021-scope-semantics-and-credential-reuse.md)
+- [带外接收端与新传输 profile](./docs/adr/0022-out-of-band-receiver-and-transport-profiles.md) · [双模式可视化投影](./docs/adr/0023-two-mode-visualization-projections.md) · [NASA-punk 视觉语言](./docs/adr/0024-nasa-punk-visual-language.md)
 
 研究记录
 
 - [架构评估与设计取舍](./docs/research/2026-10-09-architecture-assessment.md)：问题核对、备选方案比较与取舍依据
-- [开发顺序与验证边界评估](./docs/research/2026-10-10-development-and-validation-boundaries.md)：后端先行与集中前端接入的取舍
+- [开发顺序与验证边界评估](./docs/research/2026-10-10-development-and-validation-boundaries.md)：后端先行与集中前端接入的取舍，以及"何时该写规格"的判据
+- [双模式架构评估](./docs/research/2026-10-10-two-mode-architecture.md)：覆盖面与突破的目标函数、三个接缝、工具供给阶梯、带外与不确定结论、可视化横切面，以及评审中修正的 12 条冲突逐条对账
 
 验证记录
 
 - [0016 开发验证反馈](./docs/validation/0016-development-validation-feedback.md)
 
-- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突 · `0011` P1 受信管理组件与真实容器生命周期 · `0012` P1 出口控制与取消/回收 · `0013` P1 真实动作最小闭环 · `0014` P1 停止确认事实与动作工作目录 · `0015` P1 透明控制台
+- [验证记录索引](./docs/validation/README.md)：`0001` 启动 · `0002` Windows 隔离 · `0003` Compose Watch · `0004` 身份与假 Run · `0005` P0-C/D 执行与恢复 · `0006` P1 核对入口 · `0007` P1 票据目标绑定 · `0008` P1 目标上限 · `0009` 前端产物同步开发入口 · `0010` P1 能力就绪状态与控制冲突 · `0011` P1 受信管理组件与真实容器生命周期 · `0012` P1 出口控制与取消/回收 · `0013` P1 真实动作最小闭环 · `0014` P1 停止确认事实与动作工作目录 · `0015` P1 透明控制台 · `0016` 开发验证反馈 · `0017` P1 选择性保留
 
 开发协作
 
