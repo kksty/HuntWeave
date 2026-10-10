@@ -43,4 +43,4 @@
 
 ## 待人工确认
 
-- 缺陷本身见 [#77](https://github.com/kksty/HuntWeave/issues/77)（已建，状态开放）。修复直接落在 `main`，**由维护者核对本记录后关闭该 Issue**，不由本记录自行宣布结案。
+- 缺陷见 [#77](https://github.com/kksty/HuntWeave/issues/77)，已于 2026-10-10 按 `completed` 关闭，关闭评论带逐条结论、实现提交 `63f573a`、本记录路径与上述限制。
