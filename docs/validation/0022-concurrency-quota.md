@@ -262,7 +262,10 @@ $env:HUNTWEAVE_DISPOSABLE_TEST_DATABASE = "1"
 - **`deploy/`**：新增 `compose.isolated-db.yaml`。它**不是**「少一个 -f 就安全」的便利文件：`HUNTWEAVE_ISOLATED_DB_PORT` 没有默认值，缺它时 Compose 直接报 `required variable ... is missing a value` 并拒绝启动，因此不会出现「多打一个 -f 就把日常项目的库发布到宿主」的情况。
 - **`backend/tests/conftest.py`（新文件，影响面最大）**：它给**每一个** `HUNTWEAVE_DISPOSABLE_TEST_DATABASE=1` 下的检查加了「先清空 Run 相关表」的 autouse 夹具。其他并行分支若新增依赖跨检查保留业务数据的集成检查，会与本夹具冲突，需要改用各自的显式夹具。
 - **`docs/`**：只新增本记录与 `docs/validation/README.md` 的一行索引。`PROJECT.md`、`docs/STATUS.md`、`docs/specs/`、`docs/adr/` 本轮**未改**——见「待人工确认」。
-- **合入时的顺序核对**：本分支首稿基于 `7c56643`，协调人随后把它 rebase 到 `3ca3684`（含 #37 的契约对齐与 #33 的视觉 tokens），本票的提交因此落在该历史之上。首稿担心的 `docs/validation/README.md` 索引冲突（0019 之后同时追加 0020 与 0022）**已由该 rebase 解决**：索引现在是 0019 → 0020（#37）→ 0021（#33）→ 0022（本条），编号各异、无冲突。`docs/specs/0006-state-model-and-delivery.md` 在 #37 中新增了一段（位于 §3 内），**章节编号未变**，本记录对 §7、§11 的引用仍然有效；`PROJECT.md` §12 的数值表未变。迁移链仍是 `0008_retention_decisions`，无编号顺序问题。
+- **合入时的顺序核对**：本分支首稿基于 `7c56643`，协调人随后把它 rebase 到 `3ca3684`（含 #37 的契约对齐与 #33 的视觉 tokens），本票的提交因此落在该历史之上；本记录的数字与判定都是相对 **`3ca3684`** 这一基线得出的（`git diff --stat 3ca3684..HEAD` = 13 files, +2482/−39）。写记录时 `origin/main` 又前进到 `c8033c8`（#38 的 Phase 0 来源盘点与契约目录），因此：
+  - 对 `origin/main` 直接取 diff 会把 #38 的提交显示成「被本分支删除」（`contracts/phase0.py`、`tests/test_phase0_contracts.py`、`docs/validation/0023-*.md` 等），那不是本票的改动；本票没有触碰任何 Phase 0 文件。
+  - `docs/validation/README.md` 是唯一可预期的文本冲突点：本票在表尾追加 0022 行、#38 追加 0023 行，两行都要保留（编号互不冲突：0020 = #37、0021 = #33、0022 = 本条、0023 = #38）。索引已核对为 0019 → 0020 → 0021 → 0022。
+  - `docs/specs/0006-state-model-and-delivery.md` 在 #37/#38 中只增补了 §3 与 §10 的内容，**§7 与 §11 的标题与编号未变**，本记录与代码注释对它们的引用仍然有效；`PROJECT.md` §12 的数值表未变。迁移链仍是 `0008_retention_decisions`，无编号顺序问题。
 
 ## 本记录的更正
 
