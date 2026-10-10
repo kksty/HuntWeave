@@ -43,7 +43,7 @@ export const sources = [
     id: 'sarasa-license',
     url: 'https://raw.githubusercontent.com/be5invis/Sarasa-Gothic/master/LICENSE',
     file: 'LICENSE-Sarasa-Gothic.txt',
-    sha256: '',
+    sha256: '32c932e0dbae4f6e6386964bbc2d04178707665a05ca65cf636241af13d50a53',
     note: 'Sarasa Gothic 的 OFL-1.1 许可文本（4,702 字节）',
     license: true,
   },
