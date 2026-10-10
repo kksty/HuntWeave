@@ -1,0 +1,128 @@
+/*
+ * HuntWeave 设计 token 层（V-A / issue #33）
+ * 规格：docs/specs/0009-visual-design-system.md §3 色板、§4 字体、§5 结构
+ * 决定：docs/adr/0024-nasa-punk-visual-language.md
+ *
+ * 本文件是**唯一色值来源**：字面量色值只允许出现在这里。其他样式表与组件通过 var(--hw-*)
+ * 消费；机械检查 frontend/scripts/check-design-system.mjs 会证明这一点。
+ *
+ * 对比度实测值见 0009 §3：由上述检查脚本用同一公式（WCAG 2.x 相对亮度与对比度）现算并比对。
+ * 单位约定：字阶用 rem（1rem = 浏览器默认 16px），栅格与间距用 px（8px 基准栅格）。
+ */
+
+:root {
+  /* ---- 1. 色板（0009 §3）----
+   * 只保留语义槽位。面板面、嵌入面、正文、次级文字、分隔线、警示斜纹都必须是某个槽位的别名，
+   * 不允许新增自由色值：--hw-panel 与 --hw-base 就足以区分"面"的三层（页底 / 面板 / 嵌入）。 */
+  --hw-base: #ece5d6;
+  --hw-panel: #f6f2e9;
+  --hw-ink: #1e1b16;
+  --hw-line: #8a7f6b;
+  --hw-accent: #d63a2c;
+  --hw-accent-ink: #a8432f;
+  --hw-stripe-1: #4c5a68;
+  --hw-stripe-2: #7a7f4e;
+  --hw-stripe-3: #d2a85e;
+  --hw-stripe-4: #a8432f;
+  --hw-hazard-1: #1e1b16;
+  --hw-hazard-2: #ece5d6;
+
+  /* 槽位的角色别名：面板面 / 嵌入面 / 文字 / 描边。它们只指回上面的槽位。 */
+  --hw-surface: var(--hw-panel); /* 面板、页眉面 */
+  --hw-surface-sunken: var(--hw-base); /* 嵌入面：代码块、预览框 */
+  --hw-text: var(--hw-ink);
+  --hw-text-muted: var(--hw-ink); /* 次级文字靠字号与字重区分，不靠降低对比度 */
+  --hw-border: var(--hw-line);
+  --hw-border-soft: var(--hw-line); /* 次级分隔线（原 --console-line 的位置） */
+  --hw-focus-ring: var(--hw-accent); /* 键盘焦点环：唯一鲜艳强调色 */
+  --hw-text-on-solid: var(--hw-panel); /* 实底按钮上的文字 */
+  --hw-hazard: repeating-linear-gradient(45deg, var(--hw-hazard-1) 0 8px, var(--hw-hazard-2) 8px 16px);
+
+  /* ---- 2. 字体族（0009 §4）----
+   * 中文只走中文字族：Sarasa Gothic SC / Sarasa Mono SC 的 @font-face（见 fonts.css）
+   * 用 unicode-range 只声明汉字与中文标点，Latin 字母、数字与编号由 IBM Plex 承担。
+   * 字体栈尾部不放商业字体名的本机回退：默认交付只落 OFL 字体或系统 UI 字体。 */
+  --hw-font-display: 'Archivo Expanded', 'Archivo', 'Sarasa Gothic SC', system-ui, sans-serif;
+  --hw-font-sans: 'IBM Plex Sans', 'Sarasa Gothic SC', system-ui, sans-serif;
+  --hw-font-mono: 'IBM Plex Mono', 'Sarasa Mono SC', ui-monospace, monospace;
+  --hw-font-mono-cjk: 'Sarasa Mono SC', 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* ---- 3. 字阶（0009 §4、§6）---- */
+  --hw-text-2xs: 0.6875rem; /* 11px：徽章 */
+  --hw-text-xs: 0.75rem; /* 12px：表格、事件行、次级文字 */
+  --hw-text-sm: 0.8125rem; /* 13px：预览框、提示条 */
+  --hw-text-md: 0.875rem; /* 14px：控件、面板小节标题 */
+  --hw-text-lg: 1rem; /* 16px：h2 */
+  --hw-text-xl: 1.0625rem; /* 17px：品牌字 */
+  --hw-text-2xl: 1.5rem; /* 24px：小标题 */
+  --hw-text-3xl: 2.25rem; /* 36px：页面主标题上限 */
+  --hw-text-title: clamp(var(--hw-text-2xl), 3vw, var(--hw-text-3xl));
+  --hw-leading-tight: 1.3;
+  --hw-leading-normal: 1.6;
+  --hw-leading-loose: 1.7;
+  --hw-leading-roomy: 1.8;
+  --hw-leading-loose-plus: 1.9;
+  --hw-tracking-label: 0.12em; /* 全大写 Latin 标签的加宽字距；中文标签不套用（0009 §6） */
+  --hw-tracking-none: 0;
+  --hw-weight-regular: 400;
+  --hw-weight-medium: 500;
+  --hw-weight-semibold: 600;
+  --hw-weight-bold: 700;
+  --hw-weight-black: 800; /* 品牌字与页面主标题 */
+
+  /* ---- 4. 8px 基准栅格（0009 §5）----
+   * --hw-space-* 是栅格步进，取值落在 8px 的倍数上；--hw-gap-* 是半格（4px 步进），
+   * 只用于细边框、贴边间隙与栅格无法表达的光学补偿（0009 §5 的例外）。 */
+  --hw-space-0: 0;
+  --hw-space-1: 8px;
+  --hw-space-2: 16px;
+  --hw-space-3: 24px;
+  --hw-space-4: 32px;
+  --hw-space-5: 40px;
+  --hw-space-6: 48px;
+  --hw-space-9: 72px;
+  --hw-gap-hair: 4px;
+  --hw-gap-tight: 12px;
+  --hw-gap-snug: 20px;
+  --hw-gap-roomy: 28px;
+
+  /* 迁移期别名：换肤前的间距/字号取值按字面保留，让 V-B 不必逐处判断"要不要贴到栅格"。
+   * 命名规则 --hw-<属性>-<原值>；V-B 换肤时可以逐步改用 --hw-space-* / --hw-gap-*。 */
+  --hw-size-h1-min: 25px;
+  --hw-size-brand-compact: 14px;
+  --hw-margin-label: 18px;
+  --hw-margin-details-top: 18px;
+  --hw-padding-preview: 16px;
+  --hw-padding-details-y: 14px;
+  --hw-margin-run-link-y: 14px;
+  --hw-padding-notice: 14px;
+  --hw-padding-error: 16px;
+  --hw-padding-panel-compact: 22px;
+  --hw-margin-dt-top: 16px;
+  --hw-margin-dd-top: 6px;
+  --hw-margin-small-y: 5px;
+  --hw-padding-badge-y: 6px;
+  --hw-padding-input: 11px;
+  --hw-margin-details-y: 18px;
+  --hw-margin-task-copy: 5px;
+  --hw-margin-state-copy: 6px;
+  --hw-margin-call-progress: 4px;
+  --hw-max-table: 250px;
+  --hw-max-port-list: 160px;
+  --hw-max-run-list: 360px;
+
+  /* 结构（0009 §5） */
+  --hw-radius-panel: 0px; /* 面板直角 */
+  --hw-radius-control: 0px;
+  --hw-radius-max: 2px;
+  --hw-hairline: 1px; /* 细分隔线与接缝 */
+  --hw-seam: 1px;
+  --hw-stroke-stripe: 2px; /* 身份色条 */
+  --hw-stroke-stripe-strong: 3px;
+  --hw-focus-ring-width: 3px;
+  --hw-focus-offset: 2px;
+  --hw-max-width: 1240px; /* 主内容宽度上限 */
+  --hw-min-cell: 150px; /* 状态格最小宽度 */
+  --hw-breakpoint-compact: 500px;
+  --hw-breakpoint-columns: 850px;
+}
