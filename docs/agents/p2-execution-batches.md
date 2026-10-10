@@ -102,13 +102,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/link-issue-dependencie
 
 | # | 原口径（矛盾方） | 更正后的口径 | 文档落点 |
 | --- | --- | --- | --- |
-| 1 | [#25 验收 2](https://github.com/kksty/HuntWeave/issues/25)「四种组合都能创建 Run 且语义正确」被读成四种组合都能执行 | 四种组合是**语法层可表达**；ADR-0010 四项门槛、旧授权快照绑定与空 `breach` 注册表三层阻断全部保持有效。「语义正确」验收的是可表达性与拒绝原因可区分 | [0008 §2.1](../specs/0008-coverage-mode.md)、[ADR-0026 §2](../adr/0026-contract-alignment-readiness-cidr-and-queue.md) |
+| 1 | [#25 验收 2](https://github.com/kksty/HuntWeave/issues/25)「四种组合都能创建 Run 且语义正确」被读成四种组合都能创建/都能执行 | 四种组合是 **`engagement_mode × mode`** 的**语法层可表达**（与代码里既有的 `mode × execution_profile` 是两组字段对，不得混用）；`mode=real` 的两组在**创建阶段即被拒绝**（ADR-0010 四项门槛）。ADR-0010 四项门槛、旧授权快照绑定与空 `breach` 注册表三层阻断全部保持有效。「语义正确」验收的是可表达性与拒绝原因可区分 | [0008 §2.1](../specs/0008-coverage-mode.md)、[ADR-0026 §2](../adr/0026-contract-alignment-readiness-cidr-and-queue.md) |
 | 2 | [#30 范围 2](https://github.com/kksty/HuntWeave/issues/30)/[验收 2、3](https://github.com/kksty/HuntWeave/issues/30) 与 [0008 §8 C-F](../specs/0008-coverage-mode.md)「**接受 CIDR**，只做展开、由操作员确认」 | 与 [PROJECT §3.2](../../PROJECT.md) 冲突。**保留 IP-only 与 `TARGET_LIMIT = 100`**；CIDR 只产出边界变更提案与 5 项待确认项，未获范围决定前不得据旧验收文字开发 | [0008 §6](../specs/0008-coverage-mode.md)、[PROJECT §3.2/§4.2/§12/§14.1](../../PROJECT.md) |
 | 3 | [#28 验收 3](https://github.com/kksty/HuntWeave/issues/28)「**只有**确认级条目进入人工队列；可疑与未决不占用人工队列」 | 「确认级才进人工队列」限定为**确认复核**这一个队列目的。「证据要求已满足」「确认级就绪」「`confirmed`」三分且分别可查询；缺证/分类澄清/失效重审/打回复测各有目的与退出路径、互不阻塞；自动采证不等待人工，等待人工不占目标执行槽 | [0008 §3.5.1–§3.5.2](../specs/0008-coverage-mode.md)、[0006 §3.2](../specs/0006-state-model-and-delivery.md)、[PROJECT §9.1](../../PROJECT.md) |
 | 4 | [0008 §5.1](../specs/0008-coverage-mode.md)「判定必须带差分对照」被读成每项主张都要追加一次对照动作 | 对照的**适用与否归 [0005 §6](../specs/0005-capability-claim-criteria.md)**：可由同一次采集中的既有观察满足，不得为满足形式追加目标动作，不适用声明须复审确认并留依据、模型不得单方豁免；程序校验类别/引用/版本 | [0008 §5.1、§7 验收 15](../specs/0008-coverage-mode.md)、[0005 §6](../specs/0005-capability-claim-criteria.md) |
 | 5 | [0009 §12](../specs/0009-visual-design-system.md) 的 V-C 没有对应实施 Issue；V-D 的矩阵/下钻归属不清 | **V-C 已被 [#34](https://github.com/kksty/HuntWeave/issues/34) 的面板/接缝/身份元素范围覆盖，不另开切片**；V-D 的**薄接入归 [#35](https://github.com/kksty/HuntWeave/issues/35)**、**完整矩阵归 [#29](https://github.com/kksty/HuntWeave/issues/29)**；不恢复研究深度档位 | [0009 §12](../specs/0009-visual-design-system.md)、[ADR-0026 §6](../adr/0026-contract-alignment-readiness-cidr-and-queue.md) |
 
 **未登记原生依赖边**：本轮不改任何 Issue 正文、标签或原生 `blocked_by` 链接（更正由协调人在 GitHub 侧执行，见验证记录 `0020` 的逐条建议）。因此本节的更正**不改变第 6 节的关键路径**，也不改变第 3 节的共享面规则——`PROJECT.md` 与 `docs/specs/` 仍按第 4 节由单一分支改写，本票即 B1 的唯一改写者，B2 需待其合入后开工。
+
+**小节号重编号的连带引用（协调人在 GitHub 侧更正）**：本轮在 [0008](../specs/0008-coverage-mode.md) 的 §5 与 §6 之间**插入**新的 §6（CIDR 边界提案），原 §6–§8 顺延为 §7–§9。仓库内引用已同步；下列 **5 张在用 Issue 正文共 6 处仍指旧 §7**，属纯编号问题，**验收实质与范围不变**：
+
+| Issue | 原文引用 | 应改为 |
+| --- | --- | --- |
+| [#25](https://github.com/kksty/HuntWeave/issues/25) | 「依据 … 与 [0008 §7]」 | **§8**（实施切片） |
+| [#26](https://github.com/kksty/HuntWeave/issues/26) | 「[0008 §3.1、§3.2、§3.4、§3.7、§7]」 | 末项 **§8** |
+| [#26](https://github.com/kksty/HuntWeave/issues/26) | 范围 4「[0008 §6 验收 2]」 | **§7 验收 2** |
+| [#28](https://github.com/kksty/HuntWeave/issues/28) | 「[0008 §3.5、§3.6、§4、§5.1、§7]」 | 末项 **§8** |
+| [#29](https://github.com/kksty/HuntWeave/issues/29) | 「[ADR-0023] 与 [0008 §7]」 | **§8** |
+| [#30](https://github.com/kksty/HuntWeave/issues/30) | 「[0008 §7 C-F]」 | **§8 C-F** |
+
+[#35](https://github.com/kksty/HuntWeave/issues/35)（§3.4/§3.5）与 [#36](https://github.com/kksty/HuntWeave/issues/36) 未受影响，不改。
 
 另外三处登记问题，不影响可执行前沿：
 

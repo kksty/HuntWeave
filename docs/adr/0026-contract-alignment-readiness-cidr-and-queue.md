@@ -18,16 +18,24 @@
 
 **字段可构造、可持久化、可查询，不等于该 Run 能执行。** 两者是不同层次的判断，必须分别验收。
 
-现状（已核验，见验证记录 `0020`）：`ScopeCreate.mode` 与 `ScopeCreate.execution_profile` 是两个独立字段，契约上没有跨字段约束，因此 `(demonstration, fake-p0-v1)`、`(demonstration, real-lab-v1)`、`(real, fake-p0-v1)`、`(real, real-lab-v1)` 四种组合**都能被构造**。这支持 #25 验收 2 的前半句。但「都能创建 Run」不推出「都能执行」：真实执行另由四层判断阻断。
+先固定字段对，避免把两组「组合」混为一谈。[#25](https://github.com/kksty/HuntWeave/issues/25) 范围 1 说的四种组合是 **`engagement_mode ∈ {coverage, breach}` × `mode ∈ {demonstration, real}`**（与 [0008 §2.1](../specs/0008-coverage-mode.md) 的 L1 同一字段对）。这与既有的 `ScopeCreate.mode × ScopeCreate.execution_profile` 是**两组不同的组合**：后一组现在就在代码里（`runs.py:87-88`），前一组要等 #25 加上 `engagement_mode` 才存在。
+
+现状（已核验，见验证记录 `0020`）：
+
+- `engagement_mode` 在 `backend/src` 中匹配数为 **0**——它**尚不存在**，所以 #25 的四种组合现在只能谈「字段加入后可否表达」，不能谈「现在能否创建」。契约上有一件事现在就可核验：`mode` 与 `execution_profile` 是两个独立字段，**没有跨字段校验器**。
+- 既有的 `mode × execution_profile` 四种组合**不能都被创建**：`ScopeCreate.mode` 与 `execution_profile` 虽是独立字段且无跨字段校验，但 `runs/service.py:107-108` 对 `execution_profile != "fake-p0-v1"` 调用 `_require_real_readiness()`，而该检查在门槛未满足时抛 `real_execution_not_ready`（409）。因此 `(demonstration, real-lab-v1)` 与 `(real, real-lab-v1)` 在**创建阶段就被拒绝**，不是「能创建、只是不能执行」。
+- `create_scope` 构造 `ScopeSnapshot` 时**不传** `mode` 与 `execution_profile`（`runs/service.py:72-80`），快照取两个字段的默认值；授权快照里的这两个值当前不来自创建请求。
+
+因此 [#25 验收 2](https://github.com/kksty/HuntWeave/issues/25) 的「四种组合都能创建 Run 且语义正确」在本轮的正确读法是：
 
 | 层 | 判断 | 现在的实际状态 |
 | --- | --- | --- |
-| L1 语法层 | 字段取值合法、跨字段组合可表达 | 四种组合均通过（#25 验收 2 的前半句） |
-| L2 部署就绪层 | ADR-0010 四项门槛**同时**成立才允许 `real_execution_ready=true` | `profile_revalidation` 与 `deployment_revert` 为假，`real_execution_ready=false`，请求真实执行的 Run 被拒绝 |
+| L1 语法层 | `engagement_mode × mode` 四种组合的字段取值合法、跨字段组合**可表达** | 字段加入后四种组合都可表达；`engagement_mode` 现在不存在，所以本层是**加入后的契约要求**，不是当前事实。本层不承诺「都能创建 Run」 |
+| L2 部署就绪层 | [ADR-0010](./0010-real-execution-boundary-and-gate.md) 四项门槛**同时**成立才允许 `real_execution_ready=true` | `profile_revalidation` 与 `deployment_revert` 为假（`execution/capabilities.py:30,35`），`real_execution_ready=false`；**`mode=real` 的组合在创建阶段即被拒绝**（`runs/service.py:107-108`） |
 | L3 授权绑定层 | Run 的 `execution_profile` 必须与其授权快照 `ScopeSnapshot` 一致；快照在提交时写入 `policy_version`，**旧 Run 不被当前构建改写** | 旧授权快照的 Run 在升级后保持原策略与结论语义 |
 | L4 模式准入层 | `engagement_mode=breach` 的注册表**先为空**；空注册表**不得被解释为「研究完成」** | `breach` 无任何已注册动作，只产生「模式未就绪/无可用动作」，不产生完成结论 |
 
-因此 [#25 验收 2](https://github.com/kksty/HuntWeave/issues/25) 的「四种组合都能创建 Run 且语义正确」应读作：**L1 全部通过；L2–L4 保持阻断不变。** 「语义正确」的验收内容是可表达性与拒绝原因可区分，**不是**四种组合都能跑出真实动作。任何把本轮读成「放宽真实执行」的说法都错误。
+所以「语义正确」的验收内容是：**L1 的可表达性与 L2–L4 的拒绝原因可区分**，而**不是**四种组合在当下都能创建 Run（`mode=real` 的两组现在就被拒），更不是都能跑出真实动作。任何把本轮读成「放宽真实执行」的说法都错误。
 
 四项门槛、旧授权快照与空 `breach` 注册表的阻断**在本轮全部保持有效**，不因模式字段新增而放宽（与 [ADR-0019 后果段](./0019-engagement-modes-and-policy-gate.md)一致）。落点见 [0008 §2.1](../specs/0008-coverage-mode.md)。
 
@@ -98,8 +106,10 @@
 | `breach` 注册表为空、三个假动作保留 | 成立：`execution.py:43` 三个假动作、`:44` 三个真实动作，无 breach 动作 |
 | 现状输入接口拒绝 CIDR | 成立：`backend/src` 中 `cidr`/`ip_network`/`collapse_addresses` 匹配数 **0**；`frontend/src/workspace.ts:119` 的 `invalid_ip` 文案明确「不接受 URL、端口、域名、CIDR 或 zone ID」 |
 | `TARGET_LIMIT` 为 100 且按去重目标计数 | 成立：`runs/inputs.py:13`、`:53` |
+| `mode × execution_profile` 无跨字段校验，但 `real-lab-v1` 在**创建阶段**被拒 | 成立：`runs/service.py:107-108` 对 `execution_profile != "fake-p0-v1"` 调 `_require_real_readiness()`，门槛未满足即 409 `real_execution_not_ready`；`execution/capabilities.py:30,35` 两个门槛为 `False` |
+| `create_scope` 构造快照时不传 `mode`/`execution_profile` | 成立：`runs/service.py:72-80`（两字段取默认值） |
 
-**结论：本切片的文档修订方向成立，不声明任何代码中不存在的能力。** 本 ADR 与所引规格均只修改设计/契约文字，能力状态不变，P1 顺序与真实执行门槛不变。
+**结论：本切片的文档修订方向成立，不声明任何代码中不存在的能力。** 本 ADR 与所引规格均只修改设计/契约文字，能力状态不变，P1 顺序与真实执行门槛不变。**本节的逐条断言与完整命令输出以[验证记录 0020](../validation/0020-contract-alignment.md) 为准**；若该记录日后更正，以记录为准、本节只保留结论。
 
 ## 后果
 
