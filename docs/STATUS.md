@@ -58,6 +58,8 @@ tracer 顺序（实现切片）：
 
 2026-10-10 引入并列的覆盖面与突破两种测试模式（[ADR-0019](./adr/0019-engagement-modes-and-policy-gate.md)–[ADR-0023](./adr/0023-two-mode-visualization-projections.md)、[覆盖面规格 0008](./specs/0008-coverage-mode.md)、评估见[双模式架构评估](./research/2026-10-10-two-mode-architecture.md)），设计交付为 [#24](https://github.com/kksty/HuntWeave/issues/24)。覆盖面按 `0008 §7` 的 C-A…C-F 切片推进，已建立切片 Issue：[#25](https://github.com/kksty/HuntWeave/issues/25) 模式骨架与准入层 → [#26](https://github.com/kksty/HuntWeave/issues/26) 有界非 Web 服务交互与能力缺口记账 → [#27](https://github.com/kksty/HuntWeave/issues/27) 带外接收端与新传输 profile → [#28](https://github.com/kksty/HuntWeave/issues/28) 分流聚合与覆盖分母 → [#29](https://github.com/kksty/HuntWeave/issues/29) 覆盖矩阵与缺口视图；[#30](https://github.com/kksty/HuntWeave/issues/30) 批量导入独立于模式。**突破模式只有设计决定与待切片的[#31](https://github.com/kksty/HuntWeave/issues/31)**（持久会话、范围语义与第二跳），[#32](https://github.com/kksty/HuntWeave/issues/32) 为规模化瓶颈实测。切片 Issue 尚未挂里程碑：P1（[里程碑 1](https://github.com/kksty/HuntWeave/milestone/1)）仍在进行，P2 里程碑按本文件约定在开工时建立。设计未实现，P1 顺序与真实执行门槛不变。
 
+**P2-C（真模型、联网研究与洁净动态准备）的开工前置**除实施评审外，还包括确定**方法记录的字段形态与提示词分段**。按 [PROJECT §10.1](../PROJECT.md) 0.9.11，这两项在有真实模型循环的观察之前**不预设 schema，也不单独立规格**；当前只固定与实现无关的约束（不内置检查表与路线剧本、方法知识按需检索且检索不到不阻断研究、方法记录是产出而非输入、不得自动加载为插件）。判据与理由见[开发顺序与验证边界评估](./research/2026-10-10-development-and-validation-boundaries.md)。此处不另建 Issue：它不是当前可执行前沿的阻塞项，随 P2-C 的实施评审办理。
+
 后续用户要求已纳入设计：默认 RCE 最小只读实证、成功退出、禁止破坏/删改目标数据、必要新增及大量脏数据披露（ADR-0012）；CVSS v4.0 评分与正式漏洞库准入（[0004 规格](./specs/0004-finding-admission.md)、ADR-0013）。低危/无害和仅版本命中不入库，未决项与测试遗留继续展示。以上均未实现，须随 P2-C/D 关联实施任务；不扩大当前执行能力。
 
 ## 未开放能力
