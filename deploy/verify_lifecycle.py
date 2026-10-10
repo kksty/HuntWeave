@@ -9,7 +9,7 @@ check itself lives in ``lab/isolation/lifecycle.py``.
 import platform
 import uuid
 
-from lab_docker import REPOSITORY, build, command, socket_source, source_facts
+from lab_docker import REPOSITORY, build, command, run_probe, source_facts
 
 PROBE_IMAGE = "huntweave-isolation-probe:p0"
 LIFECYCLE_IMAGE = "huntweave-sandbox-lifecycle:p1"
@@ -31,8 +31,8 @@ def main() -> None:
     environment = {
         "HUNTWEAVE_HOST_PLATFORM": platform.system().lower(),
         "HUNTWEAVE_HOST_OS": platform.platform(),
-        # Management is enabled here and only here: this is a lab check, not the product's
-        # default deployment, and the product's own readiness gates are untouched by it.
+        # Management is enabled here and only here: this is a lab check, not the product's default
+        # deployment, and the product's own readiness gates are untouched by it.
         "HUNTWEAVE_SANDBOX_MANAGEMENT": "enabled",
         "HUNTWEAVE_SANDBOX_PROFILE": PROFILE,
         "HUNTWEAVE_SANDBOX_PROFILE_DIR": "/opt/huntweave/profiles",
@@ -40,37 +40,16 @@ def main() -> None:
         "HUNTWEAVE_EVIDENCE_DIR": "/results/evidence",
         **source_facts(),
     }
-    args = [
-        "docker",
-        "run",
-        "--rm",
-        "--name",
-        f"huntweave-sandbox-lifecycle-{run_id}",
-        "--network",
-        CONTROL_NETWORK,
-        "--read-only",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges:true",
-        "--pids-limit",
-        "128",
-        "--memory",
-        "256m",
-        "--tmpfs",
-        "/tmp:size=16m,mode=1777",
-        "--mount",
-        f"type=bind,source={socket_source()},target=/var/run/docker.sock",
-        "--mount",
-        f"type=bind,source={output},target=/results",
-    ]
-    for key, value in environment.items():
-        args.extend(["--env", f"{key}={value}"])
     try:
-        command(*args, LIFECYCLE_IMAGE)
+        run_probe(
+            image=LIFECYCLE_IMAGE,
+            run_id=f"sandbox-lifecycle-{run_id}",
+            output=output,
+            environment=environment,
+            network=CONTROL_NETWORK,
+        )
     finally:
         command("docker", "network", "rm", CONTROL_NETWORK)
-        print(f"Validation report: {output / 'report.json'}")
 
 
 if __name__ == "__main__":

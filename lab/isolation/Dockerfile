@@ -34,3 +34,8 @@ FROM lab AS egress
 COPY profiles /opt/huntweave/profiles
 COPY lab/isolation/egress.py ./egress.py
 CMD ["python", "/opt/huntweave/egress.py"]
+
+FROM lab AS action
+COPY profiles /opt/huntweave/profiles
+COPY lab/isolation/action.py ./action.py
+CMD ["python", "/opt/huntweave/action.py"]

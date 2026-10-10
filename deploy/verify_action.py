@@ -1,9 +1,9 @@
-"""Build and run the egress-control check on Windows or Linux.
+"""Build and run the real-action check on Windows or Linux.
 
-The check drives the product's trusted manager from inside a lab-only container that owns the
-Docker socket, exactly like the lifecycle probe. Unlike that one, it needs a network of its own:
-the manager discovers the platform's networks from the container it runs in, and the control
-bridge this container sits on is what the tool must be unable to reach.
+The check drives the product's Runner — its HTTP surface, its real executor and the trusted
+manager — from inside a lab-only container that owns the Docker socket. It needs a bridge of its
+own because the manager discovers the platform's networks from the container it runs in, and that
+control bridge is what the tool must be unable to reach.
 """
 
 import platform
@@ -12,9 +12,9 @@ import uuid
 from lab_docker import REPOSITORY, build, command, run_probe, source_facts
 
 PROBE_IMAGE = "huntweave-isolation-probe:p0"
-EGRESS_IMAGE = "huntweave-sandbox-egress:p1"
+ACTION_IMAGE = "huntweave-sandbox-action:p1"
 PROFILE = "sandbox-egress-v1"
-CONTROL_NETWORK = "huntweave-lab-egress-control"
+CONTROL_NETWORK = "huntweave-lab-action-control"
 
 
 def main() -> None:
@@ -23,9 +23,7 @@ def main() -> None:
     output.mkdir(parents=True)
     command("docker", "version", "--format", "{{.Server.Version}}")
     build("probe", PROBE_IMAGE)
-    build("egress", EGRESS_IMAGE)
-    # A bridge the probe itself sits on: it is the control network the sandbox must keep the tool
-    # out of, and the manager discovers it from its own container instead of being told about it.
+    build("action", ACTION_IMAGE)
     command("docker", "network", "create", "--driver", "bridge", CONTROL_NETWORK)
     environment = {
         "HUNTWEAVE_HOST_PLATFORM": platform.system().lower(),
@@ -41,8 +39,8 @@ def main() -> None:
     }
     try:
         run_probe(
-            image=EGRESS_IMAGE,
-            run_id=f"sandbox-egress-{run_id}",
+            image=ACTION_IMAGE,
+            run_id=f"sandbox-action-{run_id}",
             output=output,
             environment=environment,
             network=CONTROL_NETWORK,

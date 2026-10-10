@@ -45,6 +45,52 @@ def build(target: str, image: str) -> None:
     command("docker", "build", "-f", DOCKERFILE, "--target", target, "-t", image, ".")
 
 
+def run_probe(
+    *,
+    image: str,
+    run_id: str,
+    output: Path,
+    environment: dict[str, str],
+    network: str | None = None,
+) -> None:
+    """Run one lab probe: socket, results mount, and nothing else.
+
+    Every probe needs the same shape — a read-only container with the Docker socket, a bounded
+    filesystem and its results directory — and the same report path, so the shape lives here and
+    each entry point only says which image, which network and which environment.
+    """
+    args = [
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        f"huntweave-{run_id}",
+        "--network",
+        network or "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--pids-limit",
+        "128",
+        "--memory",
+        "256m",
+        "--tmpfs",
+        "/tmp:size=16m,mode=1777",
+        "--mount",
+        f"type=bind,source={socket_source()},target=/var/run/docker.sock",
+        "--mount",
+        f"type=bind,source={output},target=/results",
+    ]
+    for key, value in environment.items():
+        args.extend(["--env", f"{key}={value}"])
+    try:
+        command(*args, image)
+    finally:
+        print(f"Validation report: {output / 'report.json'}")
+
+
 def source_facts() -> dict[str, str]:
     """Which revision the probe is really running against, and whether it was modified."""
     return {
