@@ -1,0 +1,28 @@
+# Publishes the Compose PostgreSQL on a loopback port so host-side backend checks and the
+# concurrency fixture can run against a database of their own.
+#
+# This file is deliberately opt-in. The daily project keeps its database on the internal
+# `database` network and never publishes it; combining this file with an explicit disposable
+# project name gives a check its own volume, network and rows instead of sharing the ones an
+# operator or another session is using:
+#
+#   $env:HUNTWEAVE_ISOLATED_DB_PORT = "18400"
+#   docker compose --project-name huntweave-i21-concurrency `
+#     -f deploy/compose.yaml -f deploy/compose.isolated-db.yaml up -d --wait postgres
+#
+# The project prefix on `postgres_data` is what keeps such a run out of the daily project. Only
+# `postgres` is started: the backend checks here drive the services directly, and the control
+# image is not rebuilt for them. Tear the run down with the same project name:
+#
+#   docker compose --project-name huntweave-i21-concurrency `
+#     -f deploy/compose.yaml -f deploy/compose.isolated-db.yaml down -v
+# `database` is `internal: true` in the base file, and a published port cannot be wired on an
+# internal-only network. The extra `isolated` network is what makes the loopback binding real;
+# it carries no services of its own and exists only so the host can reach this one container.
+services:
+  postgres:
+    ports: ["127.0.0.1:${HUNTWEAVE_ISOLATED_DB_PORT:-18400}:5432"]
+    networks: [database, isolated]
+
+networks:
+  isolated: {}
