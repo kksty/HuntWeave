@@ -369,6 +369,28 @@ def test_a_real_action_command_never_comes_from_the_caller(tmp_path: Path) -> No
     assert command[3] == "10.20.0.5" and command[4] == "80,443"
 
 
+def test_a_ledger_written_before_the_profile_rename_is_still_readable(tmp_path: Path) -> None:
+    """Durable records outlive a field rename: an unreadable ledger is a forgotten ledger."""
+    state, evidence = tmp_path / "state", tmp_path / "evidence"
+    runner, _, _ = build(tmp_path, FakeRuntime(), command_stdout="ok\n")
+    request = real_ticket("shell.exec", {"command": "true"})
+    runner.submit(request)
+    settled(runner, request.call_id, "completed", "failed")
+    runner.close()
+
+    ledger = json.loads((state / "real.json").read_text(encoding="utf-8"))
+    record = ledger[str(request.call_id)]["record"]
+    record["request"]["profile"] = record["request"].pop("execution_profile")
+    (state / "real.json").write_text(json.dumps(ledger), encoding="utf-8")
+
+    reopened, _, _ = build(tmp_path, FakeRuntime())
+    restored = reopened.query(request.call_id)
+    assert restored is not None
+    assert restored.request.execution_profile == "real-lab-v1"
+    assert restored.status == "completed"
+    assert evidence.exists()
+
+
 def test_the_real_executor_refuses_a_demonstration_action(tmp_path: Path) -> None:
     runtime = FakeRuntime()
     runner, _, _ = build(tmp_path, runtime)

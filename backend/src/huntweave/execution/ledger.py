@@ -51,6 +51,20 @@ class RunnerUnavailable(Exception):
         super().__init__(reason_code)
 
 
+def _upgraded(document: dict[str, Any]) -> dict[str, Any]:
+    """Read a durable record written by an earlier revision without losing it.
+
+    The ledger outlives a field rename: `profile` became `execution_profile` when the action and
+    profile identifiers were versioned, with the same value and the same meaning. A record that
+    cannot be read would be a record the platform silently forgot, so the old name is translated
+    here rather than the ledger being discarded.
+    """
+    request = document.get("request")
+    if isinstance(request, dict) and "profile" in request and "execution_profile" not in request:
+        request["execution_profile"] = request.pop("profile")
+    return document
+
+
 class CallLedger:
     # Each executor keeps its own durable file and its own ownership lock, so the demonstration
     # side and the real side can run in one process without fighting over either.
@@ -83,7 +97,7 @@ class CallLedger:
         self.path = state_dir / f"{self.ledger_name}.json"
         self.data: dict[str, Any] = json.loads(self.path.read_text()) if self.path.exists() else {}
         for item in self.data.values():
-            record = ExecutionRecord.model_validate(item["record"])
+            record = ExecutionRecord.model_validate(_upgraded(item["record"]))
             if record.status in {"accepted", "running"}:
                 # A ledger that restarted cannot say what the call it was running did; that is
                 # exactly the state reconciliation exists for.
