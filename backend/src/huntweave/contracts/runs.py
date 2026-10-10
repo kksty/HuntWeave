@@ -112,11 +112,14 @@ class ScopeSnapshot(Contract):
     # Recorded at authorization, never re-read from the current build: an active Run must not
     # silently change policy while it still holds tickets minted under the old one.
     policy_version: int = Field(default=EXECUTION_POLICY_VERSION, ge=1, strict=True)
-    # Recorded at authorization beside the execution policy version, and never re-read from the
-    # current build: a Run keeps the quota it was opened under, so changing a deployment's slot
-    # counts mid-flight is a versioned act rather than a silent re-pricing of a live Run. The
-    # version identifies the numbers; the numbers themselves are the deployment's, read once per
-    # process from `HUNTWEAVE_GLOBAL_EXECUTION_SLOTS` / `HUNTWEAVE_PER_IP_EXECUTION_SLOTS`.
+    # An **audit trace**, not a per-Run freeze: it records which resource policy version this Run
+    # was authorized under, so two Runs opened under different slot policies can be told apart.
+    # It is deliberately not read back: the limits in force are the deployment's, resolved from the
+    # current process environment on every reservation (`ResourcePolicy.from_environment`, read once
+    # per process by `OrchestrationService`). Changing `HUNTWEAVE_GLOBAL_EXECUTION_SLOTS` and
+    # restarting therefore changes the quota of Runs that are already running — see the note in
+    # `docs/validation/0022-concurrency-quota.md` for why that is accepted here and when it would
+    # have to become a per-Run freeze instead.
     resource_policy_version: int = Field(default=RESOURCE_POLICY_VERSION, ge=1, strict=True)
 
 

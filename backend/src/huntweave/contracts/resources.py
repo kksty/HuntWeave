@@ -24,6 +24,7 @@ from huntweave.contracts.runs import RESOURCE_POLICY_VERSION, Contract
 __all__ = [
     "ACCEPTANCE_THRESHOLDS_VERSION",
     "LIVE_SLOT_SQL",
+    "STOP_FIELDS",
     "ConcurrencyAcceptanceThresholds",
     "ExecutionQuota",
     "ResourcePolicy",
@@ -44,17 +45,24 @@ ACCEPTANCE_THRESHOLDS_VERSION = 1
 # never in `reason_code`, because nothing was refused and no recovery condition was missed.
 WaitCategory = Literal["global_execution_slot", "target_execution_slot"]
 
+# The three fields that together answer "is anything this call started still running". They are the
+# single definition of that question: `stop_confirmed` and `LIVE_SLOT_SQL` are both built from this
+# tuple, so adding a field is one edit rather than two. What cannot be shared between Python and SQL
+# is the *operator* on each field, which is why the two spellings are compared record by record in
+# `tests/test_execution_quota.py` rather than by reading them.
+STOP_FIELDS: tuple[str, ...] = ("process_active", "connection_open", "lease_active")
+
 # The "still holds a physical slot" rule of `holds_physical_slot`, as text the database evaluates.
-# The two live side by side because they must not drift: the Python rule is what the console and the
-# checks read, and this is what the occupancy query counts with. `IS DISTINCT FROM` rather than `<>`
-# on purpose — a missing or null field is *not* the execution side saying `false`, and reading it as
-# one would release a slot on the strength of a field nobody wrote.
-LIVE_SLOT_SQL = (
-    "(observation IS NULL"
-    " OR observation->>'process_active' IS DISTINCT FROM 'false'"
-    " OR observation->>'connection_open' IS DISTINCT FROM 'false'"
-    " OR observation->>'lease_active' IS DISTINCT FROM 'false')"
-)
+# Read by `OrchestrationService._execution_quota()` — the occupancy query — and by nothing else.
+# `IS DISTINCT FROM` rather than `<>` on purpose: a missing or null field is *not* the execution
+# side saying `false`, and reading it as one would release a slot on the strength of a field
+# nobody wrote.
+LIVE_SLOT_SQL = "(" + " OR ".join(
+    [
+        "observation IS NULL",
+        *(f"observation->>'{field}' IS DISTINCT FROM 'false'" for field in STOP_FIELDS),
+    ]
+) + ")"
 
 
 def stop_confirmed(observation: Mapping[str, Any] | None) -> bool:
@@ -64,13 +72,14 @@ def stop_confirmed(observation: Mapping[str, Any] | None) -> bool:
     ``None`` for any of them is saying it cannot confirm, which is not a stop. A shell may have left
     descendants behind, and a live lease can still authorise the call the Run is trying to leave
     behind. An operator's verdict never stands in for this fact.
+
+    Read in production through `OrchestrationService._stop_confirmed` (a re-dispatch's precondition
+    and a reconciliation verdict's basis), through `holds_physical_slot` where a call's outstanding
+    conditions are decided, and by the record-by-record comparison against `LIVE_SLOT_SQL`.
     """
-    return bool(
-        observation
-        and observation.get("process_active") is False
-        and observation.get("connection_open") is False
-        and observation.get("lease_active") is False
-    )
+    if observation is None:
+        return False
+    return all(observation.get(field) is False for field in STOP_FIELDS)
 
 
 def holds_physical_slot(observation: Mapping[str, Any] | None) -> bool:
@@ -80,6 +89,10 @@ def holds_physical_slot(observation: Mapping[str, Any] | None) -> bool:
     about the process. Only a stop the execution side itself confirmed returns the slot, which is
     also why a call whose outcome is ``unknown`` keeps holding it — and why the run that ended with
     such a call is limited rather than free.
+
+    Read in production where a call's outstanding conditions are decided
+    (`OrchestrationService._call_conditions`, where a call that keeps a physical slot is exactly a
+    call whose stop is unconfirmed) and by the record-by-record comparison against `LIVE_SLOT_SQL`.
     """
     return not stop_confirmed(observation)
 
@@ -98,12 +111,22 @@ def _slot_count(environ: Mapping[str, str], name: str, default: int) -> int:
 
 
 class ResourcePolicy(Contract):
-    """How many physical executions this deployment admits at once, and which version says so."""
+    """How many physical executions this deployment admits at once, and which version says so.
+
+    Read once per process from the environment, and deliberately **not** frozen per Run: the limits
+    in force are whatever this deployment resolves now, so a restart with different slot counts
+    re-prices Runs that are already running. `ScopeSnapshot.resource_policy_version` records the
+    version a Run was opened under as an audit trace, not as a value anything reads back. See
+    `docs/validation/0022-concurrency-quota.md` for why that is accepted here and when it would have
+    to become a per-Run freeze instead.
+    """
 
     policy_version: int = Field(default=RESOURCE_POLICY_VERSION, ge=1, strict=True)
     # Booked separately and deliberately not derived from the physical quota: a deployment whose
-    # targets are all occupied must still be able to cancel, renew, reconcile and reclaim. The
-    # dispatch slots are what those paths use.
+    # targets are all occupied must still be able to cancel, renew, reconcile and reclaim. There is
+    # no dispatch queue in this build — those paths are direct calls — so nothing enforces this
+    # number today; it records the design ADR-0016 fixes, and the property it stands for is checked
+    # by measuring those paths while every physical slot is held.
     control_dispatch_slots: int = Field(default=4, ge=1, strict=True)
     global_execution_slots: int = Field(default=4, ge=1, strict=True)
     per_ip_execution_slots: int = Field(default=1, ge=1, strict=True)
@@ -162,7 +185,8 @@ def slot_wait(quota: ExecutionQuota, targets: Sequence[str]) -> SlotWait | None:
     operator would act on first, and a Run must not be told to wait for one address while the whole
     pool is full. Every actual target is then checked rather than a navigation anchor, in a stable
     order, so two callers that touch the same set cannot disagree about which of them is refused.
-    A repeated address is checked once.
+    A repeated address is checked once, and a caller offering several addresses gets one refusal
+    rather than several: the Run waits for the first slot it cannot have.
     """
     if quota.global_used >= quota.global_limit:
         return SlotWait(
@@ -206,7 +230,8 @@ class ConcurrencyAcceptanceThresholds(Contract):
     # within this many seconds while every physical slot is held by an unconfirmed stop.
     control_path_seconds: float = Field(default=5.0, gt=0)
     # A Run with work ready and a free slot has to be claimed within this many seconds while another
-    # Run holds a long call. This is the bound on "one Run must not starve the others".
+    # Run holds a long call. This is the bound on "one Run must not starve the others": the fixture
+    # measures the wall-clock wait of a ready Run behind `admitted` holders and asserts this.
     scheduling_wait_seconds: float = Field(default=3.0, gt=0)
     # Growth per unit of ledger volume rather than an absolute budget: the scheduler's read of the
     # ledger may get no more than this many milliseconds slower per 1000 calls already recorded. An
@@ -214,7 +239,8 @@ class ConcurrencyAcceptanceThresholds(Contract):
     # catching super-linear growth rather than certifying a speed. Two microseconds per historical
     # call is loose for a scan and would still catch anything worse than linear.
     pass_growth_ms_per_1000_calls: float = Field(default=2.0, gt=0)
-    # Calibration cannot pass with a single accidental retry of an unknown outcome, and a slot
-    # released without a trusted stop is a wrong release whatever the timing.
+    # Neither of these is a budget to stay inside: issue #21 names both as hard zeros. An unknown
+    # outcome acted on again is a wrong retry; a slot given back without the execution side saying
+    # the call stopped is a wrong release. The fixture measures both and asserts equality.
     unknown_retries_max: int = Field(default=0, ge=0, strict=True)
     wrong_releases_max: int = Field(default=0, ge=0, strict=True)
