@@ -13,7 +13,7 @@ from typing import Any, Literal, NamedTuple
 from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
-from sqlalchemy import Engine, func, or_, select, text
+from sqlalchemy import Engine, exists, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from huntweave.contracts.errors import ServiceError
@@ -26,6 +26,13 @@ from huntweave.contracts.execution import (
     parameters_hash,
 )
 from huntweave.contracts.orchestration import ReconciliationVerdict
+from huntweave.contracts.resources import (
+    LIVE_SLOT_SQL,
+    ExecutionQuota,
+    ResourcePolicy,
+    slot_wait,
+    stop_confirmed,
+)
 from huntweave.contracts.runs import ScopeSnapshot
 from huntweave.harness.model import DeterministicModel
 from huntweave.runs.events import append_event
@@ -64,6 +71,24 @@ SCENARIOS: dict[str, Literal["success", "failure", "needs_evidence"]] = {
     "negative": "needs_evidence",
     "failure": "failure",
 }
+# The physical-slot reservation is serialised with two-int advisory locks, in a class of this
+# project's own so a new key cannot collide with the single-bigint keys the schema migration, the
+# scheduler lease and the checkpoint setup already hold. Every planner takes the global key first
+# and then its target keys in sorted order: one total order over the locks, so two Runs that want
+# overlapping addresses queue up instead of waiting on each other.
+EXECUTION_QUOTA_LOCK = 773100
+GLOBAL_SLOT_LOCK = 0
+
+
+def target_lock_key(address: str) -> int:
+    """A stable signed 32-bit key for one authorized target address.
+
+    Signed by construction: ``pg_advisory_xact_lock(int, int)`` takes 32-bit integers, and a key
+    that overflowed would be a lock nobody else ever takes. A collision between two addresses is
+    possible in principle and harmless in practice — it over-serialises two unrelated addresses
+    rather than letting two calls share one.
+    """
+    return int.from_bytes(hashlib.sha256(address.encode()).digest()[:4], "big", signed=True)
 
 
 def stable(run_id: UUID, kind: str) -> UUID:
@@ -106,11 +131,20 @@ class Redispatch(NamedTuple):
 
 
 class OrchestrationService:
-    def __init__(self, engine: Callable[[], Engine], evidence_root: Path = Path("/evidence")):
+    def __init__(
+        self,
+        engine: Callable[[], Engine],
+        evidence_root: Path = Path("/evidence"),
+        policy: ResourcePolicy | None = None,
+    ):
         self.engine = engine
         self.owner = uuid4()
         self.evidence_root = evidence_root
         self.model = DeterministicModel()
+        # Read once per process, from the deployment's environment: the slot counts are deployment
+        # capacity, not something a caller decides per Run. `ResourcePolicy.policy_version` is what
+        # a Run records, and `PROJECT.md` section 12 asks for a version bump when the numbers move.
+        self.policy = policy if policy is not None else ResourcePolicy.from_environment()
 
     @staticmethod
     def _run(session: Session, run_id: UUID) -> Run:
@@ -207,9 +241,26 @@ class OrchestrationService:
         return task
 
     def claim(self, run_id: UUID | None = None) -> dict[str, Any] | None:
+        """Take the next scheduling turn for one Run, and one only.
+
+        One claim per turn is what makes the single scheduler fair, and it is only fair if the Run
+        it returns can actually move. A Run with a call already in flight cannot: an action is
+        planned only once the previous one is settled, and the dispatcher's own sweep is what keeps
+        that call's ledger and lease fresh. So those Runs are left out of the candidate set rather
+        than claimed and found unable to act — otherwise the oldest Run with a long call would take
+        every turn, and the Runs behind it would never be scheduled at all (ADR-0016: a research
+        item yields the scheduling opportunity once its call is out).
+        """
         with Session(self.engine()) as session, session.begin():
             now = database_now(session)
-            query = select(Run).where(Run.status.in_(ACTIVE_RUNS))
+            query = select(Run).where(
+                Run.status.in_(ACTIVE_RUNS),
+                ~exists(
+                    select(ToolCall.id).where(
+                        ToolCall.run_id == Run.id, ~ToolCall.status.in_(TERMINAL_CALLS)
+                    )
+                ),
+            )
             if run_id is not None:
                 query = query.where(Run.id == run_id)
             candidates = session.scalars(
@@ -219,7 +270,9 @@ class OrchestrationService:
                 .limit(100)
             )
             for run in candidates:
-                if run.status == "waiting" and not self._active(session, run.id):
+                if run.status == "waiting":
+                    # Waiting on something that is not an in-flight call: an unconfirmed outcome, a
+                    # human decision or a dependency. None of those is this Run's turn to take.
                     continue
                 if self._blockers(session, run.id, OUTCOME_UNSETTLED, STOP_UNCONFIRMED):
                     # An unconfirmed outcome is never retried automatically, and an unconfirmed
@@ -302,7 +355,17 @@ class OrchestrationService:
             replacing = (
                 self._redispatch_target(session, existing) if existing is not None else None
             )
-            if existing is not None and replacing is None:
+            # A recorded decision whose call already exists is answered with that record: the graph
+            # replays nodes, and a replay is not a second action. The one case left in between is a
+            # decision that is committed while its call is not — the physical quota refused it, or
+            # the process stopped between the two. That is resumed below with the same decision,
+            # because a Run must not be wedged behind a decision no call can ever complete.
+            resuming = (
+                existing is not None
+                and replacing is None
+                and session.get(ToolCall, stable(existing.id, "call")) is None
+            )
+            if existing is not None and replacing is None and not resuming:
                 return {"id": str(existing.id), **existing.content}
             # Reconcile an existing accepted call before any fresh decision.
             active = session.scalar(
@@ -330,30 +393,13 @@ class OrchestrationService:
                 return None
             agent = session.get(AgentSession, stable(run.id, "session:" + task.role))
             assert agent is not None
-            if replacing is None:
-                decision = self.model.decide(task.role, task.step, agent.context)
-                session.add(
-                    Decision(
-                        id=decision_id,
-                        run_id=run.id,
-                        session_id=agent.id,
-                        step=task.step,
-                        content=decision,
-                    )
-                )
-                session.flush()
-                self._event(
-                    session,
-                    run,
-                    "decision",
-                    {"decision_id": str(decision_id), "session_id": str(agent.id), **decision},
-                )
-            else:
+            if replacing is not None:
                 # The operator's verdict proved the original call never ran, so the same
                 # decision is dispatched again: a new call id, related to the call it
                 # replaces, and never a second action invented for the same step.
+                assert existing is not None
                 decision_id = replacing.decision_id
-                decision = existing.content  # type: ignore[union-attr]
+                decision = existing.content
                 session.add(
                     Decision(
                         id=decision_id,
@@ -374,6 +420,31 @@ class OrchestrationService:
                         "redispatch_of": str(replacing.replaced_call_id),
                         **decision,
                     },
+                )
+            elif resuming:
+                # The decision is already recorded and does not change: the planner is completing
+                # it, not deciding again. Nothing is written here, so a Run that waits several
+                # passes for a slot keeps one decision and one `decision` event.
+                assert existing is not None
+                decision_id = existing.id
+                decision = existing.content
+            else:
+                decision = self.model.decide(task.role, task.step, agent.context)
+                session.add(
+                    Decision(
+                        id=decision_id,
+                        run_id=run.id,
+                        session_id=agent.id,
+                        step=task.step,
+                        content=decision,
+                    )
+                )
+                session.flush()
+                self._event(
+                    session,
+                    run,
+                    "decision",
+                    {"decision_id": str(decision_id), "session_id": str(agent.id), **decision},
                 )
             if decision["action"] == "finish_research":
                 task.status = "completed"
@@ -495,6 +566,42 @@ class OrchestrationService:
                     str(replaced.ticket["target_ip"]),
                     int(replaced.ticket["target_port"]),
                 )
+            targets = self._actual_targets(bound_ip)
+            # The physical slot is reserved here, in the same short transaction as the budget, the
+            # call and the outbox entry: a refusal leaves nothing behind to release (spec 0006
+            # section 7). The lock is taken before the count so the count cannot be stale, and the
+            # call that consumes the slot is written under it.
+            self._lock_execution_slots(session, targets)
+            quota = self._execution_quota(session)
+            refused = slot_wait(quota, targets)
+            if refused is not None:
+                # Backpressure, not a refusal: the Run keeps its budget, its lease and its place,
+                # and the same action is offered again as soon as the slot is returned. Nothing is
+                # claimed here, so no budget, reservation or outbox entry is left for a call that
+                # never ran. A controlled re-dispatch is gated by the same rule because it is a
+                # real execution too.
+                self._event(
+                    session,
+                    run,
+                    "execution_backpressure",
+                    {
+                        "decision_id": str(decision_id),
+                        "action": decision["action"],
+                        "waiting_category": refused.category,
+                        "resource": refused.resource,
+                        "holders": refused.holders,
+                        "limit": refused.limit,
+                        "global_used": quota.global_used,
+                        "global_limit": quota.global_limit,
+                        "policy_version": quota.policy_version,
+                        "recovery_condition": refused.recovery_condition,
+                    },
+                    # One entry per decision: a Run waiting several passes for the same slot says so
+                    # once, instead of appending the same sentence twice a second. A later step is a
+                    # different decision and gets its own entry.
+                    str(decision_id) + ":backpressure",
+                )
+                return None
             reservation_id = stable(call_id, "reservation")
             # The Run's own mode, narrowed to the profiles this build serves: a Run reads its
             # profile once and every ticket it produces belongs to it.
@@ -1037,13 +1144,80 @@ class OrchestrationService:
         reports ``None`` for any of them is saying it cannot confirm, which is not a stop. A
         shell may have left descendants behind, and a live lease can still authorise the call
         the Run is trying to leave behind.
+
+        The rule itself lives in `huntweave.contracts.resources`, beside the SQL predicate the
+        capacity query counts with, so the console, the scheduler and the occupancy count cannot
+        read the same record three different ways.
         """
-        return bool(
-            observation
-            and observation.get("process_active") is False
-            and observation.get("connection_open") is False
-            and observation.get("lease_active") is False
+        return stop_confirmed(observation)
+
+    @staticmethod
+    def _actual_targets(bound_ip: str) -> tuple[str, ...]:
+        """Every address one action really touches, in a stable order.
+
+        A ticket binds exactly one endpoint today, so this is one address. It exists as one place
+        because the rule is "check every address the action really reaches": a ticket that later
+        names several must not inherit a check that only ever looked at the first, and the sorted
+        order is what lets two planners take overlapping addresses without deadlocking.
+        """
+        return (bound_ip,)
+
+    @staticmethod
+    def _lock_execution_slots(session: Session, targets: tuple[str, ...]) -> None:
+        """Serialise the reservation of the physical slots one action needs.
+
+        Held for the rest of the caller's transaction, which is exactly as long as the reservation
+        has to be atomic: the count is read and the call that consumes a slot is written in the same
+        short transaction, so two planners cannot both see the same address free. The global key
+        comes first so the order is total, then the addresses in sorted order.
+        """
+        keys = [GLOBAL_SLOT_LOCK]
+        keys.extend(target_lock_key(address) for address in sorted(set(targets)))
+        for key in keys:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(:class, :key)"),
+                {"class": EXECUTION_QUOTA_LOCK, "key": key},
+            )
+
+    def _execution_quota(self, session: Session) -> ExecutionQuota:
+        """The physical execution capacity in use right now, counted from the calls themselves.
+
+        Derived rather than kept in a second ledger: a slot is held exactly while the execution side
+        has not confirmed that nothing the call started is still running, which is the same fact the
+        console shows as 停止未确认. One grouped query answers both limits, so the global count and
+        the per-address counts cannot come from two different moments.
+        """
+        rows = session.execute(
+            text(
+                "SELECT COALESCE(ticket->>'target_ip', '') AS address, count(*) AS holders "
+                f"FROM huntweave.tool_calls WHERE {LIVE_SLOT_SQL} GROUP BY 1"
+            )
+        ).all()
+        per_ip: dict[str, int] = {}
+        total = 0
+        for address, holders in rows:
+            count = int(holders)
+            total += count
+            if address:
+                per_ip[str(address)] = count
+        return ExecutionQuota(
+            policy_version=self.policy.policy_version,
+            global_limit=self.policy.global_execution_slots,
+            per_ip_limit=self.policy.per_ip_execution_slots,
+            global_used=total,
+            per_ip_used=per_ip,
         )
+
+    def execution_quota(self) -> ExecutionQuota:
+        """The physical execution capacity this deployment has free right now.
+
+        The same accounting the scheduler reserves against, answered for a reader. Nothing on the
+        control paths consults it: cancelling, reconciling, renewing and reclaiming have to stay
+        usable while every slot is held by an unconfirmed stop, which is what makes a full pool
+        backpressure on new target execution rather than a wedged platform.
+        """
+        with Session(self.engine()) as session:
+            return self._execution_quota(session)
 
     def _call_conditions(
         self, call: ToolCall, verdict: ReconciliationDecision | None

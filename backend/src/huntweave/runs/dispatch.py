@@ -121,6 +121,12 @@ class ExecutionDispatcher:
     ) -> None:
         # The Runner's ledger confirms this call_id was never accepted, so recording the
         # refusal releases the run without replaying or duplicating any effect.
+        #
+        # The ledger having no record is also the proof that no control lease can be live for it,
+        # and the observation says so rather than leaving the lease unstated. That distinction is
+        # not cosmetic: a call that is never started *and* provably not leased is the one case spec
+        # 0006 section 7 lets release its physical slot, and an observation that left the lease
+        # blank would keep holding a slot for an action that never happened.
         self.business.accept(
             ExecutionRecord(
                 request=ticket,
@@ -130,6 +136,7 @@ class ExecutionDispatcher:
                     started=False,
                     process_active=False,
                     connection_open=False,
+                    lease_active=False,
                     observed_at=datetime.now(UTC),
                 ),
             )
