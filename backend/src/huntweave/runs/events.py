@@ -120,12 +120,13 @@ def append_event(
     ) is not None:
         return
     cursor.cursor += 1
-    created_at = occurred_at or database_now(session)
     stored = payload
     if occurred_at is not None:
-        # The event's own statement of when it happened travels *inside* the payload as well as in
-        # `created_at`, so a reader can tell "this arrived late" from "this happened now"; the
-        # publish cursor above stays the only ordering fact.
+        # The event's own statement of when it happened travels *inside the payload*. The row keeps
+        # `created_at` = the moment the platform wrote it, which is what that column has always
+        # meant; overwriting it with the occurrence time would delete the only record of how late
+        # the event arrived, and would make a late event indistinguishable from a punctual one. The
+        # publish cursor above stays the only ordering fact either way.
         stored = {**payload, "occurred_at": occurred_at.isoformat()}
     session.add(
         AuditEvent(
@@ -134,7 +135,7 @@ def append_event(
             type=kind,
             payload=stored,
             source_event_id=source,
-            created_at=created_at,
+            created_at=database_now(session),
         )
     )
     session.flush()

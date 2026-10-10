@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from _planning import plan_step
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -103,8 +104,14 @@ def engine() -> Iterator[Engine]:
     result.dispose()
 
 
-def a_run(engine: Engine) -> UUID:
-    """A live Run with one authorized target, created through the real service."""
+def a_run(engine: Engine, *, start: bool = False) -> UUID:
+    """A Run with one authorized target, created through the real service.
+
+    It stays in ``draft`` unless ``start`` is asked for. Starting a Run appends its ``run_queued``
+    event, and the event-ordering checks want the events they write to begin at cursor 1; a check
+    that needs a *claimable* Run asks for ``start``, because `OrchestrationService.claim` serves
+    only the Runs in `ACTIVE_RUNS` and a draft is not one of them.
+    """
     runs = RunService(lambda: engine)
     project = runs.create_project(ProjectCreate(name="event retention"))
     now = datetime.now(UTC)
@@ -118,7 +125,10 @@ def a_run(engine: Engine) -> UUID:
             budget=Budget(max_tool_calls=4),
         )
     )
-    return runs.create_run(RunCreate(scope_id=scope.id, scope_version=1), secrets.token_hex(8)).id
+    run = runs.create_run(RunCreate(scope_id=scope.id, scope_version=1), secrets.token_hex(8))
+    if start:
+        runs.start(run.id, run.version)
+    return run.id
 
 
 def write_events(engine: Engine, run_id: UUID, count: int, kind: str = "decision") -> None:
@@ -314,18 +324,17 @@ def test_the_prune_leaves_every_business_record_and_the_evidence_index_standing(
     Every one of those rows is still there, unchanged and still reachable, while the old events are
     gone and the gap is stated by the watermark.
     """
-    run_id = a_run(engine)
-    runs = RunService(lambda: engine)
-    claim = runs.claim_for(run_id) if hasattr(runs, "claim_for") else None
-    del claim  # the orchestration service is exercised in its own checks; here the rows matter
+    run_id = a_run(engine, start=True)
     from huntweave.runs.orchestration import OrchestrationService
 
     orchestration = OrchestrationService(lambda: engine)
     claimed = orchestration.claim(run_id)
     assert claimed is not None
-    planned = orchestration.plan(run_id, claimed["task_id"], claimed["lease_generation"])
+    planned = plan_step(
+        orchestration, run_id, claimed["task_id"], claimed["lease_generation"]
+    )
     assert planned is not None
-    with Session(engine) as session:
+    with Session(engine) as session, session.begin():
         call = session.scalar(select(ToolCall).where(ToolCall.run_id == run_id))
         assert call is not None
         session.add(
@@ -371,13 +380,17 @@ def test_the_prune_leaves_every_business_record_and_the_evidence_index_standing(
     assert counts() == before
     with Session(engine) as session:
         assert retained_from_cursor(session, run_id) == watermark
-        # The prune's own record is the only event left, and it names what is gone.
         remaining = list(
             session.scalars(select(AuditEvent).where(AuditEvent.run_id == run_id))
         )
-        assert [event.type for event in remaining] == ["event_retention_applied"]
-        assert remaining[0].payload["pruned_events"] > 0
-        assert remaining[0].payload["authoritative_source"] == "versioned_record"
+        # `prune_events` refuses `keep_from > committed`, so the event at the committed cursor
+        # survives beside the prune's own record — but nothing older does, and it is the prune's
+        # record that names the cursors which are gone.
+        assert len(remaining) == 2, [event.type for event in remaining]
+        mark = remaining[-1]
+        assert mark.type == "event_retention_applied"
+        assert mark.payload["pruned_events"] > 0
+        assert mark.payload["authoritative_source"] == "versioned_record"
 
 
 def test_pruning_the_whole_timeline_makes_the_only_readable_position_the_watermark(
@@ -399,7 +412,11 @@ def test_pruning_the_whole_timeline_makes_the_only_readable_position_the_waterma
                 page_events(session, run_id, stale, 100)
             assert refusal.value.reason_code == "event_cursor_expired"
         window = page_events(session, run_id, watermark, 100)
-        assert [event["cursor"] for event in window.events] == [watermark + 1]
+        # `prune_events` refuses `keep_from > committed`, so the cursor at `committed` always
+        # survives, and the prune's own `event_retention_applied` mark is appended above it. What is
+        # served is therefore those two cursors — and both are strictly above the watermark, so
+        # nothing at or below it is ever presented as a replay.
+        assert [event["cursor"] for event in window.events] == [watermark + 1, watermark + 2]
         assert window.retained_from == watermark
 
 

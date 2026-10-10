@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from huntweave.access import service as access_module
 from huntweave.access.service import AccessService
+from huntweave.api.app import create_app
 from huntweave.api.events import (
     STREAM_AUTH_INTERVAL_SECONDS,
     STREAM_HEARTBEAT_SECONDS,
@@ -383,8 +384,8 @@ def test_a_page_never_contains_a_position_the_reader_cannot_continue_from(
     """PROJECT.md section 12.1: a cursor must not pass an event that is not yet published.
 
     Two readings of the same row are checked here: a page limited to one event stops at cursor 1 and
-    reports `published == 1`, and the next page continues from the reported `next_cursor` rather than
-    jumping. A client that follows `next_cursor` therefore sees every event exactly once and in
+    reports `published == 1`, and the next page continues from the reported `next_cursor` rather
+    than jumping. A client that follows `next_cursor` therefore sees every event exactly once and in
     order, which is the property the sentence is about; the concurrent-writer half needs a real row
     lock and lives in `test_event_retention_integration.py`.
     """
@@ -723,3 +724,37 @@ def test_the_history_contract_refuses_a_field_the_console_would_have_trusted() -
                 "surprise": True,
             }
         )
+
+
+def test_the_packaged_app_serves_the_new_timeline_contract_and_not_the_old_one() -> None:
+    """The router replaces two inline handlers, so the *packaged* schema is the thing to check.
+
+    FastAPI keeps the first registration for a method+path pair, so leaving the old inline
+    ``event_history``/``events`` handlers in `api/app.py` beside the new router would keep serving
+    them: the router would exist, every check that mounts the router itself would still pass, and
+    production would answer with the old contract. Both handlers were named `event_history`, so the
+    route table alone cannot tell them apart — the response contract can: the old one answered
+    `EventPage`, the new one answers `EventHistoryView`.
+
+    The generated OpenAPI document is read rather than `app.routes`, because an included router is
+    a single ``_IncludedRouter`` entry there and its routes are not flattened into the parent list.
+    No request is made, so no database connection is opened.
+    """
+    schema = create_app(AppSettings(access_key="k" * 32)).openapi()
+    paths = schema["paths"]
+
+    # Two routes the router adds, and the two it replaces.
+    for path in (
+        "/api/v1/runs/{run_id}/event-history",
+        "/api/v1/runs/{run_id}/events",
+        "/api/v1/runs/{run_id}/event-retention",
+        "/api/v1/runs/{run_id}/event-retention/prune",
+    ):
+        assert path in paths, sorted(paths)
+
+    answer = paths["/api/v1/runs/{run_id}/event-history"]["get"]["responses"]["200"]
+    reference = answer["content"]["application/json"]["schema"]["$ref"]
+    assert reference.endswith("/EventHistoryView"), reference
+    # The route the inline pair never had: its presence is what says the router is mounted at all,
+    # and the ref above is what says the old handler is not the one answering.
+    assert paths["/api/v1/runs/{run_id}/event-retention"]["get"]["responses"]["200"]

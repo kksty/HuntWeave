@@ -1,8 +1,5 @@
-import asyncio
-import json
 import os
-import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -19,12 +16,12 @@ from starlette.responses import (
     JSONResponse,
     RedirectResponse,
     Response,
-    StreamingResponse,
 )
 from starlette.staticfiles import StaticFiles
 
 from huntweave.access.body_limit import BodyLimitMiddleware
 from huntweave.access.service import AccessService, BrowserSession
+from huntweave.api.events import create_events_router
 from huntweave.api.facts import create_facts_router
 from huntweave.api.readiness import CapabilityProbe
 from huntweave.config import CONSOLE_BUILD, AppSettings
@@ -32,7 +29,6 @@ from huntweave.contracts.capabilities import Capabilities, SandboxManagement
 from huntweave.contracts.errors import ServiceError
 from huntweave.contracts.execution import ExecutionObservation, RunRuntimeView
 from huntweave.contracts.orchestration import (
-    EventPage,
     EvidenceView,
     ReconciliationResult,
     ReconciliationVerdict,
@@ -167,6 +163,13 @@ def create_app(
     # is the one line that mounts them. Every path it registers is new — none of them shadows an
     # inline handler here.
     app.include_router(create_facts_router(database))
+
+    # The Run timeline ships as a router factory too, and it *replaces* the two handlers that used
+    # to be declared here: `/runs/{run_id}/event-history` and the `/runs/{run_id}/events` stream.
+    # Registering both would leave FastAPI serving the first-registered (the old inline one) and the
+    # slice silently defeated, so the inline pair is deleted rather than kept beside it. The
+    # capability probe is passed in because the stream's heartbeat reports the platform's real mode.
+    app.include_router(create_events_router(settings, database, capabilities_probe.current))
 
     def ledger_observation(call_id: UUID) -> ExecutionObservation | None:
         # Read-only access to the Runner's own ledger: the verdict needs the execution side's
@@ -464,14 +467,6 @@ def create_app(
             update={"run": observed(snapshot.run), "runtime": runtime_source(run_id)}
         )
 
-    @app.get("/api/v1/runs/{run_id}/event-history")
-    def event_history(
-        run_id: UUID,
-        after: int = Query(default=0, ge=0),
-        limit: int = Query(default=100, ge=1, le=500),
-    ) -> EventPage:
-        return EventPage.model_validate(orchestration.history(run_id, after, limit))
-
     @app.get("/api/v1/runs/{run_id}/resume-preview")
     def resume_preview(run_id: UUID) -> ResumePreview:
         return ResumePreview.model_validate(orchestration.preview(run_id))
@@ -521,52 +516,6 @@ def create_app(
         limit: int = Query(default=65536, ge=1, le=65536),
     ) -> EvidenceView:
         return EvidenceView.model_validate(orchestration.evidence(evidence_id, offset, limit))
-
-    @app.get("/api/v1/runs/{run_id}/events")
-    async def events(
-        run_id: UUID, request: Request, after: int = Query(default=0, ge=0)
-    ) -> Response:
-        raw_cursor = request.headers.get("last-event-id")
-        if raw_cursor is not None:
-            try:
-                after = int(raw_cursor)
-            except ValueError:
-                raise ServiceError("invalid_event_cursor", 422) from None
-        # Validate before response headers are sent, so invalid/ahead cursors get a clear 409.
-        await run_in_threadpool(orchestration.history, run_id, after, 1)
-        token = request.cookies.get(settings.cookie_name)
-
-        async def stream() -> AsyncIterator[str]:
-            cursor = after
-            next_auth = 0.0
-            next_heartbeat = 0.0
-            while not await request.is_disconnected():
-                try:
-                    if time.monotonic() >= next_auth:
-                        await run_in_threadpool(access.authenticate, token)
-                        next_auth = time.monotonic() + 15
-                    page = await run_in_threadpool(orchestration.history, run_id, cursor, 100)
-                    for event in page["events"]:
-                        cursor = event["cursor"]
-                        data = json.dumps(event, ensure_ascii=False)
-                        yield f"id: {cursor}\nevent: audit\ndata: {data}\n\n"
-                    if time.monotonic() >= next_heartbeat:
-                        # The stream heartbeat carries the mode the platform is really in, not a
-                        # fixed demonstration claim; the observation is read off the event loop.
-                        mode = (await run_in_threadpool(capabilities_probe.current)).mode
-                        yield f'event: heartbeat\ndata: {{"mode":"{mode}"}}\n\n'
-                        next_heartbeat = time.monotonic() + 5
-                except ServiceError:
-                    yield "event: session_expired\ndata: {}\n\n"
-                    return
-                except SQLAlchemyError:
-                    yield "event: storage_unavailable\ndata: {}\n\n"
-                    return
-                await asyncio.sleep(0.5)
-
-        return StreamingResponse(
-            stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"}
-        )
 
     @app.get("/api/v1/system/capabilities")
     def capabilities() -> Capabilities:

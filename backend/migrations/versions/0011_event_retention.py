@@ -15,14 +15,14 @@ per-Run table with one row per Run would duplicate `event_cursors`' lifetime for
 there is exactly one writer of the cursor either way (`runs/events.py`).
 
 Revision ID: 0011_event_retention
-Revises: 0008_retention_decisions
+Revises: 0010_service_facts
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "0011_event_retention"
-down_revision = "0008_retention_decisions"
+down_revision = "0010_service_facts"
 branch_labels = None
 depends_on = None
 
