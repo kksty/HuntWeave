@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { gateLabels, messages, reasonText, statusText, useWorkspace, type Preview, type Project, type Run, type Scope } from './workspace';
+import { gateLabels, managementLabels, reasonText, statusText, useWorkspace, type Preview, type Project, type Run, type Scope } from './workspace';
 import RunConsole from './RunConsole.vue';
 
 const workspace = useWorkspace();
@@ -71,7 +71,7 @@ function startRun() { return perform(async () => {
   <main>
     <div class="intro"><p class="eyebrow">研究工作台 · P0</p><h1>先确定范围，再开始研究。</h1><p>保存授权范围与预算，创建可恢复的演示记录。当前版本不连接目标，不执行扫描。</p></div>
     <p class="notice" role="status" data-testid="execution-readiness">
-      当前执行模式：{{ workspace.executionMode }}。
+      当前执行模式：{{ workspace.executionMode }}。容器管理能力：{{ managementLabels[capabilities?.sandbox_management || 'disabled'] || '未知' }}。
       <template v-if="!capabilities">尚未取得执行端的能力结论，不能据此认为平台就绪。</template>
       <template v-else-if="!workspace.realExecutionReady">真实执行未开放：{{ workspace.readinessReason || '未取得执行端的能力结论。' }}</template>
       <template v-if="capabilities && !workspace.fakeExecutionReady">执行端不可用：固定假动作链路当前无法推进。</template>
@@ -86,7 +86,15 @@ function startRun() { return perform(async () => {
           <details :open="!workspace.projects.length"><summary>新建项目</summary><form @submit.prevent="createProject"><label>项目名称<input v-model="name" required maxlength="120"></label><label>项目说明<textarea v-model="description" maxlength="2000" rows="2"></textarea></label><button :disabled="!name.trim()">创建项目</button></form></details>
           <label>目标 IP <small>每行一个；重复项会合并，错误行必须修正或移除</small><textarea v-model="targets" rows="5" placeholder="192.0.2.10&#10;198.51.100.20" maxlength="200000"></textarea></label>
           <button class="secondary" :disabled="!targets.trim()" @click="previewTargets">预览 IP</button>
-          <div v-if="preview" class="preview"><p>{{ preview.targets.length }} 个去重目标 · {{ preview.valid ? '可以提交' : '存在错误，不能提交' }}</p><div class="table-scroll"><table><thead><tr><th>行</th><th>IP / 结果</th></tr></thead><tbody><tr v-for="row in preview.rows" :key="row.line"><td>{{ row.line }}</td><td><code>{{ row.normalized || row.value }}</code><small :class="{ invalid: row.reason_code }">{{ row.reason_code ? messages[row.reason_code] : row.duplicate_of ? `与第 ${row.duplicate_of} 行重复，已合并` : '有效' }}</small></td></tr></tbody></table></div></div>
+          <div v-if="preview" class="preview">
+            <p>
+              {{ preview.targets.length }} 个去重目标 · 单 Run 上限 {{ preview.target_limit }}
+              <template v-if="preview.over_limit"> · 超限 {{ preview.over_limit }} 行</template>
+              · {{ preview.valid ? '可以提交' : '存在错误，不能提交' }}
+            </p>
+            <p v-if="preview.over_limit" class="error" role="alert">超过上限的行已在下表按行号标出；请移除这些行后再提交。超限时整份清单不会被接受。</p>
+            <div class="table-scroll"><table><thead><tr><th>行</th><th>IP / 结果</th></tr></thead><tbody><tr v-for="row in preview.rows" :key="row.line"><td>{{ row.line }}</td><td><code>{{ row.normalized || row.value }}</code><small :class="{ invalid: row.reason_code }">{{ row.reason_code ? reasonText(row.reason_code) : row.duplicate_of ? `与第 ${row.duplicate_of} 行重复，已合并` : '有效' }}</small></td></tr></tbody></table></div>
+          </div>
           <label>TCP 端口范围<select v-model="portProfile"><option value="common-tcp-v1">常用 TCP · common-tcp-v1</option><option value="custom-tcp-v1">自定义 TCP</option><option value="all-tcp-v1">全部 TCP · 1–65535</option></select></label>
           <label v-if="portProfile === 'custom-tcp-v1'">端口与范围<input v-model="customPorts" placeholder="80,443,8000-8010"></label>
           <button class="secondary" @click="previewPorts">展开端口</button>
