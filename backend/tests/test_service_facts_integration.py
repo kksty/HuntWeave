@@ -33,7 +33,6 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from huntweave.api.app import create_app
-from huntweave.api.facts import create_facts_router
 from huntweave.config import AppSettings
 from huntweave.contracts.facts import (
     AccessConditions,
@@ -199,6 +198,9 @@ class Fixture:
                 id=uuid4(),
                 run_id=run.id,
                 session_id=agent.id,
+                # `decisions.task_id` is NOT NULL since 0009 (issue #43): a decision belongs to an
+                # independent task, not merely to the session that happened to ask.
+                task_id=task.id,
                 step=0,
                 content={"action": "probe_http"},
             )
@@ -276,13 +278,18 @@ def fixture(engine: Engine) -> Fixture:
 
 @pytest.fixture
 def client(engine: Engine) -> TestClient:
-    """The application with the facts router mounted, as the integration owner mounts it."""
+    """The packaged application, exactly as `create_app` assembles it.
+
+    The facts routes are mounted by `create_app` itself (the integration owner's one-line include),
+    so this fixture deliberately does **not** mount the router a second time: doing so would let
+    these checks pass against a route set the product does not actually serve, and FastAPI would
+    warn about duplicate operation ids instead of failing.
+    """
     app = create_app(
         AppSettings(access_key=KEY),
         engine,
         capability_reader=lambda: evaluate(fake_execution_ready=True, now=datetime.now(UTC)),
     )
-    app.include_router(create_facts_router(lambda: engine))
     return TestClient(app, base_url=ORIGIN)
 
 

@@ -77,9 +77,12 @@ DEFAULT_LINEAGE_RETENTION_DAYS = 30
 
 #: The two placements a derived per-service cost share can have (ADR-0015's fourth record). They are
 #: labels on a statistic, never refusals: the console does not render them as explanations, and
-#: `tests/test_reason_codes.py` is deliberately not asked to map them.
-ATTRIBUTION_ANCHOR = "through"
-ATTRIBUTION_PASSED_THROUGH = "anchor"
+#: `tests/test_reason_codes.py` is deliberately not asked to map them. The service the call directly
+#: verified is the anchor; the ones it merely passed through are labelled as such — the names say
+#: what they mean, and this pair was previously written the other way round, which made every share
+#: carry its opposite label.
+ATTRIBUTION_ANCHOR = "anchor"
+ATTRIBUTION_PASSED_THROUGH = "through"
 
 
 class ServiceFactsService:
