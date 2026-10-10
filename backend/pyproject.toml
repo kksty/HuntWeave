@@ -5,6 +5,9 @@ description = "HuntWeave control plane and trusted Runner"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "alembic>=1.13,<2",
+  # The trusted sandbox manager in the Runner is the only Docker client (ADR-0010/0014). The
+  # import stays lazy, so a deployment without sandbox management never opens it.
+  "docker>=7.1,<8",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "langgraph>=1,<2",
@@ -15,11 +18,9 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.12,<1", "mypy>=1.15,<2"]
-lab = [
-    "docker>=7.1,<8",
-    "psutil>=7,<8",
-]
+dev = ["pytest>=8,<10", "ruff>=0.12,<1", "mypy>=1.15,<2", "pyyaml>=6,<7"]
+# Extra packages the container-based lab agents need on top of the main dependencies.
+lab = ["psutil>=7,<8"]
 
 [tool.uv]
 package = false
@@ -43,4 +44,11 @@ strict = true
 
 [[tool.mypy.overrides]]
 module = ["alembic.*"]
+ignore_missing_imports = true
+
+# The Docker SDK ships no `py.typed` marker, so its types are unavailable even though the package
+# itself is a runtime dependency. All Docker use is confined to execution/dockerruntime.py, whose
+# fixed operations are typed against this project's own protocol in execution/sandbox.py.
+[[tool.mypy.overrides]]
+module = ["docker.*"]
 ignore_missing_imports = true

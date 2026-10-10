@@ -12,7 +12,12 @@ from functools import lru_cache
 from typing import get_args
 
 from huntweave.config import CONSOLE_BUILD
-from huntweave.contracts.capabilities import Capabilities, ReadinessGate, ReadinessGateName
+from huntweave.contracts.capabilities import (
+    Capabilities,
+    ReadinessGate,
+    ReadinessGateName,
+    SandboxManagement,
+)
 
 FAKE_PROFILE = "fake-p0-v1"
 CONSOLE_CAPABILITY_ENDPOINT = "/api/v1/system/capabilities"
@@ -58,7 +63,13 @@ def _gate(name: ReadinessGateName, ready: bool, reason_code: str) -> ReadinessGa
     return ReadinessGate(gate=name, ready=ready, reason_code=None if ready else reason_code)
 
 
-def evaluate(*, fake_execution_ready: bool, now: datetime) -> Capabilities:
+def evaluate(
+    *,
+    fake_execution_ready: bool,
+    now: datetime,
+    sandbox_management: SandboxManagement = "disabled",
+    sandbox_reason_code: str | None = None,
+) -> Capabilities:
     """Report readiness from the four gates rather than from a constant.
 
     Gates 2 and 3 are properties of this revision, not of the running host, so they are checked
@@ -70,6 +81,10 @@ def evaluate(*, fake_execution_ready: bool, now: datetime) -> Capabilities:
     the first blocker in the order an operator has to care about: an unusable execution chain
     before an unopened real path (ADR-0010 keeps `environment_unsupported` as the P1 conclusion,
     with the gates carrying the specific missing condition).
+
+    Sandbox management is reported beside the gates instead of inside them: a deployment that has
+    enabled the trusted manager still has all four gates to satisfy before real execution opens,
+    and a deployment that keeps it disabled is not a broken one.
     """
     gates = [
         _gate("profile_revalidation", PROFILE_REVALIDATED, "profile_unvalidated"),
@@ -89,6 +104,8 @@ def evaluate(*, fake_execution_ready: bool, now: datetime) -> Capabilities:
         execution_profile=FAKE_PROFILE,
         fake_execution_ready=fake_execution_ready,
         real_execution_ready=real_ready,
+        sandbox_management=sandbox_management,
+        sandbox_reason_code=sandbox_reason_code,
         reason_code=reason,
         observed_at=now,
         gates=gates,

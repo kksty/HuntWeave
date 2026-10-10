@@ -19,7 +19,7 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project --no-managed-python
 COPY backend/src ./src
 COPY backend/migrations ./migrations
-COPY profiles/common-tcp-v1.json /opt/huntweave/profiles/common-tcp-v1.json
+COPY profiles /opt/huntweave/profiles
 COPY --from=frontend /frontend/dist /opt/huntweave/frontend/dist
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin huntweave \
     && mkdir /evidence /runner-state && chown huntweave:huntweave /evidence /runner-state
@@ -35,7 +35,9 @@ FROM control AS checks
 USER root
 RUN uv sync --locked --no-managed-python
 COPY backend/tests ./tests
-COPY deploy/*.py /opt/huntweave/deploy/
+# The whole deployment directory, not only its Python entry points: the checks read the Compose
+# files and this Dockerfile as the artifacts that decide the deployment boundary.
+COPY deploy /opt/huntweave/deploy
 USER 10001:10001
 ENV PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-m", "not integration", "tests"]

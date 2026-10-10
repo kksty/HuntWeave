@@ -1,0 +1,40 @@
+{
+  "profile_version": 1,
+  "profile_id": "sandbox-lifecycle-v1",
+  "status": "lifecycle_check_only",
+  "network": {
+    "driver": "bridge",
+    "internal": true,
+    "ipv6": false,
+    "gateway_mode_ipv4": "isolated",
+    "dns": ["127.0.0.1"]
+  },
+  "workspace": {
+    "mount": "/workspace"
+  },
+  "tool_inventory": [],
+  "gateway": {
+    "image": "huntweave-isolation-probe:p0",
+    "command": ["python", "/lab/network.py", "gateway"],
+    "user": "0:0",
+    "capabilities_add": ["NET_ADMIN"]
+  },
+  "tool": {
+    "image": "huntweave-isolation-probe:p0",
+    "command": ["python", "/lab/fixture.py", "hold"],
+    "user": "10001:10001",
+    "capabilities_add": []
+  },
+  "limits": {
+    "pids": 128,
+    "memory": "512m",
+    "cpus": 1.0,
+    "read_only_rootfs": true,
+    "capabilities_drop": ["ALL"],
+    "no_new_privileges": true,
+    "tmpfs": {"/tmp": "size=16m,mode=1777"},
+    "log_tail_bytes": 65536,
+    "log_line_bound": 200,
+    "evidence_max_bytes": 20971520
+  }
+}

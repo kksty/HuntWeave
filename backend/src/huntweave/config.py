@@ -11,6 +11,9 @@ from sqlalchemy.engine import URL, make_url
 # execution side reads the served bundle to decide the console-consumption readiness gate.
 CONSOLE_BUILD = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
+# Where the image ships the committed, versioned execution profiles (deploy/Dockerfile).
+PROFILE_DIR = Path(__file__).resolve().parents[3] / "profiles"
+
 
 def read_secret(name: str, *, required: bool = True) -> str | None:
     filename = os.environ.get(name)
@@ -82,6 +85,32 @@ class AppSettings:
             access_key_file=Path(filename) if filename else None,
             public_origin=os.environ.get("HUNTWEAVE_PUBLIC_ORIGIN", "http://127.0.0.1:8000"),
             cookie_secure=os.environ.get("HUNTWEAVE_COOKIE_SECURE", "false").lower() == "true",
+        )
+
+
+@dataclass(frozen=True)
+class SandboxSettings:
+    """Whether this Runner may manage sandbox containers, and with which fixed profile.
+
+    Disabled unless the deployment says otherwise: `HUNTWEAVE_SANDBOX_MANAGEMENT` has to be the
+    exact word `enabled`. Every other value — including a typo — leaves the Runner without any
+    container management, so a default Compose deployment cannot open real execution by accident.
+    """
+
+    enabled: bool = False
+    profile_id: str = "sandbox-lifecycle-v1"
+    profile_dir: Path = PROFILE_DIR
+    state_dir: Path = Path("/runner-state")
+    evidence_dir: Path = Path("/evidence")
+
+    @classmethod
+    def from_env(cls) -> "SandboxSettings":
+        return cls(
+            enabled=os.environ.get("HUNTWEAVE_SANDBOX_MANAGEMENT", "").lower() == "enabled",
+            profile_id=os.environ.get("HUNTWEAVE_SANDBOX_PROFILE", "sandbox-lifecycle-v1"),
+            profile_dir=Path(os.environ.get("HUNTWEAVE_SANDBOX_PROFILE_DIR", str(PROFILE_DIR))),
+            state_dir=Path(os.environ.get("HUNTWEAVE_RUNNER_STATE_DIR", "/runner-state")),
+            evidence_dir=Path(os.environ.get("HUNTWEAVE_EVIDENCE_DIR", "/evidence")),
         )
 
 

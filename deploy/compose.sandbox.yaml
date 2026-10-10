@@ -1,0 +1,22 @@
+# Opt-in override: lets the Runner manage sandbox containers (P1 slice #16).
+#
+# The default deployment deliberately keeps no management capability at all — the Runner has no
+# Docker socket and no management flag — so an update can never open real execution by accident.
+# Enabling management is this explicit act, next to the base file:
+#
+#   docker compose -f deploy/compose.yaml -f deploy/compose.sandbox.yaml up -d --build
+#
+# Management is still not readiness: the ADR-0010 gates decide `real_execution_ready`, and the
+# container options come from the committed profile named here, never from a request.
+services:
+  runner:
+    environment:
+      HUNTWEAVE_SANDBOX_MANAGEMENT: enabled
+      HUNTWEAVE_SANDBOX_PROFILE: ${HUNTWEAVE_SANDBOX_PROFILE:-sandbox-lifecycle-v1}
+    # The socket belongs to root and is group-readable only, while the Runner runs as uid 10001;
+    # without the supplementary group the manager reports `sandbox_runtime_unreachable`. This is
+    # the whole reason the capability is opt-in and named: the Runner is the one component allowed
+    # to hold it, and the app never gets a socket at all.
+    group_add: ["0"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

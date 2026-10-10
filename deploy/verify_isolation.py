@@ -1,7 +1,5 @@
 """Build and execute the isolated Docker lab on Windows or Linux."""
 
-import json
-import os
 import platform
 import re
 import socket
@@ -11,12 +9,7 @@ from pathlib import Path
 
 import psutil
 
-REPOSITORY = Path(__file__).resolve().parent.parent
-
-
-def command(*args: str, capture: bool = False) -> str:
-    result = subprocess.run(args, cwd=REPOSITORY, check=True, text=True, capture_output=capture)
-    return result.stdout.strip() if capture else ""
+from lab_docker import REPOSITORY, build, command, socket_source, source_facts
 
 
 def host_facts() -> dict[str, str]:
@@ -52,26 +45,6 @@ def host_facts() -> dict[str, str]:
     return values
 
 
-def socket_source(host: str) -> str:
-    if host == "windows":
-        return "/var/run/docker.sock"
-    endpoint = os.environ.get("DOCKER_HOST")
-    if not endpoint:
-        endpoint = json.loads(
-            command(
-                "docker",
-                "context",
-                "inspect",
-                "--format",
-                "{{json .Endpoints.docker.Host}}",
-                capture=True,
-            )
-        )
-    if not endpoint.startswith("unix://"):
-        raise ValueError("The local lab requires a local Unix Docker socket")
-    return endpoint.removeprefix("unix://")
-
-
 def main() -> None:
     facts = host_facts()
     run_id = uuid.uuid4().hex
@@ -79,21 +52,8 @@ def main() -> None:
     output.mkdir(parents=True)
     command("docker", "version", "--format", "{{.Server.Version}}")
     for target in ("probe", "manager"):
-        command(
-            "docker",
-            "build",
-            "-f",
-            "lab/isolation/Dockerfile",
-            "--target",
-            target,
-            "-t",
-            f"huntweave-isolation-{target}:p0",
-            ".",
-        )
-    facts["HUNTWEAVE_SOURCE_REVISION"] = command("git", "rev-parse", "HEAD", capture=True)
-    facts["HUNTWEAVE_SOURCE_TREE_DIRTY"] = (
-        "true" if command("git", "status", "--porcelain", capture=True) else "false"
-    )
+        build(target, f"huntweave-isolation-{target}:p0")
+    facts.update(source_facts())
     args = [
         "docker",
         "run",
@@ -114,7 +74,7 @@ def main() -> None:
         "--tmpfs",
         "/tmp:size=16m,mode=1777",
         "--mount",
-        f"type=bind,source={socket_source(facts['HUNTWEAVE_HOST_PLATFORM'])},target=/var/run/docker.sock",
+        f"type=bind,source={socket_source()},target=/var/run/docker.sock",
         "--mount",
         f"type=bind,source={output},target=/results",
     ]

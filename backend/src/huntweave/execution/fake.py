@@ -18,27 +18,13 @@ from huntweave.contracts.execution import (
     ExecutionResult,
     parameters_hash,
 )
+from huntweave.execution.durable import atomic_write
 
 
 class RunnerRejected(Exception):
     def __init__(self, reason_code: str):
         self.reason_code = reason_code
         super().__init__(reason_code)
-
-
-def atomic_write(path: Path, data: bytes) -> None:
-    temporary = path.with_suffix(".pending")
-    with temporary.open("wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-    if os.name != "nt":
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
 
 
 class FakeRunner:

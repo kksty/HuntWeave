@@ -253,6 +253,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "docker" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langgraph" },
@@ -266,16 +267,17 @@ dependencies = [
 dev = [
     { name = "mypy" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 lab = [
-    { name = "docker" },
     { name = "psutil" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13,<2" },
+    { name = "docker", specifier = ">=7.1,<8" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "langgraph", specifier = ">=1,<2" },
@@ -289,12 +291,10 @@ requires-dist = [
 dev = [
     { name = "mypy", specifier = ">=1.15,<2" },
     { name = "pytest", specifier = ">=8,<10" },
+    { name = "pyyaml", specifier = ">=6,<7" },
     { name = "ruff", specifier = ">=0.12,<1" },
 ]
-lab = [
-    { name = "docker", specifier = ">=7.1,<8" },
-    { name = "psutil", specifier = ">=7,<8" },
-]
+lab = [{ name = "psutil", specifier = ">=7,<8" }]
 
 [[package]]
 name = "idna"
